@@ -135,7 +135,16 @@ namespace Coopfall
                 default: dot = "●"; c = new Color(0.4f, 0.75f, 1f); text = _s.Status; break;
             }
             float w = Mathf.Min(620f, 140f + _small.CalcSize(new GUIContent(text)).x + 190f);
-            Rect r = new Rect(_fp ? 10f : (W - w) / 2f, 6f, w, 30f);
+            Rect r;
+            if (_fp)
+            {
+                // Worldfall's first person fills the top of the screen (unit panel left, age panel centre,
+                // minimap right): sit on the right side just below the minimap, inset from the right edge.
+                float right = W - Mathf.Max(24f, W * 0.05f);
+                r = new Rect(Mathf.Max(W * 0.5f, right - w), H * 0.175f + 8f, w, 30f);
+            }
+            else r = new Rect((W - w) / 2f, 6f, w, 30f);
+            _hudRect = r;
             GUI.Box(r, GUIContent.none, _hud);
             Block(r);
             GUI.color = c;
@@ -146,16 +155,18 @@ namespace Coopfall
             if (GUI.Button(new Rect(r.xMax - 94, r.y + 4, 88, 22), "Co-op " + Short(_cfg.menuKey), MenuOpen ? _btnAccent : _btn)) { MenuOpen = !MenuOpen; MapOpen = false; }
         }
 
+        private Rect _hudRect;
+
         private void DrawToasts()
         {
-            float y = 42f, now = Time.unscaledTime;
+            float y = _fp ? _hudRect.yMax + 6f : 42f, now = Time.unscaledTime;
             for (int i = _toasts.Count - 1; i >= 0; i--)
             {
                 ToastMsg t = _toasts[i];
                 if (now > t.until) { _toasts.RemoveAt(i); continue; }
                 float a = Mathf.Clamp01((t.until - now) / 0.6f);
                 Vector2 size = _toast.CalcSize(new GUIContent(t.text));
-                Rect r = new Rect(_fp ? 10f : (W - size.x - 28) / 2f, y, size.x + 28, 26);
+                Rect r = new Rect(_fp ? _hudRect.xMax - size.x - 28 : (W - size.x - 28) / 2f, y, size.x + 28, 26);
                 GUI.color = new Color(1, 1, 1, a);
                 GUI.Box(r, t.text, _toast);
                 GUI.color = Color.white;
@@ -292,6 +303,7 @@ namespace Coopfall
             {
                 if (!r.on || r.actor == null || !r.actor.isAlive()) continue;
                 if (!WorldfallBridge.ProjectHead(r.actor, 0.35f, out Vector2 sp, out float depth)) continue;
+                r.tagAt = now;
                 float fade = 1f - Mathf.Clamp01((depth - 40f) / 20f);
                 if (fade <= 0f) continue;
                 Vector2 g = sp / _k;

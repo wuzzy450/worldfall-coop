@@ -11,10 +11,10 @@
 --     authoritative. Joiners receive a fresh snapshot (zlib'd save, base64 chunks) taken
 --     from the host on demand. If the host leaves, hosting migrates to another synced
 --     member. A room without players keeps its last snapshot (also on disk).
---   * Avatars, cursors, god-power clicks, actions and game speed are relayed to the other
+--   * Avatars, cursors, god-power clicks, actions, hits and game speed are relayed to the other
 --     members of the sender's room. Chat is server-wide.
---   * Live world sync (wu/wb/wdata from the host, wneed from guests) is relayed to the room
---     WITHOUT decoding: these lines can be large and arrive several times per second.
+--   * Live world sync (wu/wb/wdata/wm/wa/wt/ww from the host, wneed/wask from guests) is relayed
+--     to the room WITHOUT decoding: these lines can be large and arrive several times per second.
 --   * The server never decodes snapshots: chunks are relayed and stored as opaque base64.
 
 ---------------------------------------------------------------------
@@ -791,7 +791,7 @@ Handlers["delete-room"] = function(a_Client, a_Msg)
 end
 
 --- Messages relayed verbatim (plus sender id/name) to the other members of the sender's room.
-local RELAYED = { avatar = true, cursor = true, power = true, speed = true, act = true, emote = true }
+local RELAYED = { avatar = true, cursor = true, power = true, speed = true, act = true, emote = true, hit = true, whit = true, diag = true }
 
 local function RelayToRoom(a_Client, a_Msg)
 	local room = a_Client.Room
@@ -815,7 +815,7 @@ end
 
 --- Live world sync. Lines start with {"t":"<type>" so they are recognized without parsing.
 --- true = only the room's host may send it.
-local LIVE_SYNC = { wu = true, wb = true, wdata = true, wneed = false }
+local LIVE_SYNC = { wu = true, wb = true, wdata = true, wm = true, wa = true, ww = true, wt = true, wneed = false, wask = false }
 
 local function RelayRawToRoom(a_Client, a_Type, a_Line)
 	local room = a_Client.Room

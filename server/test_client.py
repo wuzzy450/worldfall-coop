@@ -224,6 +224,27 @@ def main():
     bob.send_raw(json.dumps({"t": "wneed", "room": home, "u": [104], "b": [7]}, separators=(",", ":")))
     need = alice.expect("wneed")
     check("live sync: guest's request reaches the host", need["u"] == [104] and need["b"] == [7])
+
+    # --- everything else live (meta objects, creature details, terrain, world) -------------------
+    for t, body in (("wm", {"k": "city", "d": [{"id": 3, "name": "Testburg"}], "s": [12345]}),
+                    ("wa", {"r": [[101, "Bob", 3, "1", -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 1, 0, 0, 0, "", ""]]}),
+                    ("wt", {"k": ["soil_low|grass_low|0|0"], "z": [[5] + [0] * 64]}),
+                    ("ww", {"time": 1234.5, "age": "age_hope"})):
+        alice.send_raw(json.dumps(dict({"t": t, "room": home}, **body), separators=(",", ":")))
+        check(f"live sync: host's '{t}' reaches the guest unchanged", bob.expect(t) == dict({"t": t, "room": home}, **body))
+    bob.send_raw(json.dumps({"t": "wm", "room": home, "k": "city", "d": []}, separators=(",", ":")))
+    check("live sync: guests cannot stream meta objects", alice.none_of("wm"))
+    bob.send_raw(json.dumps({"t": "wask", "room": home, "m": {"city": [3]}, "z": [5]}, separators=(",", ":")))
+    ask = alice.expect("wask")
+    check("live sync: guest's 'wask' reaches the host", ask["m"] == {"city": [3]} and ask["z"] == [5])
+
+    # --- hits between games ----------------------------------------------------------------------
+    bob.send({"t": "whit", "vid": "104", "hp": 0, "at": 1, "by": "77", "id": "spoofed"})
+    wh = alice.expect("whit")
+    check("guest's hit reaches the host, sender id set by the server", wh["vid"] == "104" and wh["id"] == bob.id, str(wh))
+    alice.send({"t": "hit", "to": bob.id, "aid": "77", "dmg": 12, "at": 1, "by": "5"})
+    check("hit on a possessed creature reaches its player", bob.expect("hit")["dmg"] == 12)
+    check("hits not leaked to other rooms", carol.none_of("hit"))
     carol.send({"t": "chat", "text": "hi all!"})
     ca, cb = alice.expect("chat"), bob.expect("chat")
     check("chat is server-wide", ca["text"] == "hi all!" and cb["name"] == carol_name)
