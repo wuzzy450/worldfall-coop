@@ -20,3 +20,10 @@ __pycache__/
 
 # test downloads
 *.wbox
+
+# relay runtime files
+server/cuberite_pid.txt
+server/stop_cuberite.flag
+server/cuberite/worldfall_rooms.bak-*/
+server/cuberite/console.log
+server/cuberite/console.bak-*.log

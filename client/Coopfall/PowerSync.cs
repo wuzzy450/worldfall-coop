@@ -118,6 +118,28 @@ namespace Coopfall
             return result;
         }
 
+        public bool Knows(string powerId) { return powerId != null && _hooks.ContainsKey(powerId); }
+
+        /// <summary>Uses a power here as if this player clicked the tile (scripted tests), and relays it like a click.</summary>
+        public bool UseLocal(string powerId, WorldTile tile)
+        {
+            if (tile == null || !_hooks.TryGetValue(powerId ?? "", out Hook h)) return false;
+            try
+            {
+                _replaying = true;   // the wrapped delegate must not relay it a second time
+                switch (h.slot)
+                {
+                    case Slot.PowerBrush: case Slot.Power: h.origPower(tile, h.power); break;
+                    case Slot.Brush: case Slot.Action: h.origId(tile, h.power.id); break;
+                }
+            }
+            catch (Exception e) { Log.Warn("use " + powerId + ": " + e.Message); return false; }
+            finally { _replaying = false; }
+            if (_s.Online && _s.InWorld)
+                _outbox.Add(new JObject { ["p"] = powerId, ["x"] = tile.pos.x, ["y"] = tile.pos.y, ["brush"] = Config.current_brush });
+            return true;
+        }
+
         /// <summary>Main thread, each frame: flush batched local power clicks, watch speed/pause.</summary>
         public void Tick()
         {
@@ -173,6 +195,21 @@ namespace Coopfall
             else Replay(p, p);
         }
 
+        /// <summary>
+        /// Guest: creatures this replay just made are dropped. The host runs the same power and its
+        /// creatures (same ids for everybody) arrive through the live sync a moment later.
+        /// </summary>
+        private void DropSpawned(long firstNew)
+        {
+            if (!_s.Cfg.liveSync) return;
+            long next = WorldSync.MapStatsId("id_unit");
+            for (long id = firstNew; id < next && id < firstNew + 500; id++)
+            {
+                Actor a = WorldBoxApi.FindActor(id);
+                if (a != null && a.isAlive()) { try { WorldBoxApi.RemoveActor(a); } catch { } }
+            }
+        }
+
         private void Replay(JObject ev, JObject envelope)
         {
             string id = (string)ev["p"];
@@ -182,6 +219,7 @@ namespace Coopfall
             string myBrush = Config.current_brush;
             string brush = (string)ev["brush"];
             _replaying = true;
+            long firstNew = _s.IsHost ? 0 : WorldSync.MapStatsId("id_unit");
             try
             {
                 if (!string.IsNullOrEmpty(brush) && brush != myBrush) Config.current_brush = brush;
@@ -200,6 +238,7 @@ namespace Coopfall
             {
                 if (Config.current_brush != myBrush) Config.current_brush = myBrush;
                 _replaying = false;
+                if (firstNew > 0) DropSpawned(firstNew);
             }
         }
     }

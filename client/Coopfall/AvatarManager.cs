@@ -13,9 +13,11 @@ namespace Coopfall
     ///   id, species, position, facing and actions are broadcast. Other players drive the SAME unit
     ///   (same id - everyone loaded the same snapshot) as a puppet: its AI is cancelled every frame,
     ///   it walks to your position with the game's own movement code (so walk animations and
-    ///   Worldfall's 3D rendering just work) and it is kept invincible on their side - your own
-    ///   game decides if you live or die. If that unit doesn't exist on their side, a tagged
-    ///   stand-in of the same species is spawned (and removed again later).
+    ///   Worldfall's 3D rendering just work). Your own game decides if you live or die: damage
+    ///   it takes on their side is undone, except hits from their possessed creature, which
+    ///   CombatSync sends to you. When it dies in your game, it dies in theirs too (same cause,
+    ///   same killer). If that unit doesn't exist on their side, a tagged stand-in of the same
+    ///   species is spawned (and removed again later).
     /// * While you are NOT possessing, your god cursor (+ selected power) is broadcast instead.
     /// </summary>
     public class AvatarManager
@@ -31,6 +33,10 @@ namespace Coopfall
             public Vector2 target;
             public bool flip;
             public int hp, mhp;
+            public int localHp;   // health we hold the puppet at (CombatSync undoes other damage)
+            public float yaw = float.NaN;   // where their first-person view looks (NaN: not in first person)
+            public bool lookSet;
+            public float tagAt = -999f;     // last time CoopUI drew their name tag
             public float lastAvatar;
             public Actor actor;
             public bool standin;
@@ -54,6 +60,29 @@ namespace Coopfall
 
         private float _nextSend, _nextCursor;
         private bool _wasOn;
+        private Actor _mine;
+        private long _mineId;
+
+        /// <summary>If the creature I possessed died, everybody's copy dies the same way (cause, killer).</summary>
+        private bool SendDeathIfDead()
+        {
+            Actor last = _mine;
+            if (last == null) return false;
+            bool same = false;
+            try { same = last.getData() != null && last.getID() == _mineId; } catch { }
+            if (same && last.isAlive()) return false;
+            var off = new JObject { ["on"] = false, ["dead"] = true, ["aid"] = _mineId.ToString(CultureInfo.InvariantCulture) };
+            if (same)
+            {
+                Actor killer = CombatSync.LastAttacker(last);
+                off["at"] = (int)CombatSync.LastAttackType(last);
+                if (killer != null) off["by"] = killer.getID().ToString(CultureInfo.InvariantCulture);
+            }
+            _s.Net.Send("avatar", off);
+            Log.Info("my creature #" + _mineId + " died");
+            _mine = null;
+            return true;
+        }
         private Vector2 _lastCursorSent = new Vector2(-999, -999);
         private string _lastPowerSent;
         private readonly List<string> _pendingActs = new List<string>();
@@ -75,6 +104,14 @@ namespace Coopfall
             if (a == null) return false;
             foreach (Remote r in Remotes.Values) if (r.on && r.actor == a) return true;
             return false;
+        }
+
+        /// <summary>The remote player whose possessed creature this unit is, or null.</summary>
+        public Remote PuppetOwner(Actor a)
+        {
+            if (a == null) return null;
+            foreach (Remote r in Remotes.Values) if (r.on && r.actor == a) return r;
+            return null;
         }
 
         public Remote Get(string id)
@@ -102,7 +139,13 @@ namespace Coopfall
             if (t == "avatar")
             {
                 bool on = (bool?)p["on"] ?? false;
-                if (!on) { r.on = false; Release(r); return; }
+                if (!on)
+                {
+                    if ((bool?)p["dead"] ?? false) KillPuppet(r, p);
+                    r.on = false;
+                    Release(r);
+                    return;
+                }
                 Vector2 pos = new Vector2(F(p["x"]), F(p["y"]));
                 float dt = Time.unscaledTime - r.lastAvatar;
                 if (r.on && dt > 0.01f && dt < 1f)
@@ -112,6 +155,7 @@ namespace Coopfall
                 r.lastAvatar = Time.unscaledTime;
                 r.target = pos;
                 r.flip = (bool?)p["flip"] ?? false;
+                r.yaw = p["yaw"] != null ? (float)p["yaw"] : float.NaN;
                 r.hp = (int?)p["hp"] ?? 0;
                 r.mhp = (int?)p["mhp"] ?? 0;
                 long aid = 0;
@@ -148,6 +192,22 @@ namespace Coopfall
         }
 
         private static float F(JToken t) { return t == null ? 0f : (float)t; }
+
+        /// <summary>Their possessed creature died in their game: it dies here too, the same way.</summary>
+        private void KillPuppet(Remote r, JObject p)
+        {
+            Actor a = r.actor;
+            if (a == null || !a.isAlive()) return;
+            if (r.standin) return;   // Release removes stand-ins
+            long by = 0;
+            long.TryParse((string)p["by"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out by);
+            var type = (AttackType)((int?)p["at"] ?? (int)AttackType.Other);
+            try { if (r.walking) a.setPossessedMovement(false); } catch { }
+            r.walking = false;
+            r.actor = null;
+            CoopMod.Instance?.Combat.Kill(a, type, WorldBoxApi.FindActor(by));
+            Log.Info(r.name + "'s " + a.asset?.id + " #" + a.getID() + " died (" + type + ")");
+        }
 
         public void NotePowerUse(string playerId, WorldTile tile, string powerId)
         {
@@ -190,6 +250,7 @@ namespace Coopfall
             r.walking = false;
             r.velocity = Vector2.zero;
             if (a == null) return;
+            if (r.lookSet) { WorldfallBridge.ClearLookAt(a); r.lookSet = false; }
             try
             {
                 if (!a.isAlive()) return;
@@ -249,11 +310,11 @@ namespace Coopfall
             a.cancelAllBeh();
             if (now >= r.nextStatus)
             {
-                WorldBoxApi.AddStatus(a, "invincible", 3f);
-                r.nextStatus = now + 1f;
+                r.nextStatus = now + 0.5f;
                 // Their game decides their health: mirror it, so every copy (and the next save) agrees.
-                if (!r.standin && r.hp > 0 && Mathf.Abs(a.getHealth() - r.hp) > 1)
-                    try { a.setHealth(r.hp); } catch { }
+                int want = r.hp > 0 ? Mathf.Min(r.hp, a.getMaxHealth()) : a.getHealth();
+                r.localHp = Mathf.Max(1, want);
+                if (a.getHealth() != r.localHp) try { a.setHealth(r.localHp); } catch { }
             }
 
             // We place the unit ourselves every frame (smoothly), instead of letting the game's
@@ -276,7 +337,26 @@ namespace Coopfall
                 r.walking = walking;
                 a.setPossessedMovement(walking);
             }
-            WorldBoxApi.SetFlip(a, r.flip);
+            if (walking)
+            {
+                // Worldfall turns a walking body towards next_step_position.
+                Vector2 dir = r.velocity.sqrMagnitude > 0.01f ? r.velocity.normalized : (goal - cur).normalized;
+                if (dir.sqrMagnitude > 0.5f) a.next_step_position = a.current_position + dir;
+            }
+            if (!float.IsNaN(r.yaw))
+            {
+                // They look around in first person: face the same way here (2D sprite and Worldfall's 3D body).
+                var dir = new Vector2(Mathf.Cos(r.yaw), Mathf.Sin(r.yaw));
+                WorldBoxApi.SetFlip(a, dir.x > 0f);
+                // Their own Worldfall body follows the view, walking or not (BeastView.BodyYaw).
+                WorldfallBridge.SetLookAt(a, a.current_position + dir * 3f);
+                r.lookSet = true;
+            }
+            else
+            {
+                WorldBoxApi.SetFlip(a, r.flip);
+                if (r.lookSet) { WorldfallBridge.ClearLookAt(a); r.lookSet = false; }
+            }
         }
 
         /// <summary>Find the remote player's unit in our world, or spawn a stand-in.</summary>
@@ -289,6 +369,8 @@ namespace Coopfall
             {
                 r.actor = real;
                 r.standin = false;
+                r.localHp = Mathf.Max(1, r.hp > 0 ? r.hp : real.getHealth());
+                r.nextStatus = 0f;
                 Log.Info("puppeting " + r.name + "'s unit #" + r.aid + " (" + r.asset + ")");
                 return real;
             }
@@ -296,6 +378,8 @@ namespace Coopfall
             if (s == null) return null;
             r.actor = s;
             r.standin = true;
+            r.localHp = s.getHealth();
+            r.nextStatus = 0f;
             Log.Info("spawned stand-in for " + r.name + " (" + r.asset + ")");
             return s;
         }
@@ -317,6 +401,13 @@ namespace Coopfall
             if (!_s.Online) return;
             Actor me = ControllableUnit.getControllableUnit();
             bool on = me != null && me.isAlive();
+            if (on)
+            {
+                // Worldfall can move you straight into another creature (e.g. your heir) when yours dies.
+                if (_mine != null && _mine != me) SendDeathIfDead();
+                _mine = me;
+                _mineId = me.getID();
+            }
 
             if (on)
             {
@@ -328,7 +419,8 @@ namespace Coopfall
                 if (now >= _nextSend)
                 {
                     _nextSend = now + 1f / Mathf.Clamp(_s.Cfg.avatarSendHz, 2f, 30f);
-                    _s.Net.Send("avatar", new JObject
+                    float yaw = WorldfallBridge.FirstPerson ? WorldfallBridge.ViewYaw : float.NaN;
+                    var msg = new JObject
                     {
                         ["on"] = true,
                         ["aid"] = me.getID().ToString(CultureInfo.InvariantCulture),
@@ -338,7 +430,9 @@ namespace Coopfall
                         ["flip"] = WorldBoxApi.GetFlip(me),
                         ["hp"] = me.getHealth(),
                         ["mhp"] = me.getMaxHealth(),
-                    });
+                    };
+                    if (!float.IsNaN(yaw)) msg["yaw"] = Math.Round(yaw, 3);
+                    _s.Net.Send("avatar", msg);
                 }
                 _wasOn = true;
                 return;
@@ -348,7 +442,8 @@ namespace Coopfall
             if (_wasOn)
             {
                 _wasOn = false;
-                _s.Net.Send("avatar", new JObject { ["on"] = false });
+                if (!SendDeathIfDead()) _s.Net.Send("avatar", new JObject { ["on"] = false });
+                _mine = null;
             }
 
             if (now >= _nextCursor && _s.Cfg.showCursors)

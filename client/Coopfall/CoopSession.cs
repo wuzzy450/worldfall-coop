@@ -198,7 +198,8 @@ namespace Coopfall
                 if (cmd == "/sync") { Resync(); return; }
                 if (cmd == "/home") { GoHome(); return; }
                 if (cmd == "/shared") { Travel("shared", "Shared World", true, false); return; }
-                AddChat(null, "Commands: /sync /home /shared", true);
+                if (cmd.StartsWith("/report")) { CoopMod.Instance?.Diag.Request(text.Length > 7 ? "/report: " + text.Substring(7).Trim() : "/report"); AddChat(null, "Sync report captured in every game (coopfall/diag)", true); return; }
+                AddChat(null, "Commands: /sync /home /shared /report", true);
                 return;
             }
             if (!Online) { AddChat(null, "Not connected.", true); return; }
@@ -364,10 +365,26 @@ namespace Coopfall
                     if (Phase == Phase.Leaving) SendJoinPending();
                     break;
                 case "avatar": case "cursor": case "act":
-                    if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Avatars.OnPacket(t, p);
+                    if (InWorld && (string)p["room"] == RoomId)
+                    {
+                        CoopMod.Instance?.Avatars.OnPacket(t, p);
+                        if (t == "act") CoopMod.Instance?.Combat.OnPacket(t, p);
+                    }
+                    break;
+                case "diag":
+                    if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Diag.OnPacket(p);
+                    break;
+                case "hit": case "whit":
+                    if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Combat.OnPacket(t, p);
                     break;
                 case "wu": case "wb": case "wdata": case "wneed":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Sync.OnPacket(t, p);
+                    break;
+                case "wm": case "wa": case "ww": case "wask":
+                    if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Meta.OnPacket(t, p);
+                    break;
+                case "wt":
+                    if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Tiles.OnPacket(p);
                     break;
                 case "power": case "speed":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Powers.OnPacket(t, p);

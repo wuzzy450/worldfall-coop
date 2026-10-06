@@ -1,9 +1,10 @@
 # Coopfall: online co-op for WorldBox (with Worldfall's 3D first person)
 
-> **Status: untested work in progress.** Coopfall has not been tested end-to-end by real
-> players yet. An official GitHub **release** will follow once it has been confirmed to work.
+> **Status: work in progress.** Coopfall has been tested end-to-end with two WorldBox games
+> (host and guest) on one PC, with Worldfall, but not yet by real players over the internet.
+> An official GitHub **release** will follow once it has been confirmed to work.
 >
-> **Want to try it now?** A prebuilt, untested `Coopfall.dll` is in
+> **Want to try it now?** A prebuilt `Coopfall.dll` is in
 > [`release/`](release/), or build it from source with the steps below. You can also point
 > your own AI coding agent at this repository (see [For AI agents](#for-ai-agents)) and let it
 > build, install and test it for you. Bug reports are welcome.
@@ -16,8 +17,12 @@ Coopfall lets several people play WorldBox together over the internet or a LAN:
 
 In a world you see the other players. If they possess a creature, it walks around in your game
 with their name over its head; if they don't, you see their god cursor and selected power.
-God powers, game speed/pause and chat are synced, and **live sync** keeps every creature and
-building in step with the host's simulation.
+God powers, game speed/pause and chat are synced, and **live sync** keeps the whole world in
+step with the host's simulation: creatures, buildings and trees, kingdoms, cities and their
+borders, wars, alliances, diplomacy, cultures, religions, languages, clans, families, armies,
+plots, books, items, every creature's name, traits, job and memberships, terrain and fire, the
+world's time, age and laws. Kills count everywhere: hit someone in your game and they die in
+everyone's game.
 
 Works with **[Worldfall](https://worldfall3d.com/)** (optional), an unofficial first-person mod
 for WorldBox: other players appear in Worldfall's 3D view with name tags, health bars and chat
@@ -35,7 +40,7 @@ bubbles, and the co-op HUD and chat stay usable in first person.
 
 ## 1. Install the mod (every player)
 
-**Prebuilt (untested):** copy [`release/Coopfall.dll`](release/Coopfall.dll) into
+**Prebuilt:** copy [`release/Coopfall.dll`](release/Coopfall.dll) into
 `<WorldBox>\worldbox_Data\StreamingAssets\mods\` (see "Installing by hand" below). It was
 built for WorldBox 0.51.2; if your WorldBox is a different version and the mod doesn't load,
 build it yourself. Its SHA-256 is in `release/Coopfall.dll.sha256`
@@ -131,8 +136,9 @@ save folders: copy one into `...\WorldBox\saves\save<N>` to load it).
 Keys can be changed in `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\config.json`.
 They avoid Worldfall's keys (F1, F2, F5, G, V, E, X).
 
-With Worldfall's first person: the co-op HUD and chat sit at the top-left; while the chat is
-open your keys only go to the chat; opening the World Map or Co-op menu switches to Worldfall's
+With Worldfall's first person: the co-op bar sits on the right side, just below Worldfall's
+minimap (clear of its unit panel, age panel and the screen edge), with messages under it; the
+chat stays at the bottom-left. While the chat is open your keys only go to the chat; opening the World Map or Co-op menu switches to Worldfall's
 top-down view so you can use the mouse, and returns to first person when you close it.
 
 ## How it works
@@ -142,10 +148,24 @@ top-down view so you can use the mouse, and returns to first person when you clo
   the world to the server every 3 minutes and on quit.
 - **Joining**: the server asks the host for a fresh save, streams it to you, and your game
   loads it.
-- **Live sync**: the host streams every creature (position, health) and every building/tree to
-  the guests. Guests steer their creatures onto the host's positions, copy newborns and new
-  buildings with the same ids, and remove what the host doesn't have. A creature a guest spawns
-  appears instantly and is swapped for the host's copy within about a second.
+- **Live sync**: the host streams every creature (position, health, 5 times a second) and every
+  building/tree to the guests. Guests steer their creatures onto the host's positions (looking
+  ahead by half the ping), copy newborns and new buildings with the same ids, and remove what
+  the host doesn't have. A creature a guest spawns appears instantly and is swapped for the
+  host's copy within about a second.
+- **Everything else live**: the host fingerprints every kingdom, city (with its borders), war,
+  alliance, diplomatic relation, culture, religion, language, clan, family, subspecies, army,
+  plot, book and item, and sends the full data of whatever changed; every 15 s guests compare
+  the complete list with their own world and ask for anything missing or different. The same
+  is done for each creature's name, traits, job, level, kills, equipment and memberships, for
+  the terrain (8x8-tile zones: ground, roads, fields, lava, ice, fire, burn marks) and for the
+  world's time, age and laws. Changes are applied in place through WorldBox's own functions,
+  so there is no loading screen.
+- **Kills**: the host announces every death with its cause and killer, and guests kill the same
+  creature the same way. When a guest's possessed creature hits something, the hit is applied
+  in the host's world (so the kill counts for everybody). A possessed creature belongs to its
+  player: hits from other players' possessed creatures are sent to that player's game, which
+  decides if it dies, and when it dies it dies in everybody's game.
 - **Full re-sync** is only a safety net: when cities/kingdoms stay different for 90 s, every
   30 minutes, or on `/sync`. It also works while possessing (you are put back into your
   creature).
@@ -153,15 +173,13 @@ top-down view so you can use the mouse, and returns to first person when you clo
 
 ## Known limits
 
-- Untested with real players so far (see the top of this page).
-- Live sync covers creatures, buildings and trees. Cities, kingdoms, wars and borders are fixed
-  by the automatic full re-sync, which shows WorldBox's short loading screen.
-- On guests, creatures are up to about half a second behind the host and may glide slightly
-  when corrected.
-- Remote players' creatures can't die in your game; their own game decides that.
+- Tested with two games on one PC (host and guest, with Worldfall), not yet by real players
+  over the internet (see the top of this page).
+- Every guest's WorldBox still simulates the world too, so small things can differ for a
+  moment (a creature's local fight, a tree growing, lava flowing) until the host's state
+  arrives, usually within a few seconds; terrain and the object lists are checked every 10-15 s.
 - Dragons (and a few other special creatures) can't be possessed. That's WorldBox's own rule,
   not something Coopfall or Worldfall changes.
-- The first-person (Worldfall) UI integration has not been checked in game yet.
 
 ## Testing tools
 
@@ -172,6 +190,15 @@ top-down view so you can use the mouse, and returns to first person when you clo
   uses god powers, chats) so you can test without a friend. `--help` for options.
 - Mod log: `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\log.txt`. Attach it
   when reporting a bug.
+- Two games on one PC: start `worldbox.exe` twice with `-coopfall-profile host` and
+  `-coopfall-profile guest` (each gets its own config and log in `coopfall\profiles\<name>\`;
+  add `-logFile <path>` to give each its own Unity log). Adding `-coopfall-test` runs an
+  automated test: the host changes the world step by step (renames a kingdom, moves a border,
+  starts a war, changes terrain and a world law, renames a creature, kills one, possesses one in
+  first person) and the guest possesses a creature, kills one of the host's creatures with it and
+  attacks the host's possessed creature. Both games log `TEST state:` lines to compare and save
+  screenshots (`test-*.png`) next to their log. `-coopfall-test-load 1` makes the game load save
+  slot 1 before connecting.
 
 ## Repository layout
 
@@ -179,7 +206,7 @@ top-down view so you can use the mouse, and returns to first person when you clo
 |---|---|
 | `client/Coopfall/` | the WorldBox mod (C#, netstandard2.1) |
 | `client/build.ps1` | builds and installs the mod |
-| `release/Coopfall.dll` | prebuilt mod (untested), plus its SHA-256 |
+| `release/Coopfall.dll` | prebuilt mod, plus its SHA-256 |
 | `server/start_server.bat` | starts the relay (Windows) |
 | `server/cuberite/Plugins/WorldfallRooms/` | the relay plugin (Lua) |
 | `server/cuberite/` | bundled Cuberite runtime and its licenses |
@@ -197,7 +224,9 @@ If you are an AI coding agent asked to build and test this project:
 - WorldBox's loader contract: in Experimental Mode the game loads `Coopfall.dll` from
   `worldbox_Data/StreamingAssets/mods/` and adds the MonoBehaviour `Coopfall.WorldBoxMod`.
   Start reading at `WorldBoxMod.cs`, then `CoopSession.cs` (connection, rooms, snapshots),
-  `WorldSync.cs` (live sync), `AvatarManager.cs`, `PowerSync.cs`, `CoopUI.cs`, and
+  `WorldSync.cs` (live sync of creatures and buildings), `MetaSync.cs` (everything else),
+  `TileSync.cs` (terrain), `CombatSync.cs` (hits and kills), `AvatarManager.cs`,
+  `PowerSync.cs`, `CoopUI.cs`, `TestDriver.cs` (automated two-game test), and
   `WorldfallBridge.cs` (optional Worldfall integration via reflection).
 - Relay: `server/cuberite/Plugins/WorldfallRooms/Main.lua`; protocol in `server/protocol.md`.
   Run `server/start_server.bat`, then `python server/test_client.py` should report all
