@@ -207,6 +207,13 @@ If you are an AI coding agent asked to build and test this project:
 - Note: Cuberite exits when its standard input closes; keep stdin open if you launch it
   from a script.
 
+## Support Coopfall
+
+Coopfall is free and always will be. If you enjoy it and would like to help out, a small
+tip is very much appreciated but never expected. Thank you!
+
+[Support Coopfall on Ko-fi](https://ko-fi.com/wuzzy450)
+
 ## License
 
 Coopfall is free and open-source software under the **MIT License**, see [LICENSE](LICENSE).
