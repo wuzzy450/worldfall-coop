@@ -181,6 +181,8 @@ namespace Coopfall
         }
 
         /// <summary>Kills a creature the way the host saw it die (cause and killer), at once.</summary>
+        private int _killErrors;
+
         public void Kill(Actor a, AttackType type, Actor killer)
         {
             if (a == null || !a.isAlive()) return;
@@ -188,6 +190,10 @@ namespace Coopfall
             {
                 _applying = true;
                 if (type == AttackType.Metamorphosis) { WorldBoxApi.RemoveActor(a); return; }
+                // Dying puts its items into the city's storage, which looks up every stored item: drop ids
+                // the meta sync already removed here, or the game throws halfway through the death.
+                PruneStorage(a.current_tile?.zone?.city);
+                PruneStorage(a.city);
                 R.Set(a, "_last_attack_type", type);
                 R.Set(a, "attackedBy", killer != null && killer != a ? killer : null);
                 a.setHealth(0);
@@ -195,8 +201,20 @@ namespace Coopfall
                 if (a.isAlive()) a.dieSimpleNone();
                 KillsApplied++;
             }
-            catch (Exception e) { Log.Warn("kill: " + e.Message); }
+            catch (Exception e) { Log.Warn("kill: " + (_killErrors++ < 2 ? e.ToString() : e.Message)); }
             finally { _applying = false; }
+        }
+
+        private static void PruneStorage(City c)
+        {
+            try
+            {
+                CityEquipment eq = c?.data?.equipment;
+                if (eq == null) return;
+                foreach (System.Collections.Generic.List<long> list in eq.getAllEquipmentLists())
+                    list.RemoveAll(id => World.world.items.get(id) == null);
+            }
+            catch { }
         }
 
         public static AttackType LastAttackType(Actor a)

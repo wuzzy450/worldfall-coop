@@ -17,7 +17,7 @@ namespace Coopfall
     /// </summary>
     public class TileSync
     {
-        private const float Every = 0.5f, FullEvery = 5f;
+        private const float Every = 0.5f, HostEvery = 0.15f, FullEvery = 5f;
         private const int ZonesPerMessage = 300;
 
         private readonly CoopSession _s;
@@ -92,8 +92,10 @@ namespace Coopfall
         {
             QuakeMode(Ready && !_s.IsHost);
             WorldMode(Ready && !_s.IsHost);
+            JobMode(Ready && !_s.IsHost);
             if (Ready && !_s.IsHost)
             {
+                HoldTornadoes();
                 GuestTick();
                 return;
             }
@@ -101,7 +103,7 @@ namespace Coopfall
             if (_s.OthersInRoom() == 0) { if (_primed) Reset(); return; }
             float now = Time.unscaledTime;
             if (now < _next || _s.Net.BulkBytesQueued > 512 * 1024) return;
-            _next = now + Every;
+            _next = now + HostEvery;
             List<TileZone> zones = Zones();
             if (zones == null || zones.Count == 0) return;
             bool full = now >= _nextFull || !_primed;
@@ -204,6 +206,82 @@ namespace Coopfall
             catch (Exception e) { Log.Warn("tile sync: world mode: " + e.Message); }
         }
 
+        // Batch jobs that grow, spread or remove flora by their own dice (trees and plants spreading,
+        // poop turning into flowers, the 300 s auto removal, bees pollinating). On guests they'd add
+        // flora the host never had and remove the host's: the host's results come through building sync.
+        private static readonly HashSet<string> HostOnlyJobs = new HashSet<string>
+        {
+            "update_auto_remove", "update_spread_trees", "update_spread_plants", "update_spread_fungi",
+            "update_poop_turning_into_flora", "update_pollinating",
+        };
+        private static readonly HashSet<object> _wrappedJobs = new HashSet<object>();
+        private static bool _jobsMuted;
+
+        private static void JobMode(bool mute)
+        {
+            if (mute != _jobsMuted)
+            {
+                _jobsMuted = mute;
+                Log.Info("tile sync: flora jobs " + (mute ? "left to the host" : "simulated here again"));
+            }
+            if (!mute || World.world == null) return;
+            try
+            {
+                // Batches are created as objects are added, so new ones are wrapped as they appear.
+                WrapJobs<BatchBuildings, Building>(World.world.buildings?.getJobManager());
+                WrapJobs<BatchActors, Actor>(World.world.units?.getJobManager());
+            }
+            catch (Exception e) { Log.Warn("tile sync: job mode: " + e.Message); }
+        }
+
+        private static readonly Dictionary<Type, System.Reflection.FieldInfo> _batchFields = new Dictionary<Type, System.Reflection.FieldInfo>();
+
+        private static int WrapJobs<TBatch, T>(JobManagerBase<TBatch, T> mgr) where TBatch : Batch<T>, new()
+        {
+            if (mgr == null) return 0;
+            Type t = typeof(JobManagerBase<TBatch, T>);
+            if (!_batchFields.TryGetValue(t, out var f))
+                _batchFields[t] = f = t.GetField("_batches_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (!(f?.GetValue(mgr) is List<TBatch> batches)) return 0;
+            Type bt = typeof(Batch<T>);
+            if (!_batchFields.TryGetValue(bt, out var jf))
+                _batchFields[bt] = jf = bt.GetField("jobs_post", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            foreach (TBatch b in batches)
+            {
+                if (_wrappedJobs.Contains(b) || !(jf?.GetValue(b) is List<Job<T>> jobs)) continue;
+                _wrappedJobs.Add(b);
+                foreach (Job<T> j in jobs)
+                {
+                    if (!HostOnlyJobs.Contains(j.id)) continue;
+                    JobUpdater orig = j.job_updater;
+                    j.job_updater = () => { if (!_jobsMuted) orig(); };
+                }
+            }
+            return batches.Count;
+        }
+
+        // Tornadoes (the guest's replay of the power) wander by their own dice and strip tiles as they go:
+        // on guests their terraform timer never runs out, the host's tiles come through the tile stream.
+        private static System.Reflection.FieldInfo _tornadoTiles, _tornadoTimer;
+
+        private static void HoldTornadoes()
+        {
+            try
+            {
+                if (_tornadoTiles == null)
+                {
+                    const System.Reflection.BindingFlags bf = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                    _tornadoTiles = typeof(TornadoEffect).GetField("_tornadoes_by_tiles", bf);
+                    _tornadoTimer = typeof(TornadoEffect).GetField("_tornado_timer_terraform", bf);
+                }
+                if (_tornadoTimer == null || !(_tornadoTiles?.GetValue(null) is Dictionary<WorldTile, HashSet<TornadoEffect>> all) || all.Count == 0) return;
+                foreach (HashSet<TornadoEffect> set in all.Values)
+                    foreach (TornadoEffect t in set)
+                        if (t != null) _tornadoTimer.SetValue(t, 1f);
+            }
+            catch (Exception e) { if (_tornadoTimer != null) { Log.Warn("tile sync: tornado hold: " + e.Message); _tornadoTimer = null; } }
+        }
+
         private static void QuakeMode(bool mute)
         {
             if (mute == _quakeMuted) return;
@@ -234,7 +312,7 @@ namespace Coopfall
 
         public void OnPacket(JObject p)
         {
-            if (!Ready || _s.IsHost) return;
+            if (!Ready || _s.IsHost || Prof.Off("tileapply")) return;
             try
             {
                 if (p["z"] is JArray zs && p["k"] is JArray keys) ApplyZones(zs, keys);
@@ -306,20 +384,20 @@ namespace Coopfall
             bool changed = false;
             TileType main = string.IsNullOrEmpty(k[0]) ? null : AssetManager.tiles.get(k[0]);
             TopTileType top = string.IsNullOrEmpty(k[1]) ? null : AssetManager.top_tiles.get(k[1]);
-            if (main != null && (t.main_type != main || t.top_type != top))
+            if (main != null && (t.main_type != main || t.top_type != top) && !Prof.Off("tile-type"))
             {
                 t.setTileTypes(main, top, true);
                 changed = true;
             }
             bool fire = k[2] == "1";
-            if (fire != t.isOnFire())
+            if (fire != t.isOnFire() && !Prof.Off("tile-fire"))
             {
                 if (fire) R.Call(t, "startFire", new[] { typeof(bool) }, true);
                 else R.Call0(t, "stopFire");
                 changed = true;
             }
             int burned = int.Parse(k[3], CultureInfo.InvariantCulture);
-            if (burned != t.burned_stages)
+            if (burned != t.burned_stages && !Prof.Off("tile-burn"))
             {
                 R.Call(t, "setBurnedStage", new[] { typeof(int) }, burned);
                 changed = true;

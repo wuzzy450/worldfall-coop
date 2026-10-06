@@ -37,7 +37,7 @@ namespace Coopfall
     {
         private const long GuestIdOffset = 50000000L;
         private const int UnitsPerPart = 1500, BuildingsPerPart = 4000, DataPerTick = 32;
-        private const float UnitFullEvery = 5f, BuildTick = 2f, BuildFullEvery = 10f;
+        private const float UnitFullEvery = 5f, BuildTick = 0.5f, BuildFullEvery = 10f;
         private const float DriftResyncAfter = 90f;
         // A creature only this guest has (e.g. one it just spawned with a god power) is kept this
         // long: the host spawns its own copy from the relayed power, which then takes its place.
@@ -77,7 +77,7 @@ namespace Coopfall
             _sentUnits.Clear(); _sentBuild.Clear(); _bornU.Clear(); _bornB.Clear(); _bornUSet.Clear(); _bornBSet.Clear();
             _primed = false; _nextUnitTick = _nextUnitFull = _nextBuildTick = _nextBuildFull = 0f;
             ReleaseDriven();
-            _tracks.Clear(); _missingU.Clear(); _missingB.Clear(); _attempts.Clear();
+            _tracks.Clear(); _missingU.Clear(); _missingB.Clear(); _hostB.Clear(); _attempts.Clear();
             _hostUnitsPrev.Clear(); _motion.Clear(); _forced.Clear(); _loadedAt.Clear(); _localSince.Clear(); _sentRefs.Clear(); _deaths.Clear();
             _ucSeq = _bcSeq = -1;
             _driftSince = -1f;
@@ -98,20 +98,97 @@ namespace Coopfall
         {
             if (!Ready) return;
             if (_s.IsHost) { HostTick(); FinishRemovals(); }
+            FixWeapons();
+        }
+
+        private int _buildFails;
+        private float _nextWeaponCheck;
+        private int _weaponFixes;
+
+        /// <summary>
+        /// A weapon slot holding something that isn't a weapon (an item replaced or recycled by the
+        /// item sync) has no hand sprite: the game's parallel creature drawing then throws every frame
+        /// (ItemRendering.getItemMainSpriteFrame), costing hundreds of ms. Empty such slots.
+        /// </summary>
+        private void FixWeapons()
+        {
+            float now = Time.unscaledTime;
+            if (now < _nextWeaponCheck) return;
+            _nextWeaponCheck = now + 0.5f;
+            foreach (Actor a in World.world.units.getSimpleList())
+            {
+                try
+                {
+                    if (a == null || a.equipment == null) continue;                  // dying ones too: still drawn
+                    foreach (ActorEquipmentSlot slot in a.equipment)
+                    {
+                        Item it = slot.getItem();                // not isEmpty(): that logs an error for removed items
+                        if (it == null) continue;
+                        EquipmentAsset ea = it.shouldbe_removed ? null : it.getAsset();
+                        bool bad = ea == null || (slot == a.equipment.weapon && (ea.gameplay_sprites == null || ea.gameplay_sprites.Length == 0));
+                        if (!bad) continue;
+                        if (_weaponFixes++ < 5) Log.Info("live sync: emptied " + slot.type + " slot of #" + a.getID() + " (" + (ea?.id ?? "removed item") + ")");
+                        Unequip(slot);
+                        a.setStatsDirty();
+                    }
+                }
+                catch (Exception e) { if (_weaponFixes++ < 5) Log.Warn("live sync: item check: " + e.Message); }
+            }
+        }
+
+        /// <summary>Empties an equipment slot; takeAwayItem() leaves an already removed item in place.</summary>
+        public static void Unequip(ActorEquipmentSlot slot)
+        {
+            Item it = slot.getItem();
+            if (it == null) return;
+            if (it.shouldbe_removed) { slot.setEmptyDebug(); return; }
+            try { slot.takeAwayItem(); } catch { slot.setEmptyDebug(); }
         }
 
         public void LateTick()
         {
             if (!Ready || _s.IsHost) return;
             Steer();
+            CheckLostBuildings(Time.unscaledTime);
+            CheckSprites(Time.unscaledTime);
             FinishRemovals();
+        }
+
+        private float _nextSpriteCheck;
+        private static Func<Actor, bool> _inBoat;
+        private static Func<Actor, Boat> _boatOf;
+
+        /// <summary>
+        /// Guest: objects the sync left half-broken. A finished building without animation data (completed or
+        /// loaded mid-construction) throws in the game's parallel render loop every frame, skipping the rest of its batch.
+        /// </summary>
+        private void CheckSprites(float now)
+        {
+            if (now < _nextSpriteCheck) return;
+            _nextSpriteCheck = now + 1f;
+            foreach (Building b in World.world.buildings.getSimpleList())
+            {
+                if (b == null || !b.isAlive() || b.isUnderConstruction() || R.Get(b, "animData") != null) continue;
+                try { R.Call0(b, "initAnimationData"); } catch (Exception e) { Log.Warn("live sync: building sprites #" + b.getID() + ": " + e.Message); }
+            }
+            // Passengers of a boat the host's stream removed are still "inside" it: the game throws for them every frame.
+            if (_inBoat == null) { R.FastField("is_inside_boat", out _inBoat, out Action<Actor, bool> _); R.FastField("inside_boat", out _boatOf, out Action<Actor, Boat> _); }
+            if (_inBoat == null || _boatOf == null) return;
+            foreach (Actor a in World.world.units.getSimpleList())
+            {
+                if (a == null || !a.isAlive() || !_inBoat(a)) continue;
+                Boat bo = _boatOf(a);
+                Actor boat = bo == null ? null : R.Get(bo, "actor") as Actor;
+                if (boat != null && boat.isAlive() && boat.getData() != null) continue;
+                try { R.Call0(a, "exitBoat"); } catch (Exception e) { Log.Warn("live sync: boat exit #" + a.getID() + ": " + e.Message); }
+            }
         }
 
         // ================================================================ host
 
-        private class Sent { public string asset; public int x, y, hp, f, h = -1, z; }
+        private class Sent { public string asset; public int x, y, hp, f, h = -1, z, vx, vy; }
         private readonly Dictionary<long, int> _heading = new Dictionary<long, int>();   // last direction each creature walked (0-255)
-        private class Motion { public Vector2 vel; public readonly List<KeyValuePair<float, Vector2>> samples = new List<KeyValuePair<float, Vector2>>(); }
+        private class Motion { public Vector2 vel, anchor; public float anchorAt = -1f; public readonly List<KeyValuePair<float, Vector2>> samples = new List<KeyValuePair<float, Vector2>>(); }
         private readonly Dictionary<long, Motion> _motion = new Dictionary<long, Motion>();   // real velocity of each creature (tiles/s)
 
         private readonly Dictionary<long, float> _flipAt = new Dictionary<long, float>();   // when each creature last turned around (2D)
@@ -217,6 +294,10 @@ namespace Coopfall
                 Vector2 step = a.next_step_position - p;
                 if (step.sqrMagnitude > 0.0004f && Vector2.Dot(v, step) < 0f) v = Vector2.zero;
             }
+            // Stuck walkers step forward and get put back again and again: a sample mid-step looks like
+            // walking. Only count it as moving once it has left a 0.6-tile circle within the last second.
+            if (m.anchorAt < 0f || (p - m.anchor).sqrMagnitude > 0.36f) { m.anchor = p; m.anchorAt = now; }
+            else if (!pushed && now - m.anchorAt > 1f) v = Vector2.zero;
             return m.vel = v;
         }
 
@@ -252,7 +333,7 @@ namespace Coopfall
                 if (a == null || !a.isAlive() || a.asset == null || !_sentUnits.TryGetValue(id, out Sent s)) continue;
                 UnitRow row = MakeRow(a, id, now);
                 if ((row.f & 4) != 0) still.Add(id);
-                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z;
+                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z; s.vx = row.vx; s.vy = row.vy; s.vx = row.vx; s.vy = row.vy;
                 rows.Add(row);
             }
             _forced.Clear();
@@ -283,10 +364,11 @@ namespace Coopfall
                     _sentRefs[id] = a;
                 }
                 else if (!full && s.asset == row.asset && s.hp == row.hp && s.f == row.f && Mathf.Abs(s.z - row.z) < 2 && Mathf.Abs(s.x - row.x) < 2 && Mathf.Abs(s.y - row.y) < 2
+                         && Mathf.Abs(s.vx - row.vx) < 5 && Mathf.Abs(s.vy - row.vy) < 5
                          && (s.h == row.h || (s.h >= 0 && row.h >= 0 && Mathf.Abs(Mathf.DeltaAngle(s.h * 1.40625f, row.h * 1.40625f)) < 12f)))
                     continue;                                // hasn't moved a fifth of a tile or turned: skip in delta ticks
                 if (((s.f ^ row.f) & 1) != 0) _flipAt[id] = now;
-                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z;
+                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z; s.vx = row.vx; s.vy = row.vy;
                 rows.Add(row);
             }
             // Creatures gone since the last tick: announce how they died.
@@ -491,6 +573,8 @@ namespace Coopfall
             public float ahead = 0.6f;          // how far ahead of the last sample we may extrapolate (s)
             public float heading = float.NaN;   // radians, the way the host's creature last walked
             public Actor actor;
+            public Vector2 lastSet;   // where Steer put it last frame
+            public bool hasSet;
         }
 
         private readonly Dictionary<long, Track> _tracks = new Dictionary<long, Track>();
@@ -498,6 +582,8 @@ namespace Coopfall
 
         private static Func<Actor, bool> _getFlip, _getMoving;
         private static Action<Actor, bool> _setFlip, _setMovingUnused;
+        private static Func<Actor, float> _getTimer;
+        private static Action<Actor, float> _setTimer;
 
         private static Func<Actor, bool> _getForces;
         private static Action<Actor, bool> _setForces;
@@ -537,7 +623,7 @@ namespace Coopfall
         }
         private readonly Dictionary<long, float> _missingU = new Dictionary<long, float>(), _missingB = new Dictionary<long, float>();
         private readonly Dictionary<long, int> _attempts = new Dictionary<long, int>();
-        private readonly Dictionary<long, float> _loadedAt = new Dictionary<long, float>();
+        internal readonly Dictionary<long, float> _loadedAt = new Dictionary<long, float>();
         private readonly Dictionary<long, float> _localSince = new Dictionary<long, float>();   // local-only creature -> first noticed
         private HashSet<long> _hostUnitsPrev = new HashSet<long>();
         private int _ucSeq = -1, _ucGot, _bcSeq = -1, _bcGot;
@@ -671,8 +757,16 @@ namespace Coopfall
             if (!_tracks.TryGetValue(id, out Track tr)) { tr = new Track { pos = pos, at = now, vel = walking && hostVel.HasValue ? hostVel.Value : Vector2.zero }; _tracks[id] = tr; }
             else if (hostVel.HasValue)
             {
-                // The host measured the real velocity: no guessing from samples 0.2+ s apart.
-                tr.vel = walking ? hostVel.Value : Vector2.zero;
+                // The host measured the real velocity: no guessing from samples 0.2+ s apart. A walker it
+                // reports as standing (stuck/blocked rules) but that did move since our last sample: use that.
+                Vector2 hv = walking ? hostVel.Value : Vector2.zero;
+                float dt = now - tr.at;
+                if (walking && hv.sqrMagnitude < 0.01f && dt > 0.05f && dt < 1f)
+                {
+                    Vector2 sv = (pos - tr.pos) / dt;
+                    if (sv.sqrMagnitude >= 0.25f && sv.sqrMagnitude <= 6.25f) hv = sv;   // walking pace only, not a jump
+                }
+                tr.vel = hv;
                 tr.pos = pos;
                 tr.at = now;
             }
@@ -685,6 +779,7 @@ namespace Coopfall
                 tr.pos = pos;
                 tr.at = now;
             }
+            if (tr.actor != a) tr.hasSet = false;
             tr.actor = a;
             tr.flip = (flags & 1) != 0;
             tr.walking = walking;
@@ -703,6 +798,9 @@ namespace Coopfall
         }
 
         /// <summary>Guest, diagnostics: what the host last said about a creature (heading in degrees, velocity) and how we drive it.</summary>
+        /// <summary>Guest, diagnostics: the host's last reported position of a creature.</summary>
+        public Vector2? TrackPos(long id) { return _tracks.TryGetValue(id, out Track tr) ? tr.pos : (Vector2?)null; }
+
         public bool TrackInfo(long id, out float headingDeg, out Vector2 vel, out float age, out bool anim, out bool look)
         {
             headingDeg = float.NaN; vel = Vector2.zero; age = 0f; anim = look = false;
@@ -755,22 +853,35 @@ namespace Coopfall
                 if (a == null || !a.isAlive() || a.getID() != kv.Key || Exempt(a)) { StopAnim(tr); _done.Add(kv.Key); continue; }
                 try
                 {
+                    // The host decides what it does: keep the game's action timer running so it skips
+                    // enemy search, paths, decisions and AI here (they cost hundreds of ms a frame on
+                    // big worlds, only to be cancelled again).
+                    if (_setTimer == null) R.FastField("timer_action", out _getTimer, out _setTimer);
+                    if (_setTimer != null) _setTimer(a, 1f);
                     if (OwnPath(a)) a.stopMovement();          // our AI started a walk of its own
                     // Local tornadoes, explosions and knockback push our copy too: only the host's physics count.
                     if (UnderForces(a)) DropForces(a);
                     a.position_height = Mathf.Lerp(a.position_height, tr.height, k);
                     // Walkers keep their line for a while; thrown creatures (tornado, blasts) curve, so look ahead only briefly.
                     Vector2 goal = tr.pos + tr.vel * Mathf.Min(now - tr.at + lag, tr.forced ? 0.07f : tr.ahead);
-                    Vector2 cur = a.current_position;
+                    // Continue from where we put it last frame: the game's own movement in between (possessed
+                    // movement for the walk animation, collision) isn't the host's and would offset it.
+                    Vector2 cur = tr.hasSet ? tr.lastSet : a.current_position;
                     float d = Vector2.Distance(cur, goal);
-                    if (d > 6f) { WorldBoxApi.Teleport(a, goal); UnitsCorrected++; }
-                    else if (d > 0.01f)
+                    if (d > 6f) { WorldBoxApi.Teleport(a, goal); UnitsCorrected++; tr.lastSet = goal; tr.hasSet = true; }
+                    else
                     {
-                        Vector2 next = Vector2.Lerp(cur, goal, k);
-                        if (Toolbox.getTileAt(next.x, next.y) != null) WorldBoxApi.SetPosition(a, next);
+                        Vector2 next = d > 0.01f ? Vector2.Lerp(cur, goal, k) : cur;
+                        if (Toolbox.getTileAt(next.x, next.y) != null)
+                        {
+                            if ((a.current_position - next).sqrMagnitude > 1e-6f) WorldBoxApi.SetPosition(a, next);
+                            tr.lastSet = next; tr.hasSet = true;
+                        }
                     }
                     if (a.asset != null && a.asset.can_flip && GetFlip(a) != tr.flip) SetFlip(a, tr.flip);
-                    bool anim = tr.walking || d > 0.15f;
+                    // Not for small catch-ups of standing creatures: possessed movement runs the game's collision,
+                    // which pushes copies of creatures standing on blocked tiles (work spots) back to the tile edge.
+                    bool anim = tr.walking || d > 1.5f;
                     if (anim != tr.animOn) { tr.animOn = anim; a.setPossessedMovement(anim); }
                     Vector2 hd = float.IsNaN(tr.heading) ? Vector2.zero : new Vector2(Mathf.Cos(tr.heading), Mathf.Sin(tr.heading));
                     Vector2 dir = hd.sqrMagnitude > 0.5f ? hd : (tr.vel.sqrMagnitude > 0.01f ? tr.vel.normalized : (goal - cur).normalized);
@@ -860,6 +971,7 @@ namespace Coopfall
                 {
                     long gid = (long)t;
                     _missingB.Remove(gid);
+                    _hostB.Remove(gid);
                     Building lb = FindBuilding(gid);
                     if (lb != null && lb.isAlive() && !lb.isOnRemove()) { RemoveBuilding(lb); BuildingsRemoved++; }
                 }
@@ -873,6 +985,7 @@ namespace Coopfall
                 string asset = (string)assets[(int)b[i + 1]];
                 int st = (int)b[i + 2];
                 if (full) _bcSeen.Add(id);
+                _hostB.Add(id);
                 ApplyBuilding(id, asset, st, now);
             }
 
@@ -895,12 +1008,38 @@ namespace Coopfall
                 foreach (long mid in stale) _missingB.Remove(mid);
                 if (doomed.Count > 0) Log.Info("live sync: removed " + doomed.Count + " building(s) the host doesn't have");
                 _attempts.Clear();
+                _hostB = _bcSeen;
                 _bcSeen = new HashSet<long>();
                 _bcSeq = -1;
             }
         }
 
         private readonly Dictionary<long, float> _localB = new Dictionary<long, float>();
+        private HashSet<long> _hostB = new HashSet<long>();   // the host's buildings as far as we know
+        private float _nextLostCheck;
+        private int _lostLogs;
+
+        /// <summary>
+        /// Guest: host buildings that vanished here (our replay of a tornado, fire, ...) while the host
+        /// still has them aren't in the host's change list: ask for them at once, not at the next full list.
+        /// </summary>
+        private void CheckLostBuildings(float now)
+        {
+            if (now < _nextLostCheck || _hostB.Count == 0) return;
+            _nextLostCheck = now + 0.5f;
+            int lost = 0;
+            foreach (long id in _hostB)
+            {
+                if (_missingB.ContainsKey(id)) continue;
+                Building lb = FindBuilding(id);
+                if (lb != null && lb.isAlive() && !lb.isOnRemove()) continue;
+                _missingB[id] = now - 2.5f;               // due for a request right away
+                lost++;
+                if (_loadedAt.TryGetValue(-id, out float at) && _lostLogs++ < 20)
+                    Log.Info("live sync: building #" + id + " vanished " + (now - at).ToString("0.0") + " s after loading" + (lb != null ? " (" + BData(lb).asset_id + ", on remove " + lb.isOnRemove() + ", alive " + lb.isAlive() + ")" : ""));
+            }
+            if (lost > 0) RequestMissing(now, true);
+        }
 
         /// <summary>Buildings our own simulation made (guest-range ids) can never be the host's: gone after 3 s.</summary>
         private void DropLocalBuildings(float now)
@@ -949,13 +1088,49 @@ namespace Coopfall
                     _missingB[id] = now - 10f;
                     return;
                 }
-                if (st == 0 && lb.isUnderConstruction()) lb.completeConstruction();
+                if (st == 0 && lb.isUnderConstruction()) { lb.completeConstruction(); R.Call0(lb, "initAnimationData"); }   // as the game's updateBuild: no sprites otherwise
                 else if (st == 2 && !ruin) Invoke(lb, "startMakingRuins");   // not startDestroyBuilding: that also removes it
             }
             catch (Exception e) { Log.Warn("live sync building state: " + e.Message); }
         }
 
         private static FieldInfo _fiLawCached;
+
+        private static Func<BuildingManager, BuildingData, Building> _baseLoad;
+        private static bool _baseLoadFailed;
+
+        /// <summary>
+        /// BuildingManager.loadObject without its placement check (canBuildFrom): the base manager's
+        /// loadObject called non-virtually, then the same setup the game does after the check.
+        /// </summary>
+        private static Building ForceLoad(BuildingData data)
+        {
+            if (_baseLoadFailed) return null;
+            try
+            {
+                BuildingAsset asset = AssetManager.buildings.get(data.asset_id);
+                WorldTile tile = World.world.GetTileSimple(data.mainX, data.mainY);
+                if (asset == null || tile == null || data.state == BuildingState.Removed) return null;
+                if (_baseLoad == null)
+                {
+                    MethodInfo m = typeof(SystemManager<Building, BuildingData>).GetMethod("loadObject", new[] { typeof(BuildingData) });
+                    var dm = new System.Reflection.Emit.DynamicMethod("CoopfallBaseLoad", typeof(Building), new[] { typeof(BuildingManager), typeof(BuildingData) }, typeof(WorldSync).Module, true);
+                    var il = dm.GetILGenerator();
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+                    il.Emit(System.Reflection.Emit.OpCodes.Call, m);       // not callvirt: skip the override's check
+                    il.Emit(System.Reflection.Emit.OpCodes.Ret);
+                    _baseLoad = (Func<BuildingManager, BuildingData, Building>)dm.CreateDelegate(typeof(Func<BuildingManager, BuildingData, Building>));
+                }
+                Building b = _baseLoad(World.world.buildings, data);
+                if (b == null) return null;
+                R.Call0(b, "create");
+                R.Call(b, "setBuilding", new[] { typeof(WorldTile), typeof(BuildingAsset), typeof(BuildingData) }, tile, asset, data);
+                b.loadBuilding(data);
+                return b;
+            }
+            catch (Exception e) { _baseLoadFailed = true; Log.Warn("live sync: forced building load: " + e); return null; }
+        }
 
         private static Building LoadIgnoringBiome(BuildingData data)
         {
@@ -1026,8 +1201,16 @@ namespace Coopfall
                             // Plants that spread onto a biome edge exist on the host, but loading checks the
                             // biome strictly: load it the way the "roots without borders" world law allows.
                             if (loaded == null) loaded = LoadIgnoringBiome(data);
+                            // Still refused (our copy of the tile still burned, ...): the host has it, place it anyway.
+                            if (loaded == null) loaded = ForceLoad(data);
                         }
                         if (loaded != null) { builds++; _loadedAt[-data.id] = now; }
+                        else if (_buildFails++ < 20)
+                        {
+                            WorldTile bt = World.world.GetTile(data.mainX, data.mainY);
+                            Log.Info("live sync: building #" + data.id + " " + data.asset_id + " at " + data.mainX + "," + data.mainY + " won't load (tile "
+                                     + (bt == null ? "none" : (bt.main_type?.id + "/" + bt.top_type?.id + ", building there " + (bt.building != null ? BData(bt.building).asset_id + " #" + bt.building.getID() : "none"))) + ")");
+                        }
                     }
                     catch (Exception e) { Log.Warn("live sync: building load: " + e.Message); }
                 }
@@ -1047,10 +1230,17 @@ namespace Coopfall
                             _missingU[data.id] = now;
                             continue;                                // loaded on a later request, once the id is free
                         }
+                        DropStaleSubspecies(data.asset_id);
                         Actor a = World.world.units.loadObject(data);
                         if (a != null) { units++; _loadedAt[data.id] = now; AdoptLocal(a); }
                     }
-                    catch (Exception e) { Log.Warn("live sync: creature load: " + (_loadErrors++ < 2 ? e.ToString() : e.Message)); }
+                    catch (Exception e)
+                    {
+                        Log.Warn("live sync: creature load: " + (_loadErrors++ < 2 ? e.ToString() : e.Message));
+                        // The game throws after adding the creature: drop the half-loaded copy, the next request reloads it.
+                        try { var data = t.ToObject<ActorData>(JsonHelper.reader); if (data != null) WorldBoxApi.RemoveActor(WorldBoxApi.FindActor(data.id)); }
+                        catch { }
+                    }
                 }
             UnitsLoaded += units;
             BuildingsLoaded += builds;
@@ -1062,6 +1252,19 @@ namespace Coopfall
         /// the same species nearby (made by the same god power, but with a guest-only id), that one
         /// steps aside so there's exactly one, the host's.
         /// </summary>
+        /// <summary>
+        /// Loading a creature whose subspecies isn't here yet makes the game search every creature of that
+        /// species; one still pointing at a subspecies the meta sync already removed (its data is gone)
+        /// crashes that search. Unlink such stale references first.
+        /// </summary>
+        private static void DropStaleSubspecies(string assetId)
+        {
+            ActorAsset asset = AssetManager.actor_library.get(assetId);
+            if (asset == null || asset.units == null) return;
+            foreach (Actor other in asset.units)
+                if (other != null && other.subspecies != null && other.subspecies.data == null) other.subspecies = null;
+        }
+
         private void AdoptLocal(Actor hostCopy)
         {
             if (hostCopy.asset == null) return;
@@ -1072,8 +1275,8 @@ namespace Coopfall
             {
                 if (la == null || la == hostCopy || !la.isAlive() || la.asset == null || la.asset.id != hostCopy.asset.id) continue;
                 long id = la.getID();
-                // only creatures the host has never told us about
-                if (_hostUnitsPrev.Contains(id) || _tracks.ContainsKey(id) || _loadedAt.ContainsKey(id) || Exempt(la)) continue;
+                // only creatures made here (guest-range ids) the host has never told us about
+                if (id < GuestIdOffset || _hostUnitsPrev.Contains(id) || _tracks.ContainsKey(id) || _loadedAt.ContainsKey(id) || Exempt(la)) continue;
                 float d = Vector2.Distance(la.current_position, hostCopy.current_position);
                 if (d < bestDist) { bestDist = d; best = la; }
             }
@@ -1084,9 +1287,9 @@ namespace Coopfall
             Log.Info("live sync: your " + hostCopy.asset.id + " #" + localId + " is now the host's #" + hostId);
         }
 
-        private void RequestMissing(float now)
+        private void RequestMissing(float now, bool soon = false)
         {
-            if (now < _nextNeed) return;
+            if (now < _nextNeed - (soon ? 0.7f : 0f)) return;
             _nextNeed = now + 1f;
             var u = new List<long>();
             var b = new List<long>();

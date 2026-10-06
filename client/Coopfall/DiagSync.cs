@@ -257,6 +257,7 @@ namespace Coopfall
             WorldSync ws = CoopMod.Instance.Sync;
             if (ws != null && ws.TrackInfo(a.getID(), out float th, out Vector2 tv, out float tage, out bool tanim, out bool tlook))
                 o["tr"] = new JArray(float.IsNaN(th) ? -1 : R2(th), R2(tv.x), R2(tv.y), R2(tage), tanim, tlook);   // guest: host heading, velocity, sample age, walk anim, LookAt set
+            if (ws != null && ws.TrackPos(a.getID()) is Vector2 tp) o["tp"] = new JArray(R2(tp.x), R2(tp.y));   // guest: host's last reported position
             if (ws != null && CoopMod.Instance.Session.IsHost) o["flipAge"] = R2(Mathf.Min(ws.FlipAge(a), 999f));
             if (ControllableUnit.isControllingUnit(a)) o["mine"] = true;
             AvatarManager.Remote owner = CoopMod.Instance.Avatars.PuppetOwner(a);
@@ -417,7 +418,8 @@ namespace Coopfall
         private static string Desc(JObject u)
         {
             return (string)u["a"] + " #" + (long)u["id"] + " at " + (float)u["x"] + "," + (float)u["y"] + ((bool)u["moving"] ? " walking" : "") +
-                   ((bool)u["flip"] ? " >" : " <") + (u["wf"] is JArray w ? " 3d " + (int)((float)w[0] * Mathf.Rad2Deg) : "") + (u["task"] != null ? " (" + (string)u["task"] + ")" : "");
+                   ((bool)u["flip"] ? " >" : " <") + (u["wf"] is JArray w ? " 3d " + (int)((float)w[0] * Mathf.Rad2Deg) : "") + (u["task"] != null ? " (" + (string)u["task"] + ")" : "") +
+                   (u["tr"] is JArray t ? " [v " + (float)t[1] + "," + (float)t[2] + " age " + (float)t[3] + (u["tp"] is JArray q ? " from " + (float)q[0] + "," + (float)q[1] : "") + "]" : "");
         }
 
         /// <summary>Each player's own creature against the other game's copy of it (position, facing).</summary>

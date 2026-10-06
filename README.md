@@ -148,7 +148,7 @@ top-down view so you can use the mouse, and returns to first person when you clo
   the world to the server every 3 minutes and on quit.
 - **Joining**: the server asks the host for a fresh save, streams it to you, and your game
   loads it.
-- **Live sync**: the host streams every creature (position, health, 5 times a second) and every
+- **Live sync**: the host streams every creature (position, health, 10 times a second) and every
   building/tree to the guests. Guests steer their creatures onto the host's positions (looking
   ahead by half the ping), copy newborns and new buildings with the same ids, and remove what
   the host doesn't have. A creature a guest spawns appears instantly and is swapped for the

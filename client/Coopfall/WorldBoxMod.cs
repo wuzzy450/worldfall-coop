@@ -63,19 +63,21 @@ namespace Coopfall
         private void Update()
         {
             Log.Tick();
+            ProfileDb.Tick();
+            Prof.Frame();
             if (!Config.game_loaded) return;
             try
             {
                 Powers.TryInstall();
                 Combat.TryInstall();
                 UI.HandleKeys();
-                Session.Tick();
-                Powers.Tick();
-                Sync.Tick();
-                Meta.Tick();
-                Tiles.Tick();
-                Test?.Tick();
-                Diag.Tick();
+                Prof.Run("session", Session.Tick);
+                Prof.Run("powers", Powers.Tick);
+                Prof.Run("sync", Sync.Tick);
+                Prof.Run("meta", Meta.Tick);
+                Prof.Run("tiles", Tiles.Tick);
+                if (Test != null) Prof.Run("test", Test.Tick);
+                Prof.Run("diag", Diag.Tick);
 
                 if (!_autoConnectDone && WorldBoxApi.WorldReady && (Test == null || !Test.HoldConnect))
                 {
@@ -90,19 +92,37 @@ namespace Coopfall
                 // Chat, and the co-op windows (their Esc must not also reach the game: it would end possession).
                 _guard.Update(UI.Typing || UI.MenuOpen || UI.MapOpen);
                 FirstPersonWindows();
+                ConsoleOnError();
             }
             catch (Exception e) { Log.Error("Update: " + e); }
         }
 
+        private bool _consoleMuted, _consoleWas;
+
+        /// <summary>
+        /// WorldBox opens its error console on the first error, and from then on rebuilds and lays out
+        /// its whole text (up to 2500 lines) on every repeat: hundreds of ms a frame. In a co-op session
+        /// don't open it by itself (errors still go to the logs; it still opens by hand).
+        /// </summary>
+        private void ConsoleOnError()
+        {
+            bool mute = Session.InWorld;
+            if (mute == _consoleMuted) return;
+            _consoleMuted = mute;
+            if (mute) { _consoleWas = Config.show_console_on_error; Config.show_console_on_error = false; }
+            else Config.show_console_on_error = _consoleWas;
+        }
+
         private void LateUpdate()
         {
+            Prof.Late();
             if (!Config.game_loaded) return;
             try
             {
-                Avatars.CaptureActions();
-                Avatars.LateTick();
-                Sync.LateTick();
-                Diag.LateTick();
+                Prof.Run("avatars-captureactions", Avatars.CaptureActions);
+                Prof.Run("avatars-late", Avatars.LateTick);
+                Prof.Run("sync-late", Sync.LateTick);
+                Prof.Run("diag-late", Diag.LateTick);
             }
             catch (Exception e) { Log.Error("LateUpdate: " + e); }
         }
@@ -134,7 +154,7 @@ namespace Coopfall
 
         private void OnGUI()
         {
-            try { UI?.OnGUI(); }
+            try { if (UI != null) Prof.Run("gui-" + Event.current.type, UI.OnGUI); }
             catch (Exception e) { Log.Error("OnGUI: " + e); GUI.matrix = Matrix4x4.identity; }
         }
 

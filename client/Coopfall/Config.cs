@@ -105,7 +105,7 @@ namespace Coopfall
         /// <summary>Live sync of terrain, fire and burn marks (part of live sync).</summary>
         public bool syncTerrain = true;
         /// <summary>Creature position updates per second while live sync is on.</summary>
-        public float liveSyncHz = 5f;
+        public float liveSyncHz = 10f;
         /// <summary>Re-sync automatically when cities/kingdoms stay different from the host's for 90 s.</summary>
         public bool resyncOnDrift = true;
         /// <summary>Host uploads its world to the server this often so it is saved and late joiners get a recent copy.</summary>
@@ -120,7 +120,7 @@ namespace Coopfall
         /// <summary>Capture a sync report by itself when something looks off (at most once a minute).</summary>
         public bool autoDiag = true;
         public int configVersion = 0;
-        private const int CurrentConfigVersion = 4;
+        private const int CurrentConfigVersion = 5;
 
         [NonSerialized] private static string _path;
 
@@ -158,6 +158,7 @@ namespace Coopfall
                 if (cfg.configVersion < 3 && cfg.autoResyncMinutes == 5) cfg.autoResyncMinutes = 30;
                 // v3 sent creature positions twice a second; five times keeps guests closer to the host
                 if (cfg.configVersion < 4 && cfg.liveSyncHz == 2f) cfg.liveSyncHz = 5f;
+                if (cfg.configVersion < 5 && cfg.liveSyncHz == 5f) cfg.liveSyncHz = 10f;
                 cfg.configVersion = CurrentConfigVersion;
             }
             if (cfg.serverPort <= 0 || cfg.serverPort > 65535) cfg.serverPort = 25598;

@@ -170,7 +170,7 @@ namespace Coopfall
             Add<Family, FamilyData>("family", 6f, () => World.world.families);
             Add<Language, LanguageData>("language", 6f, () => World.world.languages, k => k.beforeUpdate = (o, d) => ClearTraits(o));
             Add<Religion, ReligionData>("religion", 6f, () => World.world.religions, k => k.beforeUpdate = (o, d) => ClearTraits(o));
-            Add<Item, ItemData>("item", 6f, () => World.world.items);
+            Add<Item, ItemData>("item", 6f, () => World.world.items, k => k.remove = RemoveItem);
             Add<Book, BookData>("book", 6f, () => World.world.books);
             Add<Culture, CultureData>("culture", 6f, () => World.world.cultures, k => k.beforeUpdate = (o, d) => ClearTraits(o));
             Add<Clan, ClanData>("clan", 6f, () => World.world.clans, k => k.beforeUpdate = (o, d) => ClearTraits(o));
@@ -196,6 +196,12 @@ namespace Coopfall
             {
                 k.afterCreate = o => o.loadDataCaptains();
                 k.afterUpdate = o => o.loadDataCaptains();
+                // Unlink cities first: a city still pointing at a removed army throws in setArmy every tick.
+                k.remove = o =>
+                {
+                    foreach (City c in World.world.cities.list) if (c != null && c.getArmy() == o) c.setArmy(null);
+                    World.world.armies.removeObject(o);
+                };
             });
             Add<Alliance, AllianceData>("alliance", 2f, () => World.world.alliances, k =>
             {
@@ -226,8 +232,11 @@ namespace Coopfall
             if (traits != null) R.Call0(traits, "Clear");
         }
 
+        public static int BorderRedraws;
+
         private static void BordersDirty()
         {
+            BorderRedraws++;
             try { R.Call0(R.Zones, "setDrawnZonesDirty"); } catch { }
         }
 
@@ -712,6 +721,31 @@ namespace Coopfall
             set(want);
         }
 
+        /// <summary>
+        /// Items removed while still equipped stay in the slot: every slot check then logs an error
+        /// with a stack trace (many per frame), and the recycled object later turns up as another
+        /// item, e.g. boots in a weapon slot. Unequip first.
+        /// </summary>
+        private static Func<Item, Actor> _itemActor;
+        private static Action<Item, Actor> _itemActorSet;
+
+        private static void RemoveItem(Item it)
+        {
+            // The holder may be dying (not in the unit list any more) but still drawn and checked.
+            if (_itemActor == null) R.FastField("_actor", out _itemActor, out _itemActorSet);
+            Actor holder = it.unit_has_it && _itemActor != null ? _itemActor(it) : null;
+            if (holder?.equipment != null)
+                foreach (ActorEquipmentSlot slot in holder.equipment)
+                    if (slot.getItem() == it) { WorldSync.Unequip(slot); holder.setStatsDirty(); }
+            foreach (Actor a in World.world.units.getSimpleList())
+            {
+                if (a?.equipment == null) continue;
+                foreach (ActorEquipmentSlot slot in a.equipment)
+                    if (slot.getItem() == it) { WorldSync.Unequip(slot); a.setStatsDirty(); }
+            }
+            World.world.items.removeObject(it);
+        }
+
         private static void ApplyItems(Actor a, string ids)
         {
             if (a.equipment == null) return;
@@ -720,8 +754,8 @@ namespace Coopfall
                 if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out long id)) want.Add(id);
             foreach (ActorEquipmentSlot slot in a.equipment)
             {
-                Item it = slot.isEmpty() ? null : slot.getItem();
-                if (it != null && !want.Remove(it.data.id)) slot.takeAwayItem();
+                Item it = slot.getItem();
+                if (it != null && (it.shouldbe_removed || it.data == null || !want.Remove(it.data.id))) WorldSync.Unequip(slot);
             }
             foreach (long id in want)
             {
