@@ -1,0 +1,137 @@
+using System;
+using UnityEngine;
+
+namespace Coopfall
+{
+    /// <summary>Global access to the running mod.</summary>
+    public static class CoopMod
+    {
+        public static WorldBoxMod Instance;
+        /// <summary>True while the co-op UI wants the mouse/keyboard (game controls are locked).</summary>
+        public static bool UiBlocking;
+        public const string Version = "1.1.0";
+    }
+
+    /// <summary>
+    /// REQUIRED BY WORLDBOX'S ModLoader CONTRACT: the game loads "Coopfall.dll" from
+    /// worldbox_Data/StreamingAssets/mods and AddComponents "Coopfall.WorldBoxMod" once
+    /// Config.game_loaded &amp;&amp; Config.experimental_mode are both true.
+    /// </summary>
+    public class WorldBoxMod : MonoBehaviour
+    {
+        public CoopSession Session;
+        public AvatarManager Avatars;
+        public PowerSync Powers;
+        public WorldSync Sync;
+        public CoopUI UI;
+        private readonly InputGuard _guard = new InputGuard();
+
+        private bool _weLockedControls;
+        private bool _autoConnectDone;
+        private bool _weLeftFirstPerson;
+
+        private void Awake()
+        {
+            if (CoopMod.Instance != null) { Destroy(this); return; }
+            CoopMod.Instance = this;
+            Log.Init();
+            Log.Info("Coopfall " + CoopMod.Version + " starting (WorldBox " + Application.version + ")");
+            CoopConfig cfg = CoopConfig.Load();
+            Session = new CoopSession(cfg);
+            Avatars = new AvatarManager(Session);
+            Powers = new PowerSync(Session);
+            Sync = new WorldSync(Session);
+            UI = new CoopUI(Session, Avatars);
+            Log.Info("ready - " + cfg.menuKey + " co-op menu, " + cfg.mapKey + " world map, " + cfg.chatKey + " chat");
+        }
+
+        private void Start()
+        {
+            UI.ShowToast("Coopfall co-op loaded - press " + Session.Cfg.menuKey + " to play with friends");
+        }
+
+        private void Update()
+        {
+            Log.Tick();
+            if (!Config.game_loaded) return;
+            try
+            {
+                Powers.TryInstall();
+                UI.HandleKeys();
+                Session.Tick();
+                Powers.Tick();
+                Sync.Tick();
+
+                if (!_autoConnectDone && WorldBoxApi.WorldReady)
+                {
+                    _autoConnectDone = true;
+                    if (Session.Cfg.autoConnect) Session.Connect();
+                }
+
+                bool block = UI.ChatOpen || UI.MouseOverUi;
+                CoopMod.UiBlocking = block || UI.Typing;
+                if (block) { Config.lockGameControls = true; _weLockedControls = true; }
+                else if (_weLockedControls) { Config.lockGameControls = false; _weLockedControls = false; }
+                // Chat, and the co-op windows (their Esc must not also reach the game: it would end possession).
+                _guard.Update(UI.Typing || UI.MenuOpen || UI.MapOpen);
+                FirstPersonWindows();
+            }
+            catch (Exception e) { Log.Error("Update: " + e); }
+        }
+
+        private void LateUpdate()
+        {
+            if (!Config.game_loaded) return;
+            try
+            {
+                Avatars.CaptureActions();
+                Avatars.LateTick();
+                Sync.LateTick();
+            }
+            catch (Exception e) { Log.Error("LateUpdate: " + e); }
+        }
+
+        /// <summary>
+        /// The Co-op menu and World Map need the mouse, which Worldfall's first person captures for
+        /// looking around: while one is open, switch to Worldfall's top-down view (its V key) and
+        /// return to first person when it closes.
+        /// </summary>
+        private void FirstPersonWindows()
+        {
+            bool windows = UI.MenuOpen || UI.MapOpen;
+            if (windows && !_weLeftFirstPerson && WorldfallBridge.FirstPerson)
+            {
+                WorldfallBridge.ViewEnabled = false;
+                _weLeftFirstPerson = true;
+            }
+            else if (!windows && _weLeftFirstPerson)
+            {
+                _weLeftFirstPerson = false;
+                if (ControllableUnit.isControllingUnit()) WorldfallBridge.ViewEnabled = true;
+            }
+        }
+
+        private void OnDestroy()
+        {
+            _guard.Shutdown();
+        }
+
+        private void OnGUI()
+        {
+            try { UI?.OnGUI(); }
+            catch (Exception e) { Log.Error("OnGUI: " + e); GUI.matrix = Matrix4x4.identity; }
+        }
+
+        private void OnApplicationQuit()
+        {
+            try
+            {
+                _guard.Shutdown();
+                Session?.SaveBeforeQuit();
+                Session?.Disconnect();
+                Log.Flush();
+            }
+            catch { }
+        }
+    }
+}

@@ -1,0 +1,22 @@
+# build output
+client/Coopfall/bin/
+client/Coopfall/obj/
+*.user
+.vs/
+
+# relay server data created at run time (stored worlds, logs, Minecraft leftovers)
+server/cuberite/worldfall_rooms/
+server/cuberite/world/
+server/cuberite/world_nether/
+server/cuberite/world_end/
+server/cuberite/logs/
+server/cuberite/*.sqlite
+server/cuberite/console.log
+server/cuberite/console.err
+
+# python
+__pycache__/
+*.pyc
+
+# test downloads
+*.wbox
