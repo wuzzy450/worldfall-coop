@@ -14,6 +14,6 @@ sleep 40
 ./worldbox.exe -coopfall-profile guest -coopfall-scenario meet $GUEST_ARGS -logFile "$P2\guest\unity.log" >/dev/null 2>&1 &
 sleep 2
 L="$P/host/log.txt"; n=0
-until grep -aq "after guest used bear, 2" "$L" 2>/dev/null || [ $(tasklist | grep -ci worldbox) -lt 2 ]; do sleep 3; n=$((n+1)); [ $n -gt 250 ] && echo TIMEOUT && break; done
+until grep -aq "TEST meet: done" "$L" 2>/dev/null || [ $(tasklist | grep -ci worldbox) -lt 2 ]; do sleep 3; n=$((n+1)); [ $n -gt 250 ] && echo TIMEOUT && break; done
 echo "games running: $(tasklist | grep -ci worldbox)"
 grep -a "DIAG #[0-9]* (" "$L" | cut -c22-240

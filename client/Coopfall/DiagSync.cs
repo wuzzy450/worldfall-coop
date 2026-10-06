@@ -403,7 +403,7 @@ namespace Coopfall
             {
                 JObject b = kv.Value;
                 if (b["puppetOf"] != null || b["mine"] != null || b["standin"] != null || h.ContainsKey(kv.Key)) continue;
-                if (Vector2.Distance(P(b), href) < Radius - 3f) { extra++; if (details.Count < 40) details.Add("only on " + who + ": " + Desc(b)); }
+                if (Vector2.Distance(P(b), href) < Radius - 3f) { extra++; if (details.Count < 40) details.Add("only on " + who + ": " + Desc(b) + HostSide(kv.Key)); }
             }
             sb.AppendLine("  " + who + ": " + common + " creatures in both, worst position " + worst.ToString("0.00", CultureInfo.InvariantCulture) + " tiles");
             foreach (string s in details) sb.AppendLine("    " + s);
@@ -475,6 +475,19 @@ namespace Coopfall
                     sb.AppendLine("  name tag: " + (string)st["player"] + " -> " + (string)r["player"] + " projects at " + pr["x"] + "," + pr["y"] + " depth " + pr["depth"] + " but last drawn " + age + " s ago");
                 }
             }
+        }
+
+        /// <summary>What this (host) game knows about a creature id the other game has and this one doesn't.</summary>
+        private static string HostSide(long id)
+        {
+            Actor a = WorldBoxApi.FindActor(id);
+            if (a == null) return " [here: unknown]";
+            return " [here: alive " + a.isAlive() + " at " + a.current_position.x.ToString("0.0", CultureInfo.InvariantCulture) + "," + a.current_position.y.ToString("0.0", CultureInfo.InvariantCulture) + " task " + TaskOf(a) + " in building " + R.Get(a, "is_inside_building") + "]";
+        }
+
+        private static string TaskOf(Actor a)
+        {
+            try { object ai = R.Get(a, "ai"); return (ai == null ? null : R.Get(ai, "task")) is Asset t ? t.id : "-"; } catch { return "?"; }
         }
     }
 }

@@ -1041,7 +1041,8 @@ namespace Coopfall
             if (lost > 0) RequestMissing(now, true);
         }
 
-        /// <summary>Buildings our own simulation made (guest-range ids) can never be the host's: gone after 3 s.</summary>
+        /// <summary>Buildings our own simulation made (guest-range ids) can never be the host's: dropped on sight,
+        /// so they don't block the host's copy on the same tiles (e.g. a meteorite's bonfire).</summary>
         private void DropLocalBuildings(float now)
         {
             var seen = new HashSet<long>();
@@ -1052,8 +1053,8 @@ namespace Coopfall
                 long lid = lb.getID();
                 if (lid < GuestIdOffset) continue;
                 seen.Add(lid);
-                if (!_localB.TryGetValue(lid, out float since)) _localB[lid] = now;
-                else if (now - since > 3f) doomed.Add(lb);
+                if (!_localB.ContainsKey(lid)) _localB[lid] = now;
+                doomed.Add(lb);
             }
             var gone = new List<long>();
             foreach (long lid in _localB.Keys) if (!seen.Contains(lid)) gone.Add(lid);
@@ -1089,7 +1090,12 @@ namespace Coopfall
                     return;
                 }
                 if (st == 0 && lb.isUnderConstruction()) { lb.completeConstruction(); R.Call0(lb, "initAnimationData"); }   // as the game's updateBuild: no sprites otherwise
-                else if (st == 2 && !ruin) Invoke(lb, "startMakingRuins");   // not startDestroyBuilding: that also removes it
+                else if (st == 2 && !ruin)
+                {
+                    Invoke(lb, "startMakingRuins");   // not startDestroyBuilding: that also removes it
+                    // startMakingRuins does nothing when our own replay already left it in the ruin animation.
+                    if (BData(lb).state != BuildingState.Ruins && (AssetManager.buildings.get(asset)?.has_ruin_state ?? false)) Invoke(lb, "makeRuins");
+                }
             }
             catch (Exception e) { Log.Warn("live sync building state: " + e.Message); }
         }

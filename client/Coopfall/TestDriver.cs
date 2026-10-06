@@ -305,10 +305,10 @@ namespace Coopfall
 
         private static readonly string[][] MeetActions =
         {
-            new[] { "host", "sheep", "3" }, new[] { "guest", "wolf", "4" }, new[] { "host", "human", "3" }, new[] { "guest", "chicken", "3" },
-            new[] { "host", "cow", "5" }, new[] { "guest", "human", "4" }, new[] { "host", "rain", "4" }, new[] { "guest", "fire", "7" },
-            new[] { "host", "lightning", "7" }, new[] { "guest", "lightning", "8" }, new[] { "host", "tornado", "12" }, new[] { "guest", "earthquake", "10" },
-            new[] { "host", "acid", "6" }, new[] { "guest", "bear", "6" },
+            new[] { "host", "dwarf", "3" }, new[] { "guest", "orc", "4" }, new[] { "host", "elf", "3" }, new[] { "guest", "skeleton", "4" },
+            new[] { "host", "zombie", "4" }, new[] { "guest", "cat", "3" }, new[] { "host", "crab", "5" }, new[] { "guest", "snake", "4" },
+            new[] { "host", "blessing", "3" }, new[] { "guest", "curse", "3" }, new[] { "host", "madness", "4" }, new[] { "guest", "tile_sand", "6" },
+            new[] { "host", "meteorite", "10" }, new[] { "guest", "fertilizer_trees", "7" }, new[] { "host", "bomb", "9" }, new[] { "guest", "demon", "6" },
         };
 
         private int _meetPhase, _meetAction;
