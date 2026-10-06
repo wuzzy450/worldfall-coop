@@ -14,11 +14,32 @@ namespace Coopfall
 
         public static string Dir { get; private set; }
 
+        /// <summary>
+        /// Coopfall's folder. Start WorldBox with "-coopfall-profile NAME" to give that instance its
+        /// own config and log (coopfall/profiles/NAME), e.g. to run two games on one PC.
+        /// </summary>
+        public static string DataDir()
+        {
+            string dir = Path.Combine(Application.persistentDataPath, "coopfall");
+            try
+            {
+                string[] args = Environment.GetCommandLineArgs();
+                for (int i = 0; i + 1 < args.Length; i++)
+                    if (string.Equals(args[i], "-coopfall-profile", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string name = CoopSession.Slug(args[i + 1]);
+                        return Path.Combine(dir, "profiles", name);
+                    }
+            }
+            catch { }
+            return dir;
+        }
+
         public static void Init()
         {
             try
             {
-                Dir = Path.Combine(Application.persistentDataPath, "coopfall");
+                Dir = DataDir();
                 Directory.CreateDirectory(Dir);
                 _path = Path.Combine(Dir, "log.txt");
                 File.WriteAllText(_path, "=== Coopfall " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ===\n");
@@ -79,8 +100,12 @@ namespace Coopfall
         public int autoResyncMinutes = 30;
         /// <summary>Host streams creatures (positions, health, births, deaths) and buildings to guests continuously.</summary>
         public bool liveSync = true;
+        /// <summary>Live sync of cities, kingdoms, wars, cultures, ... and creatures' details (part of live sync).</summary>
+        public bool syncMeta = true;
+        /// <summary>Live sync of terrain, fire and burn marks (part of live sync).</summary>
+        public bool syncTerrain = true;
         /// <summary>Creature position updates per second while live sync is on.</summary>
-        public float liveSyncHz = 2f;
+        public float liveSyncHz = 5f;
         /// <summary>Re-sync automatically when cities/kingdoms stay different from the host's for 90 s.</summary>
         public bool resyncOnDrift = true;
         /// <summary>Host uploads its world to the server this often so it is saved and late joiners get a recent copy.</summary>
@@ -90,8 +115,12 @@ namespace Coopfall
         public string menuKey = "F8";
         public string mapKey = "F7";
         public string chatKey = "Return";
+        /// <summary>Captures a sync report (screenshot + state) in every game of your world (see DiagSync).</summary>
+        public string reportKey = "F9";
+        /// <summary>Capture a sync report by itself when something looks off (at most once a minute).</summary>
+        public bool autoDiag = true;
         public int configVersion = 0;
-        private const int CurrentConfigVersion = 3;
+        private const int CurrentConfigVersion = 4;
 
         [NonSerialized] private static string _path;
 
@@ -105,7 +134,7 @@ namespace Coopfall
             CoopConfig cfg = new CoopConfig();
             try
             {
-                string dir = Path.Combine(Application.persistentDataPath, "coopfall");
+                string dir = Log.DataDir();
                 Directory.CreateDirectory(dir);
                 _path = Path.Combine(dir, "config.json");
                 if (File.Exists(_path))
@@ -127,6 +156,8 @@ namespace Coopfall
                 if (cfg.menuKey == "F6") cfg.menuKey = "F8";
                 // v2 re-downloaded the world every 5 min to fight drift; live sync replaces that
                 if (cfg.configVersion < 3 && cfg.autoResyncMinutes == 5) cfg.autoResyncMinutes = 30;
+                // v3 sent creature positions twice a second; five times keeps guests closer to the host
+                if (cfg.configVersion < 4 && cfg.liveSyncHz == 2f) cfg.liveSyncHz = 5f;
                 cfg.configVersion = CurrentConfigVersion;
             }
             if (cfg.serverPort <= 0 || cfg.serverPort > 65535) cfg.serverPort = 25598;
@@ -149,7 +180,7 @@ namespace Coopfall
         {
             try
             {
-                if (_path == null) _path = Path.Combine(Application.persistentDataPath, "coopfall", "config.json");
+                if (_path == null) _path = Path.Combine(Log.DataDir(), "config.json");
                 File.WriteAllText(_path, Newtonsoft.Json.JsonConvert.SerializeObject(this, Newtonsoft.Json.Formatting.Indented));
             }
             catch (Exception e) { Log.Warn("config save failed: " + e.Message); }

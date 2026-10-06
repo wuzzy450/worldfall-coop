@@ -23,6 +23,11 @@ namespace Coopfall
         public AvatarManager Avatars;
         public PowerSync Powers;
         public WorldSync Sync;
+        public MetaSync Meta;
+        public TileSync Tiles;
+        public CombatSync Combat;
+        public TestDriver Test;
+        public DiagSync Diag;
         public CoopUI UI;
         private readonly InputGuard _guard = new InputGuard();
 
@@ -41,7 +46,12 @@ namespace Coopfall
             Avatars = new AvatarManager(Session);
             Powers = new PowerSync(Session);
             Sync = new WorldSync(Session);
+            Meta = new MetaSync(Session);
+            Tiles = new TileSync(Session);
+            Combat = new CombatSync(Session);
+            Diag = new DiagSync(Session);
             UI = new CoopUI(Session, Avatars);
+            Test = TestDriver.FromCommandLine(Session);
             Log.Info("ready - " + cfg.menuKey + " co-op menu, " + cfg.mapKey + " world map, " + cfg.chatKey + " chat");
         }
 
@@ -57,12 +67,17 @@ namespace Coopfall
             try
             {
                 Powers.TryInstall();
+                Combat.TryInstall();
                 UI.HandleKeys();
                 Session.Tick();
                 Powers.Tick();
                 Sync.Tick();
+                Meta.Tick();
+                Tiles.Tick();
+                Test?.Tick();
+                Diag.Tick();
 
-                if (!_autoConnectDone && WorldBoxApi.WorldReady)
+                if (!_autoConnectDone && WorldBoxApi.WorldReady && (Test == null || !Test.HoldConnect))
                 {
                     _autoConnectDone = true;
                     if (Session.Cfg.autoConnect) Session.Connect();
@@ -87,6 +102,7 @@ namespace Coopfall
                 Avatars.CaptureActions();
                 Avatars.LateTick();
                 Sync.LateTick();
+                Diag.LateTick();
             }
             catch (Exception e) { Log.Error("LateUpdate: " + e); }
         }
