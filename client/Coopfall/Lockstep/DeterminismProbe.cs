@@ -213,6 +213,8 @@ namespace Coopfall.Lockstep
                     if (b != null)
                         d["building " + b.getID()] = (HarmonyLib.AccessTools.Field(typeof(Building), "asset")?.GetValue(b) as Asset)?.id + " tile " + b.current_tile?.tile_id + " hp " + b.getHealth() + " alive " + b.isAlive()
                             + " city " + (b.city?.getID() ?? -1) + " built " + !b.isUnderConstruction() + " slots " + b.hasResidentSlots() + " residents " + string.Join(",", b.residents);
+            int pi = 0;
+            foreach (Projectile pr in World.world.projectiles) DumpObject(d, "projectile" + (pi++) + ".", pr);
             foreach (Actor a in World.world.units)
                 if (a != null && (_dumpAll || _dumpIds.Contains(a.getID())))
                 {
@@ -222,6 +224,20 @@ namespace Coopfall.Lockstep
                     object data = HarmonyLib.AccessTools.Field(typeof(Actor), "data")?.GetValue(a);
                     if (data != null) DumpObject(d, a.getID() + ".data.", data);
                     if (!_dumpAll && a.city != null) DumpObject(d, a.getID() + ".city.", a.city);
+                    if (!_dumpAll && a.current_tile?.chunk != null)
+                    {
+                        // the chunk's creatures per kingdom, in the order enemy searches see them
+                        ChunkObjectContainer co = a.current_tile.chunk.objects;
+                        var sbk = new System.Text.StringBuilder();
+                        foreach (long k in co.kingdoms) { sbk.Append(" k").Append(k).Append(':'); foreach (Actor u in co.getUnits(k)) sbk.Append(u.getID()).Append(','); }
+                        d[a.getID() + ".chunk"] = sbk.ToString();
+                    }
+                    if (!_dumpAll && a.subspecies != null)
+                    {
+                        DumpObject(d, a.getID() + ".subspecies.", a.subspecies);
+                        object sd = HarmonyLib.AccessTools.Field(a.subspecies.GetType(), "data")?.GetValue(a.subspecies);
+                        if (sd != null) DumpObject(d, a.getID() + ".subspecies.data.", sd);
+                    }
                     if (HarmonyLib.AccessTools.Field(typeof(Actor), "sprite_animation")?.GetValue(a) is SpriteAnimation an && an != null)
                         d[a.getID() + ".anim"] = "frame " + an.currentFrameIndex + "/" + (an.frames?.Length ?? -1) + " next " + an.nextFrameTime.ToString("R") + " on " + an.isOn + " looped " + an.looped + " dirty " + an.dirty + " visible " + HarmonyLib.AccessTools.Field(typeof(Actor), "is_visible").GetValue(a);
                     if (!_dumpAll && HarmonyLib.AccessTools.Field(typeof(Actor), "children_special")?.GetValue(a) is System.Collections.IEnumerable kids)
@@ -279,6 +295,14 @@ namespace Coopfall.Lockstep
                 return sb.ToString();
             }
             if (v.GetType().IsPrimitive || v is string || v.GetType().IsEnum) return v.ToString();
+            if (v is System.Collections.IEnumerable en)
+            {
+                // hash sets and other non-list collections, in iteration order
+                var sb = new System.Text.StringBuilder(v.GetType().Name + "{");
+                int k = 0;
+                foreach (object e in en) { if (k++ >= 400) break; sb.Append(' ').Append(ShowShallow(e)); }
+                return sb.Append(" }").ToString();
+            }
             return v.GetType().Name;
         }
 

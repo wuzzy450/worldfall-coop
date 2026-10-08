@@ -62,6 +62,8 @@ namespace Coopfall
         public const int ProtocolVersion = 3;
 
         public readonly NetClient Net = new NetClient();
+        /// <summary>Set by the mod once Harmony is loaded.</summary>
+        public Coopfall.Lockstep.LockstepSession Lockstep;
         public readonly CoopConfig Cfg;
 
         public Phase Phase = Phase.Offline;
@@ -310,6 +312,20 @@ namespace Coopfall
             return r.guestPowers != "safe" || !r.blocked.Contains(powerId ?? "");
         }
 
+        /// <summary>The relay's guest rules for another player's power use (lockstep: the host checks requests).</summary>
+        public bool PowerAllowedFor(PlayerInfo p, string powerId)
+        {
+            if (p == null || p.spectator) return false;
+            RoomInfo r = CurrentRoom;
+            if (r == null || p.host) return true;
+            bool admin = string.IsNullOrEmpty(r.owner) ? p.host : string.Equals(r.owner, p.name, StringComparison.OrdinalIgnoreCase);
+            if (admin || r.everyoneAdmin) return true;
+            if (r.guestPowers == "none") return false;
+            return r.guestPowers != "safe" || !r.blocked.Contains(powerId ?? "");
+        }
+
+        public bool Downloading { get { return Phase == Phase.Downloading; } }
+
         public bool SpeedAllowed { get { return !Restricted || (!Spectating && (CurrentRoom?.guestSpeed ?? true)); } }
 
         /// <summary>Admin: change this world's settings (only the given fields).</summary>
@@ -406,11 +422,13 @@ namespace Coopfall
             if (IsHost)
             {
                 if (_snapRequestPending) { _snapRequestPending = false; UploadSnapshot("requested"); }
-                if (Cfg.hostSaveMinutes > 0 && now >= _nextHostSave && !_uploading)
+                // lockstep: everyone holds the world; a stored save that isn't the epoch's would
+                // make a guest that asks for the epoch's save start a new epoch
+                if (Cfg.hostSaveMinutes > 0 && now >= _nextHostSave && !_uploading && !(Lockstep.Active && OthersInRoom() > 0))
                     UploadSnapshot("autosave");
                 if (now >= _nextPreview) SendPreview();
             }
-            else if (Cfg.autoResyncMinutes > 0 && now - _lastSyncAt > Cfg.autoResyncMinutes * 60f && !CoopMod.UiBlocking)
+            else if (Cfg.autoResyncMinutes > 0 && now - _lastSyncAt > Cfg.autoResyncMinutes * 60f && !CoopMod.UiBlocking && !Lockstep.Active && !Lockstep.Starting)
             {
                 Log.Info("auto-resync (every " + Cfg.autoResyncMinutes + " min)");
                 Resync(true);
@@ -470,9 +488,16 @@ namespace Coopfall
 
         // ================================================================ packets
 
+        /// <summary>Packets that copy world state or replay actions: not while lockstep runs.</summary>
+        private static readonly HashSet<string> LiveOnly = new HashSet<string>
+        {
+            "wu", "wb", "wdata", "wneed", "wm", "wa", "ww", "wask", "wc", "wt", "power", "avatar", "act", "hit", "whit", "shot",
+        };
+
         private void HandlePacket(JObject p)
         {
             string t = (string)p["t"];
+            if ((Lockstep.Active || Lockstep.Starting) && LiveOnly.Contains(t)) return;
             switch (t)
             {
                 case "welcome": OnWelcome(p); break;
@@ -505,6 +530,7 @@ namespace Coopfall
                 case "snap-request":
                     if ((string)p["room"] != RoomId || !IsHost) break;
                     Log.Info("snapshot requested (" + (string)p["reason"] + ")");
+                    if (InWorld && WorldBoxApi.WorldReady && Lockstep.OnSnapshotRequested((string)p["reason"])) break;
                     if (InWorld && WorldBoxApi.WorldReady) UploadSnapshot((string)p["reason"]);
                     else _snapRequestPending = true;
                     break;
@@ -527,6 +553,9 @@ namespace Coopfall
                     break;
                 case "hit": case "whit": case "shot":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Combat.OnPacket(t, p);
+                    break;
+                case "wle": case "wli": case "wlg": case "wlr": case "wlready": case "wlh":
+                    if (RoomId != null) Lockstep.OnPacket(t, p);
                     break;
                 case "wu": case "wb": case "wdata": case "wneed":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Sync.OnPacket(t, p);
@@ -693,6 +722,7 @@ namespace Coopfall
             if (_dlBuf == null || (string)p["room"] != _dlRoom) { Toast?.Invoke("World download failed - try again"); SetPhase(Phase.Lobby); return; }
             byte[] data = _dlBuf.ToArray();
             _dlBuf = null;
+            _loadedSha = _dlSha;
             if (!string.IsNullOrEmpty(_dlSha) && !string.Equals(_dlSha, Sha256(data), StringComparison.OrdinalIgnoreCase))
             {
                 Log.Error("snapshot checksum mismatch");
@@ -702,6 +732,19 @@ namespace Coopfall
                 return;
             }
             StartLoad(data);
+        }
+
+        private string _loadedSha;
+
+        /// <summary>Lockstep host: load the save just sent to everyone, so this PC starts from the same bytes.</summary>
+        public void LoadOwnSnapshot(byte[] data)
+        {
+            _loadedSha = Sha256(data);
+            bool backed = _backedUp;
+            _backedUp = true;   // it's this world already: no "before co-op" backup
+            _travelTarget = null;
+            try { StartLoad(data); }
+            finally { _backedUp = backed || _backedUp; }
         }
 
         private void StartLoad(byte[] data)
@@ -801,6 +844,7 @@ namespace Coopfall
             _nextHostSave = Time.unscaledTime + Mathf.Max(1, Cfg.hostSaveMinutes) * 60f;
             _nextPreview = Time.unscaledTime + 12f;
             Log.Info("world ready (" + purged + " stale stand-ins removed)");
+            Lockstep.OnWorldLoaded(_loadedSha);
             if (traveled) Toast?.Invoke("Welcome to " + RoomName + "!");
         }
 
@@ -845,6 +889,14 @@ namespace Coopfall
                 return;
             }
             Log.Info("snapshot (" + reason + "): " + (data.Length / 1024) + " KB in " + (int)((Time.realtimeSinceStartup - t0) * 1000) + " ms");
+            UploadSnapshotData(data, reason);
+        }
+
+        /// <summary>Upload an already-made save of this world (lockstep: the epoch's save).</summary>
+        public void UploadSnapshotData(byte[] data, string reason)
+        {
+            if (!Online || RoomId == null) return;
+            if (_uploading) Log.Warn("upload (" + reason + ") while another is still going");
             _nextHostSave = Time.unscaledTime + Mathf.Max(1, Cfg.hostSaveMinutes) * 60f;
             _uploading = true;
             string room = RoomId;

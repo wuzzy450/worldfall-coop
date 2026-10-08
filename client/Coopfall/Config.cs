@@ -100,6 +100,12 @@ namespace Coopfall
         public int autoResyncMinutes = 30;
         /// <summary>Host streams creatures (positions, health, births, deaths) and buildings to guests continuously.</summary>
         public bool liveSync = true;
+        /// <summary>
+        /// Lockstep (experimental): every player's game simulates the world itself from the same
+        /// save, and only god powers travel. When the host has it on, guests with it on follow;
+        /// everyone needs the same mods. Possessing creatures is off while it runs.
+        /// </summary>
+        public bool lockstep = false;
         /// <summary>Live sync of cities, kingdoms, wars, cultures, ... and creatures' details (part of live sync).</summary>
         public bool syncMeta = true;
         /// <summary>Live sync of terrain, fire and burn marks (part of live sync).</summary>

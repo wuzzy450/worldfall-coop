@@ -68,6 +68,7 @@ namespace Coopfall
         private void InitLockstep()
         {
             Probe = Lockstep.DeterminismProbe.FromCommandLine();
+            Session.Lockstep = new Lockstep.LockstepSession(Session);
         }
 
         private void Start()
@@ -88,10 +89,17 @@ namespace Coopfall
                 UI.HandleKeys();
                 Prof.Run("session", Session.Tick);
                 Prof.Run("powers", Powers.Tick);
-                Prof.Run("sync", Sync.Tick);
-                Prof.Run("meta", Meta.Tick);
-                Prof.Run("tiles", Tiles.Tick);
-                Prof.Run("weather", Weather.Tick);
+                Prof.Run("lockstep", Session.Lockstep.Tick);
+                // lockstep: every game simulates; nothing copies world state over
+                bool live = !Session.Lockstep.Active && !Session.Lockstep.Starting;
+                if (live)
+                {
+                    Prof.Run("sync", Sync.Tick);
+                    Prof.Run("meta", Meta.Tick);
+                    Prof.Run("tiles", Tiles.Tick);
+                    Prof.Run("weather", Weather.Tick);
+                }
+                else NoPossessing();
                 if (Test != null) Prof.Run("test", Test.Tick);
                 if (Probe != null) Prof.Run("determinism", Probe.Tick);
                 Prof.Run("diag", Diag.Tick);
@@ -112,6 +120,19 @@ namespace Coopfall
                 ConsoleOnError();
             }
             catch (Exception e) { Log.Error("Update: " + e); }
+        }
+
+        /// <summary>
+        /// Possessed creatures follow one player's keys every frame, which lockstep doesn't carry yet:
+        /// let go while it runs.
+        /// </summary>
+        private void NoPossessing()
+        {
+            bool possessing = false;
+            try { possessing = ControllableUnit.isControllingUnit(); } catch { }
+            if (!possessing) return;
+            try { ControllableUnit.clear(false); } catch { }
+            UI.ShowToast("Lockstep is on: taking over creatures isn't available yet");
         }
 
         private bool _consoleMuted, _consoleWas;
@@ -136,6 +157,7 @@ namespace Coopfall
             if (!Config.game_loaded) return;
             try
             {
+                if (Session.Lockstep.Active || Session.Lockstep.Starting) { Prof.Run("diag-late", Diag.LateTick); return; }
                 Prof.Run("avatars-captureactions", Avatars.CaptureActions);
                 Prof.Run("avatars-late", Avatars.LateTick);
                 Prof.Run("sync-late", Sync.LateTick);

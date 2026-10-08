@@ -213,7 +213,12 @@ namespace Coopfall.Lockstep
             int n = Math.Min(x.Count, y.Count);
             for (int i = 0; i < n; i++)
             {
-                if (x[i].section != y[i].section) return "order differs at step " + i + ": " + x[i].section + " vs " + y[i].section;
+                if (x[i].section != y[i].section)
+                {
+                    string before = "";
+                    for (int k = Math.Max(0, i - 6); k < i; k++) before += " | step " + k + ": " + x[k].section;
+                    return "order differs at step " + i + ": " + x[i].section + " vs " + y[i].section + before;
+                }
                 if (x[i].state != y[i].state) return "after " + x[i].section + " (step " + i + " of the tick; previous: " + (i > 0 ? x[i - 1].section : "tick start") + ")";
             }
             if (x.Count != y.Count) return "different number of steps: " + x.Count + " vs " + y.Count;

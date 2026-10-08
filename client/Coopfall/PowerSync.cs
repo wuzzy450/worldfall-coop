@@ -71,10 +71,10 @@ namespace Coopfall
                     GodPower power = p;
                     switch (h.slot)
                     {
-                        case Slot.PowerBrush: p.click_power_brush_action = (tile, gp) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
-                        case Slot.Power: p.click_power_action = (tile, gp) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
-                        case Slot.Brush: p.click_brush_action = (tile, id) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
-                        case Slot.Action: p.click_action = (tile, id) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
+                        case Slot.PowerBrush: p.click_power_brush_action = (tile, gp) => !Denied(power, tile) && !ToLockstep(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
+                        case Slot.Power: p.click_power_action = (tile, gp) => !Denied(power, tile) && !ToLockstep(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
+                        case Slot.Brush: p.click_brush_action = (tile, id) => !Denied(power, tile) && !ToLockstep(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
+                        case Slot.Action: p.click_action = (tile, id) => !Denied(power, tile) && !ToLockstep(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
                     }
                     _hooks[p.id] = h;
                     wrapped++;
@@ -100,7 +100,7 @@ namespace Coopfall
         /// </summary>
         private bool HostRuns(GodPower p)
         {
-            if (_replaying || _s.IsHost || !_s.Online || !_s.InWorld || !_s.Cfg.liveSync || !Spawns(p)) return false;
+            if (_replaying || Lockstep.LockstepClock.InTick || _s.IsHost || !_s.Online || !_s.InWorld || !_s.Cfg.liveSync || !Spawns(p)) return false;
             SpawnsLeftToHost++;
             return true;
         }
@@ -118,6 +118,19 @@ namespace Coopfall
             return false;
         }
 
+        /// <summary>
+        /// Lockstep: a power used outside a tick is this player's click; it becomes an input for a
+        /// coming tick instead of running now. Inside a tick (inputs being applied, or a creature
+        /// using a power) it runs as usual.
+        /// </summary>
+        private bool ToLockstep(GodPower p, WorldTile tile)
+        {
+            Lockstep.LockstepSession ls = _s.Lockstep;
+            if (ls == null || _replaying || !ls.Active || Lockstep.LockstepClock.InTick) return false;
+            ls.SubmitPower(p.id, tile, Config.current_brush);
+            return true;
+        }
+
         private float _deniedToastAt;
 
         /// <summary>
@@ -126,7 +139,7 @@ namespace Coopfall
         /// </summary>
         private bool Denied(GodPower p, WorldTile tile)
         {
-            if (_replaying || tile == null || !_s.Online || _s.PowerAllowed(p.id)) return false;
+            if (_replaying || tile == null || !_s.Online || _s.PowerAllowed(p.id) || Lockstep.LockstepClock.InTick) return false;
             GodPower sel = World.world.selected_power;
             if (sel == null || sel.id != p.id) return false;
             if (Time.unscaledTime - _deniedToastAt > 2f)
@@ -159,7 +172,7 @@ namespace Coopfall
         {
             try
             {
-                if (_replaying || tile == null || !_s.InWorld) return result;
+                if (_replaying || tile == null || !_s.InWorld || Lockstep.LockstepClock.InTick) return result;
                 GodPower sel = World.world.selected_power;
                 if (sel == null || sel.id != p.id) return result;            // e.g. a god finger creature acting
                 if (!(Input.GetMouseButton(0) || Input.GetMouseButtonUp(0) || Input.touchCount > 0)) return result;

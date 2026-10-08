@@ -129,6 +129,9 @@ namespace Coopfall.Lockstep
                 MethodInfo statsUpdate = AccessTools.Method(typeof(GameStats), "updateStats");
                 if (statsUpdate != null) h.Patch(statsUpdate, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(StatsUpdatePrefix)), postfix: new HarmonyMethod(typeof(LockstepClock), nameof(StatsUpdatePostfix)));
                 else Log.Error("lockstep: GameStats.updateStats not found: play time may be saved wrong");
+                MethodInfo zones = AccessTools.Method(typeof(SimObjectsZones), "recalc");
+                if (zones != null) h.Patch(zones, postfix: new HarmonyMethod(typeof(LockstepClock), nameof(ZonesPostfix)));
+                else Log.Error("lockstep: SimObjectsZones.recalc not found: enemy searches may differ between PCs");
                 VisualIsolation.Install(h);
                 FrameClock.Install(h);
                 FrameUpdates.Install(h);
@@ -284,6 +287,13 @@ namespace Coopfall.Lockstep
             // the tile runners' shuffled order and position; rebuilt on first use
             SetStatic("WorldBehaviourTilesRunner", "_tiles_to_check", null);
             SetStatic("WorldBehaviourTilesRunner", "_tile_next_check", 0);
+            // genome generation sorts/shuffles the gene library's cached per-stat lists in place,
+            // so their order carries over from earlier worlds: drop the cache (rebuilt in asset order)
+            object genes = AccessTools.Field(typeof(GeneLibrary), "_cached_stat_genes_dictionary")?.GetValue(AssetManager.gene_library);
+            if (genes is System.Collections.IDictionary gd) gd.Clear();
+            else Log.Error("lockstep: GeneLibrary._cached_stat_genes_dictionary not found: new subspecies may differ between PCs");
+            // freeze waves (cold eras) keep their tiles in static lists
+            AccessTools.Method(AccessTools.TypeByName("WorldBehaviourTilesTemperatureFreezeWaves"), "clear")?.Invoke(null, null);
         }
 
         /// <summary>
@@ -522,7 +532,11 @@ namespace Coopfall.Lockstep
         {
             if (!Active) return;
             int n = 0;
-            foreach (BaseSystemManager m in World.world.list_all_sim_managers)
+            // the map's own list leaves some managers out (projectiles): take every manager field too
+            var managers = new List<BaseSystemManager>(World.world.list_all_sim_managers);
+            foreach (FieldInfo mf in typeof(MapBox).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                if (typeof(BaseSystemManager).IsAssignableFrom(mf.FieldType) && mf.GetValue(World.world) is BaseSystemManager bm && !managers.Contains(bm)) managers.Add(bm);
+            foreach (BaseSystemManager m in managers)
             {
                 object dead = m == null ? null : AccessTools.Field(m.GetType(), "_dead_objects")?.GetValue(m);
                 if (dead == null) continue;
@@ -534,6 +548,24 @@ namespace Coopfall.Lockstep
             SetStatic("BaseSystemManager", "_latest_hash", 1);
             Log.Info("lockstep: dropped " + n + " pooled objects before loading");
         }
+
+        /// <summary>
+        /// Each chunk lists the kingdoms with something in it, in the order they were first seen
+        /// there (its dictionaries never forget a kingdom), and enemy searches pick from that list
+        /// with the dice. Keep it in ID order after every refill.
+        /// </summary>
+        private static void ZonesPostfix()
+        {
+            if (!Active) return;
+            MapChunk[] chunks = ((MapChunkManager)_chunkManager.GetValue(World.world)).chunks;
+            for (int i = 0; i < chunks.Length; i++)
+            {
+                List<long> k = chunks[i].objects.kingdoms;
+                if (k.Count > 1) k.Sort();
+            }
+        }
+
+        private static readonly FieldInfo _chunkManager = AccessTools.Field(typeof(MapBox), "map_chunk_manager");
 
         private static bool CompareByIdPrefix(BaseSimObject __instance, BaseSimObject __0, ref int __result)
         {
