@@ -1,7 +1,7 @@
 # Third-party notices
 
-Coopfall's own code (everything in `client/`, `tools/`, `server/start_server.bat`,
-`server/protocol.md`, `server/test_client.py` and `server/cuberite/Plugins/WorldfallRooms/`) is
+Coopfall's own code (everything in `client/`, `server/start_server.bat`, `server/protocol.md`
+and `server/cuberite/Plugins/WorldfallRooms/`) is
 released under the MIT License, see [LICENSE](LICENSE).
 
 ## Included in this repository
@@ -43,8 +43,7 @@ Their license texts are in `server/cuberite/ThirdPartyLicenses/`, as shipped wit
 - **Worldfall** (optional, unofficial first-person mod for WorldBox by its own author):
   https://worldfall3d.com/ (source and downloads: https://github.com/s3cond2/worldfall).
   Not included; Coopfall works with or without it and only talks to it at run time.
-- **.NET SDK** to build the mod (https://dotnet.microsoft.com/download), and **Python 3** for the
-  optional test scripts.
+- **.NET SDK** to build the mod (https://dotnet.microsoft.com/download).
 
 ## Trademarks
 

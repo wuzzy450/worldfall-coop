@@ -7,7 +7,7 @@ using UnityEngine;
 namespace Coopfall
 {
     /// <summary>
-    /// "-coopfall-scenario lobby": two-game test of the world settings (tools/run-lobby.sh).
+    /// "-coopfall-scenario lobby": two-game test of the world settings.
     /// Host: sets a password, approval, "no destructive powers" and "no speed changes", lets every
     /// joiner in, removes the guest once it spectates, exports diagnostics.
     /// Guest (started with "-coopfall-fake-mod"): gets the password box, then the mods box, drops the

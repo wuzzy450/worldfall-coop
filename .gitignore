@@ -30,6 +30,10 @@ server/cuberite/worldfall_rooms.real-*/
 server/cuberite/console.log
 server/cuberite/console.bak-*.log
 
+# local test tools (relay test, scripted player, two-game test scripts)
+tools/
+server/test_client.py
+
 # local notes (handoffs, test plans), kept out of the repository
 NEXT-STEPS.md
 TESTSCENARIO.md

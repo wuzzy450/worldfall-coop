@@ -39,7 +39,6 @@ bubbles, and the co-op HUD and chat stay usable in first person.
   (source and downloads: https://github.com/s3cond2/worldfall).
 - To build the mod: Windows and the **.NET SDK** (8.0 is known to work):
   https://dotnet.microsoft.com/download
-- Optional, for the test scripts: **Python 3**.
 
 ## 1. Install the mod (every player)
 
@@ -174,7 +173,10 @@ no god powers, no speed changes, no possessing creatures.
 
 Co-op menu, **Export diagnostics** (or `/export` in chat) writes one zip to
 `coopfall\reports\` with the logs, settings, mod list and recent sync reports. Your Windows user
-name, home folder and the server address are removed, so it can be posted publicly.
+name, home folder and the server address are removed, so it can be posted publicly. If
+something looks out of sync, press **F9** first: it captures a sync report in every game of
+your world, which then goes into the zip. The mod's own log is
+`%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\log.txt`.
 
 ### Keys
 
@@ -246,34 +248,6 @@ top-down view so you can use the mouse, and returns to first person when you clo
 - Dragons (and a few other special creatures) can't be possessed. That's WorldBox's own rule,
   not something Coopfall or Worldfall changes.
 
-## Testing tools
-
-- `python server/test_client.py`: end-to-end test of the relay (start the server first).
-  Plays several fake clients and checks joining, snapshots, relays, live sync, host migration,
-  resuming after a dropped connection, world settings (password, mods check, approval, guest
-  limits, spectators, kick, the open defaults) and ping. Takes the port as an optional argument.
-- `sh tools/run-meet.sh` (Git Bash): two games on one PC (host loads save slot 1). Two humans
-  meet, host and guest take turns using god powers (creatures, curses, terrain, meteorite, bomb,
-  a rain cloud, ...), and after each one both games compare a sync report. Prints one `DIAG`
-  line per step ("everything matches" or what differs). About 5 minutes.
-- `sh tools/run-lobby.sh` (Git Bash): two games on one PC test the world settings: password,
-  mods check, approval, guest limits, spectating, kick and the diagnostics zip. Results are
-  `TEST lobby:` lines in both logs, plus `lobby-*.png` screenshots. Both scripts install the
-  built DLL and restart the relay with no stored worlds first.
-- `python tools/fake_player.py --room shared`: a scripted second player (walks an avatar,
-  uses god powers, chats) so you can test without a friend. `--help` for options.
-- Mod log: `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\log.txt`. Attach it
-  when reporting a bug.
-- Two games on one PC: start `worldbox.exe` twice with `-coopfall-profile host` and
-  `-coopfall-profile guest` (each gets its own config and log in `coopfall\profiles\<name>\`;
-  add `-logFile <path>` to give each its own Unity log). Adding `-coopfall-test` runs an
-  automated test: the host changes the world step by step (renames a kingdom, moves a border,
-  starts a war, changes terrain and a world law, renames a creature, kills one, possesses one in
-  first person) and the guest possesses a creature, kills one of the host's creatures with it and
-  attacks the host's possessed creature. Both games log `TEST state:` lines to compare and save
-  screenshots (`test-*.png`) next to their log. `-coopfall-test-load 1` makes the game load save
-  slot 1 before connecting.
-
 ## Repository layout
 
 | Path | What |
@@ -285,9 +259,6 @@ top-down view so you can use the mouse, and returns to first person when you clo
 | `server/cuberite/Plugins/WorldfallRooms/` | the relay plugin (Lua) |
 | `server/cuberite/` | bundled Cuberite runtime and its licenses |
 | `server/protocol.md` | wire protocol |
-| `server/test_client.py` | relay end-to-end test |
-| `tools/fake_player.py` | scripted test player |
-| `tools/run-meet.sh`, `tools/run-lobby.sh` | two-game tests (sync, world settings) |
 
 ## For AI agents
 
@@ -303,13 +274,15 @@ If you are an AI coding agent asked to build and test this project:
   `TileSync.cs` (terrain and fire), `WeatherSync.cs` (clouds and wind gusts), `CombatSync.cs`
   (hits and kills), `AvatarManager.cs`, `PowerSync.cs` (god powers, guest limits), `CoopUI.cs`,
   `ModScan.cs` (mods check), `DiagExport.cs` (diagnostics zip), `DiagSync.cs` (sync reports),
-  `TestDriver.cs` / `TestLobby.cs` (automated two-game tests), and `WorldfallBridge.cs`
+  `TestDriver.cs` / `TestLobby.cs` (scripted two-game test scenarios), and `WorldfallBridge.cs`
   (optional Worldfall integration via reflection).
 - Relay: `server/cuberite/Plugins/WorldfallRooms/Main.lua`; protocol in `server/protocol.md`.
-  Run `server/start_server.bat`, then `python server/test_client.py` should report all
-  checks passed.
-- To test without a second person, run the game with `autoConnect` on and use
-  `tools/fake_player.py` (or your own script speaking the protocol) as the other player.
+  Start it with `server/start_server.bat`.
+- To test on one PC, start `worldbox.exe` twice with `-coopfall-profile host` and
+  `-coopfall-profile guest` (each gets its own config and log in `coopfall\profiles\<name>\`;
+  add `-logFile <path>` for separate Unity logs). `-coopfall-scenario meet` runs a scripted
+  session in which both games compare sync reports after each step (`DIAG` lines in the host's
+  log); `-coopfall-test-load 1` loads save slot 1 first.
 - Note: Cuberite exits when its standard input closes; keep stdin open if you launch it
   from a script.
 
