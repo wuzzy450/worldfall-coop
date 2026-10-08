@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the built DLL, archive old logs, start host + guest in the "meet" scenario (relay must be running).
 taskkill //IM worldbox.exe >/dev/null 2>&1; sleep 5; taskkill //F //IM worldbox.exe >/dev/null 2>&1; sleep 1
-S=/c/Users/Wuzzy450/Desktop/staging-for-github-upload
+S=$(cd "$(dirname "$0")/.." && pwd)
 W="/c/Program Files (x86)/Steam/steamapps/common/worldbox"
 cp $S/client/Coopfall/bin/Release/Coopfall.dll "$W/worldbox_Data/StreamingAssets/mods/" || exit 1
 T=$(date +%H%M%S); P="$USERPROFILE/AppData/LocalLow/mkarpenko/WorldBox/coopfall/profiles"
