@@ -20,10 +20,11 @@ namespace Coopfall.Lockstep
 
         private readonly int _slot, _ticks, _runs, _seed;
         private readonly bool _quit;
-        private long _dumpTick = -1;
+        private long _dumpTick = -1, _dumpTo = -1;
         private bool _dumpAll;
         private readonly HashSet<long> _dumpIds = new HashSet<long>();
-        private readonly List<Dictionary<string, string>> _dumps = new List<Dictionary<string, string>>();
+        /// <summary>Per run, per dumped tick.</summary>
+        private readonly List<List<Dictionary<string, string>>> _dumps = new List<List<Dictionary<string, string>>>();
         private readonly List<Dictionary<string, double[]>> _tileDumps = new List<Dictionary<string, double[]>>();
         private Phase _phase = Phase.WaitWorld;
         private int _run;
@@ -60,7 +61,11 @@ namespace Coopfall.Lockstep
             for (int i = 0; i + 2 < a.Length; i++)
                 if (a[i].ToLowerInvariant() == "-coopfall-determinism-dump")
                 {
-                    long.TryParse(a[i + 1], out p._dumpTick);
+                    // a tick or a range "from-to" (reports the first tick in it that differs)
+                    string[] range = a[i + 1].Split('-');
+                    long.TryParse(range[0], out p._dumpTick);
+                    p._dumpTo = p._dumpTick;
+                    if (range.Length > 1) long.TryParse(range[1], out p._dumpTo);
                     if (a[i + 2] == "all") p._dumpAll = true;
                     else foreach (string id in a[i + 2].Split(',')) if (long.TryParse(id, out long v)) { p._dumpIds.Add(v); SectionTrace.Watch.Add(v); }
                 }
@@ -151,14 +156,27 @@ namespace Coopfall.Lockstep
             var d = new Dictionary<string, string>();
             foreach (Actor a in World.world.units)
                 if (a != null && (_dumpAll || _dumpIds.Contains(a.getID())))
-                    for (Type t = a.GetType(); t != null && t != typeof(object); t = t.BaseType)
-                        foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
-                        {
-                            object v;
-                            try { v = f.GetValue(a); } catch { continue; }
-                            d[a.getID() + "." + t.Name + "." + f.Name] = Show(v);
-                        }
+                {
+                    DumpObject(d, a.getID() + ".", a);
+                    object ai = HarmonyLib.AccessTools.Field(typeof(Actor), "ai")?.GetValue(a);
+                    if (ai != null) DumpObject(d, a.getID() + ".ai.", ai);
+                    object data = HarmonyLib.AccessTools.Field(typeof(Actor), "data")?.GetValue(a);
+                    if (data != null) DumpObject(d, a.getID() + ".data.", data);
+                    if (!_dumpAll && a.city != null) DumpObject(d, a.getID() + ".city.", a.city);
+                    if (!_dumpAll && a.current_tile?.region != null) DumpObject(d, a.getID() + ".region.", a.current_tile.region);
+                }
             return d;
+        }
+
+        private static void DumpObject(Dictionary<string, string> d, string prefix, object o)
+        {
+            for (Type t = o.GetType(); t != null && t != typeof(object); t = t.BaseType)
+                foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
+                {
+                    object v;
+                    try { v = f.GetValue(o); } catch { continue; }
+                    d[prefix + t.Name + "." + f.Name] = Show(v);
+                }
         }
 
         private static string Show(object v)
@@ -169,11 +187,41 @@ namespace Coopfall.Lockstep
             if (v is Vector2 v2) return v2.x.ToString("R") + "," + v2.y.ToString("R");
             if (v is Vector3 v3) return v3.x.ToString("R") + "," + v3.y.ToString("R") + "," + v3.z.ToString("R");
             if (v is WorldTile wt) return "tile " + wt.tile_id;
+            if (v is TileZone tz) return "zone " + tz.id;
+            if (v is MapRegion mr) return "region@" + (mr.tiles.Count > 0 ? mr.tiles[0].tile_id : -1) + "x" + mr.tiles.Count;
             if (v is BaseSimObject so) return so.GetType().Name + " " + so.getID();
             if (v is Asset asset) return "asset " + asset.id;
-            if (v is System.Collections.ICollection c) return v.GetType().Name + "[" + c.Count + "]";
+            if (v is BaseStats st)
+            {
+                var sb = new System.Text.StringBuilder("stats");
+                if (HarmonyLib.AccessTools.Field(typeof(BaseStats), "_stats_list")?.GetValue(st) is List<BaseStatsContainer> l)
+                    foreach (BaseStatsContainer x in l) sb.Append(' ').Append(x.id).Append('=').Append(x.value.ToString("R"));
+                return sb.ToString();
+            }
+            if (v is System.Collections.IDictionary dict)
+            {
+                // contents, in iteration order (order matters too)
+                var sb = new System.Text.StringBuilder(v.GetType().Name + "[" + dict.Count + "]");
+                int k = 0;
+                foreach (System.Collections.DictionaryEntry e in dict) { if (k++ >= 40) break; sb.Append(' ').Append(ShowShallow(e.Key)).Append('=').Append(ShowShallow(e.Value)); }
+                return sb.ToString();
+            }
+            if (v is System.Collections.ICollection c)
+            {
+                var sb = new System.Text.StringBuilder(v.GetType().Name + "[" + c.Count + "]");
+                int k = 0;
+                foreach (object e in c) { if (k++ >= 40) break; sb.Append(' ').Append(ShowShallow(e)); }
+                return sb.ToString();
+            }
             if (v.GetType().IsPrimitive || v is string || v.GetType().IsEnum) return v.ToString();
             return v.GetType().Name;
+        }
+
+        private static string ShowShallow(object v)
+        {
+            if (v is Status stt) return "status " + (HarmonyLib.AccessTools.Field(typeof(Status), "_asset")?.GetValue(stt) as Asset)?.id + "@" + HarmonyLib.AccessTools.Field(typeof(Status), "_end_time")?.GetValue(stt);
+            if (v is System.Collections.ICollection) return v.GetType().Name;
+            return Show(v);
         }
 
         /// <summary>Every simple field of every tile, right after load (to find leftovers on reused tiles).</summary>
@@ -217,7 +265,11 @@ namespace Coopfall.Lockstep
         private void OnTick(long tick)
         {
             if (_phase != Phase.Running || _cur == null) return;
-            if (tick == _dumpTick) _dumps.Add(DumpFields());
+            if (tick >= _dumpTick && tick <= _dumpTo)
+            {
+                while (_dumps.Count <= _run) _dumps.Add(new List<Dictionary<string, string>>());
+                _dumps[_run].Add(DumpFields());
+            }
             _cur.Add(StateHash.Compute(tick, TakeDetail()));
         }
 
@@ -286,17 +338,34 @@ namespace Coopfall.Lockstep
             }
             if (_dumps.Count >= 2)
             {
-                lines.Add("fields that differ after tick " + _dumpTick + " (count per field, one example):");
-                var perField = new Dictionary<string, int>();
-                var example = new Dictionary<string, string>();
-                foreach (var kv in _dumps[0])
+                int at = -1;
+                for (int i = 0; i < _dumps[0].Count && i < _dumps[1].Count && at < 0; i++)
+                    foreach (var kv in _dumps[0][i])
+                        if (!_dumps[1][i].TryGetValue(kv.Key, out string o) || o != kv.Value) { at = i; break; }
+                if (at < 0) lines.Add("dumped fields match for ticks " + _dumpTick + "-" + _dumpTo);
+                else
                 {
-                    if (!_dumps[1].TryGetValue(kv.Key, out string o) || o == kv.Value) continue;
-                    string field = kv.Key.Substring(kv.Key.IndexOf('.') + 1);
-                    perField[field] = (perField.TryGetValue(field, out int c) ? c : 0) + 1;
-                    if (!example.ContainsKey(field)) example[field] = kv.Key + ": " + kv.Value + " vs " + o;
+                    lines.Add("fields that differ after tick " + (_dumpTick + at) + " (count per field, one example):");
+                    for (int r = 0; r < 2; r++)
+                    {
+                        var all = new List<string>();
+                        if (at > 0) foreach (var kv in _dumps[r][at - 1]) all.Add("before " + kv.Key + " = " + kv.Value);
+                        foreach (var kv in _dumps[r][at]) all.Add(kv.Key + " = " + kv.Value);
+                        File.WriteAllLines(Path.Combine(_dir, "dump-run" + (r + 1) + ".txt"), all);
+                    }
+                    var perField = new Dictionary<string, int>();
+                    var example = new Dictionary<string, string>();
+                    foreach (var kv in _dumps[0][at])
+                    {
+                        if (!_dumps[1][at].TryGetValue(kv.Key, out string o) || o == kv.Value) continue;
+                        string field = kv.Key.Substring(kv.Key.IndexOf('.') + 1);
+                        perField[field] = (perField.TryGetValue(field, out int c) ? c : 0) + 1;
+                        if (!example.ContainsKey(field)) example[field] = kv.Key + ": " + kv.Value + " vs " + o;
+                    }
+                    foreach (var kv in perField) lines.Add("  " + kv.Value + "x " + example[kv.Key]);
+                    string split = SectionTrace.FirstSplit(_traces[0], _traces[1], _dumpTick + at);
+                    if (split != null) lines.Add("  watched creatures/dice first split " + split);
                 }
-                foreach (var kv in perField) lines.Add("  " + kv.Value + "x " + example[kv.Key]);
             }
             foreach (string l in lines) Log.Info("DETERMINISM: " + l);
             File.WriteAllLines(Path.Combine(_dir, "report.txt"), lines);

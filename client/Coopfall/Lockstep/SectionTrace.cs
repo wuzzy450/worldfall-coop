@@ -22,6 +22,7 @@ namespace Coopfall.Lockstep
         private static readonly List<Actor> _watched = new List<Actor>();
 
         private static FieldInfo _rand;
+        private static readonly AccessTools.FieldRef<Actor, float> _timerAction = AccessTools.FieldRefAccess<Actor, float>("timer_action");
         private static bool _installed;
 
         private static readonly string[] MapBoxSections =
@@ -67,6 +68,7 @@ namespace Coopfall.Lockstep
         {
             var h = new Harmony("coopfall.lockstep.trace.extra");
             var post = new HarmonyMethod(typeof(SectionTrace), nameof(ArgPostfix));
+            var postResult = new HarmonyMethod(typeof(SectionTrace), nameof(ArgResultPostfix));
             foreach (string item in list.Split(','))
             {
                 int dot = item.LastIndexOf('.');
@@ -76,22 +78,33 @@ namespace Coopfall.Lockstep
                 int n = 0;
                 if (t != null)
                     foreach (MethodInfo mi in t.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-                        if (mi.Name == name && !mi.IsAbstract) n += TryPatch(h, mi, post);
+                        if (mi.Name == name && !mi.IsAbstract) n += TryPatch(h, mi, mi.ReturnType == typeof(void) ? post : postResult);
                 Log.Info("lockstep: tracing " + item + ": " + n + " methods");
             }
         }
 
-        private static void ArgPostfix(MethodBase __originalMethod, object[] __args)
+        private static void ArgPostfix(MethodBase __originalMethod, object[] __args, object __instance)
         {
             if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick) return;
             string arg = "";
+            if (__instance is BaseSimObject self) arg = "[" + self.getID() + "]";
             if (__args != null && __args.Length > 0)
             {
                 object a = __args[0];
-                if (a is WorldTile wt) arg = "(tile " + wt.tile_id + ")";
-                else if (a is BaseSimObject so) arg = "(" + so.GetType().Name + " " + so.getID() + ")";
+                if (a is WorldTile wt) arg += "(tile " + wt.tile_id + ")";
+                else if (a is BaseSimObject so) arg += "(" + so.GetType().Name + " " + so.getID() + ")";
             }
             Current.Add(new Entry { tick = LockstepClock.Tick + 1, section = __originalMethod.DeclaringType.Name + "." + __originalMethod.Name + arg, state = State() });
+        }
+
+        private static void ArgResultPostfix(MethodBase __originalMethod, object[] __args, object __instance, object __result)
+        {
+            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick) return;
+            ArgPostfix(__originalMethod, __args, __instance);
+            Entry e = Current[Current.Count - 1];
+            string r = __result is BaseSimObject so ? so.GetType().Name + " " + so.getID() : __result is WorldTile wt ? "tile " + wt.tile_id : __result?.ToString() ?? "null";
+            e.section += " -> " + r;
+            Current[Current.Count - 1] = e;
         }
 
         private static int PatchBatchJobs(Harmony h, Type batch, HarmonyMethod post)
@@ -119,7 +132,7 @@ namespace Coopfall.Lockstep
 
         private static uint State()
         {
-            uint st = ((Unity.Mathematics.Random)_rand.GetValue(null)).state;
+            uint st = Dice.Fingerprint();
             if (Watch.Count == 0) return st;
             if (_watched.Count != Watch.Count)
             {
@@ -127,7 +140,8 @@ namespace Coopfall.Lockstep
                 foreach (Actor a in World.world.units) if (a != null && Watch.Contains(a.getID())) _watched.Add(a);
             }
             foreach (Actor a in _watched)
-                st = st * 31 + (uint)BitConverter.SingleToInt32Bits(a.current_position.x) * 7 + (uint)BitConverter.SingleToInt32Bits(a.current_position.y);
+                st = st * 31 + (uint)BitConverter.SingleToInt32Bits(a.current_position.x) * 7 + (uint)BitConverter.SingleToInt32Bits(a.current_position.y)
+                    + (uint)BitConverter.SingleToInt32Bits(_timerAction(a)) * 13;
             return st;
         }
 

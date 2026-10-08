@@ -103,11 +103,14 @@ namespace Coopfall.Lockstep
                 _behAsset = AccessTools.FieldRefAccess<WorldBehaviour, WorldBehaviourAsset>("_asset");
                 if (worldBeh != null) h.Patch(worldBeh, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(WorldBehaviourPrefix)));
                 else Log.Error("lockstep: WorldBehaviour.update not found: zooming out may change the world");
+                MethodInfo actionHappening = AccessTools.Method(typeof(MapBox), "isActionHappening");
+                if (actionHappening != null) h.Patch(actionHappening, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(WindowOnScreenPrefix)));
+                else Log.Error("lockstep: MapBox.isActionHappening not found: a player's mouse may delay map updates");
                 if (windowOnScreen != null) h.Patch(windowOnScreen, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(WindowOnScreenPrefix)));
                 else Log.Error("lockstep: MapBox.isWindowOnScreen not found: an open window may change the world");
                 if (layerDraw != null && _updateDirty != null) h.Patch(layerDraw, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(LayerDrawPrefix)));
                 else Log.Error("lockstep: MapLayer.draw not found: explosions and tile flashes may follow what's on screen");
-                if (chunks != null) h.Patch(chunks, postfix: new HarmonyMethod(typeof(LockstepClock), nameof(ChunksPostfix)));
+                if (chunks != null) h.Patch(chunks, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(ChunksPrefix)), postfix: new HarmonyMethod(typeof(LockstepClock), nameof(ChunksPostfix)));
                 else Log.Error("lockstep: MapChunkManager.update not found: pathfinding may differ between PCs");
                 if (firstLoad != null) h.Patch(firstLoad, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(FreshObjectsPrefix)));
                 else Log.Error("lockstep: SaveManager.loadSubspecies not found: loaded objects may carry state from the previous world");
@@ -117,6 +120,13 @@ namespace Coopfall.Lockstep
                 else Log.Error("lockstep: Actor.CompareTo not found: creature sorting may differ between PCs");
                 if (buildingCmp != null) h.Patch(buildingCmp, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(CompareByIdPrefix)));
                 else Log.Error("lockstep: Building.CompareTo not found: building sorting may differ between PCs");
+                MethodInfo loadStep = AccessTools.Method(typeof(SmoothLoader), "doActions");
+                _loaderIndex = AccessTools.StaticFieldRefAccess<int>(AccessTools.Field(typeof(SmoothLoader), "_index"));
+                _loaderActions = AccessTools.Field(typeof(SmoothLoader), "_actions");
+                _loaderId = AccessTools.Field(AccessTools.TypeByName("MapLoaderContainer"), "id");
+                if (loadStep != null) h.Patch(loadStep, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(LoadStepPrefix)));
+                else Log.Error("lockstep: SmoothLoader.doActions not found: loading may roll different dice on each PC");
+                VisualIsolation.Install(h);
                 Installed = true;
                 Log.Info("lockstep: installed (Harmony " + typeof(Harmony).Assembly.GetName().Version + ")");
                 return true;
@@ -172,6 +182,8 @@ namespace Coopfall.Lockstep
                 flashState.SetValue(t, 0);   // flash effect; the pending list is cleared too
             }
             SortTileSets();
+            foreach (MapChunk c in ((MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world)).chunks)
+                SortChunkObjects(c.objects);
             // world behaviour timers aren't in the save and carry over from the previous world
             if (_behTimer != null)
                 foreach (WorldBehaviourAsset b in AssetManager.world_behaviours.list)
@@ -216,9 +228,37 @@ namespace Coopfall.Lockstep
             SetField(w.subspecies, "_timer_unstable_genome", 0f);
             SetField(AccessTools.Field(typeof(MapBox), "era_manager")?.GetValue(w), "_timer_special_action", 0f);
             SetStatic("TaxiManager", "timer_check", 0f);
+            // cached "is kingdom A an enemy of B", keyed by hash codes, which restart every load
+            Kingdom.cache_enemy_check.clear();
+            ResetManagerTimers(w);
             // the tile runners' shuffled order and position; rebuilt on first use
             SetStatic("WorldBehaviourTilesRunner", "_tiles_to_check", null);
             SetStatic("WorldBehaviourTilesRunner", "_tile_next_check", 0);
+        }
+
+        /// <summary>
+        /// Managers on the map keep interval timers (rebuild the per-chunk creature lists every
+        /// 0.1 s, ...) that aren't saved, so their phase carries over from the previous world.
+        /// Zero every float "timer" field on the map's simulation helpers (not its Unity objects).
+        /// </summary>
+        private static void ResetManagerTimers(MapBox w)
+        {
+            var names = new List<string>();
+            foreach (FieldInfo mf in typeof(MapBox).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                Type mt = mf.FieldType;
+                if (mt.Assembly != typeof(MapBox).Assembly || mt.IsValueType || typeof(UnityEngine.Object).IsAssignableFrom(mt) || mt == typeof(PlayerControl)) continue;
+                object m = mf.GetValue(w);
+                if (m == null) continue;
+                for (Type t = m.GetType(); t != null && t != typeof(object); t = t.BaseType)
+                    foreach (FieldInfo f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                        if (f.FieldType == typeof(float) && f.Name.IndexOf("timer", StringComparison.OrdinalIgnoreCase) >= 0 && !f.IsInitOnly)
+                        {
+                            if ((float)f.GetValue(m) != 0f) names.Add(mf.Name + "." + f.Name);
+                            f.SetValue(m, 0f);
+                        }
+            }
+            if (names.Count > 0) Log.Info("lockstep: reset timers " + string.Join(", ", names));
         }
 
         private static void SetField(object target, string field, object value)
@@ -233,6 +273,42 @@ namespace Coopfall.Lockstep
             FieldInfo f = AccessTools.Field(AccessTools.TypeByName(type), field);
             if (f == null) { Log.Error("lockstep: " + type + "." + field + " not found (game changed?)"); return; }
             f.SetValue(null, value);
+        }
+
+        private static readonly AccessTools.FieldRef<ChunkObjectContainer, Dictionary<long, List<Actor>>> _chunkUnits = AccessTools.FieldRefAccess<ChunkObjectContainer, Dictionary<long, List<Actor>>>("_dict_units");
+        private static readonly AccessTools.FieldRef<ChunkObjectContainer, Dictionary<long, List<Building>>> _chunkBuildings = AccessTools.FieldRefAccess<ChunkObjectContainer, Dictionary<long, List<Building>>>("_dict_buildings");
+        private static readonly AccessTools.FieldRef<ChunkObjectContainer, HashSet<long>> _chunkKingdomSet = AccessTools.FieldRefAccess<ChunkObjectContainer, HashSet<long>>("_hash_kingdoms");
+
+        /// <summary>
+        /// Each chunk keeps its creatures and buildings per kingdom, in dictionaries that remember
+        /// every kingdom ever seen there, previous worlds included (chunks are reused). Their key
+        /// order is the order enemies are found in. Keep only kingdoms with something in the chunk,
+        /// in ID order.
+        /// </summary>
+        private static void SortChunkObjects(ChunkObjectContainer o)
+        {
+            Dictionary<long, List<Actor>> units = _chunkUnits(o);
+            Dictionary<long, List<Building>> buildings = _chunkBuildings(o);
+            var keys = new List<long>();
+            foreach (var kv in buildings) if (kv.Value.Count > 0 || (units.TryGetValue(kv.Key, out List<Actor> u) && u.Count > 0)) keys.Add(kv.Key);
+            foreach (var kv in units) if (kv.Value.Count > 0 && !keys.Contains(kv.Key)) keys.Add(kv.Key);
+            keys.Sort();
+            var u2 = new List<KeyValuePair<long, List<Actor>>>();
+            var b2 = new List<KeyValuePair<long, List<Building>>>();
+            foreach (long k in keys)
+            {
+                u2.Add(new KeyValuePair<long, List<Actor>>(k, units.TryGetValue(k, out List<Actor> ul) ? ul : new List<Actor>()));
+                b2.Add(new KeyValuePair<long, List<Building>>(k, buildings.TryGetValue(k, out List<Building> bl) ? bl : new List<Building>()));
+            }
+            units.Clear();
+            buildings.Clear();
+            foreach (var kv in u2) units.Add(kv.Key, kv.Value);
+            foreach (var kv in b2) buildings.Add(kv.Key, kv.Value);
+            o.kingdoms.Clear();
+            o.kingdoms.AddRange(keys);
+            HashSet<long> set = _chunkKingdomSet(o);
+            set.Clear();
+            set.UnionWith(keys);
         }
 
         /// <summary>
@@ -358,6 +434,18 @@ namespace Coopfall.Lockstep
         /// Pathfinding breaks ties between equally good regions by their order in each region's
         /// neighbour list, which comes from pooled objects and hash sets. Keep those lists sorted.
         /// </summary>
+        /// <summary>
+        /// Recalculating map regions shuffles their tiles with dice (and may run in parallel).
+        /// Outside a tick (end of loading, world clean-up) seed the dice and run it on one thread.
+        /// </summary>
+        private static void ChunksPrefix()
+        {
+            if (!Active) return;
+            ParallelOptions po = _parallel(World.world);
+            if (po != null && po.MaxDegreeOfParallelism != 1) po.MaxDegreeOfParallelism = 1;
+            if (!_inTickAll) Randy.resetSeed(TickSeed(Seed ^ 0x3C4F0C4F, Tick));
+        }
+
         private static void ChunksPostfix(MapChunkManager __instance)
         {
             if (!Active) return;
@@ -391,6 +479,9 @@ namespace Coopfall.Lockstep
                 n += (int)AccessTools.Property(dead.GetType(), "Count").GetValue(dead, null);
                 AccessTools.Method(dead.GetType(), "Clear").Invoke(dead, null);
             }
+            // hash codes (hash set order, sorting) come from a counter that runs across worlds:
+            // restart it so the loaded objects get the same hashes on every PC
+            SetStatic("BaseSystemManager", "_latest_hash", 1);
             Log.Info("lockstep: dropped " + n + " pooled objects before loading");
         }
 
@@ -416,6 +507,30 @@ namespace Coopfall.Lockstep
         private static void CooldownsPrefix(Actor __instance)
         {
             if (Active && !_inTick) Randy.resetSeed(TickSeed(Seed ^ 0x10AD5EED, __instance.getID()));
+        }
+
+        private static AccessTools.FieldRef<int> _loaderIndex;
+        private static FieldInfo _loaderActions, _loaderId;
+        private static readonly Dictionary<string, int> _loadStepSeen = new Dictionary<string, int>();
+
+        /// <summary>
+        /// Loading runs one step per frame or so, and some steps roll dice (phenotype shades, ...)
+        /// with whatever state drawing and UI left behind. Seed each step from its name (and how
+        /// often that name came up in this load); the step's position in the list differs
+        /// between the first load of a session and later ones.
+        /// </summary>
+        private static void LoadStepPrefix()
+        {
+            if (!Active || _inTickAll) return;
+            string id = "";
+            if (_loaderActions?.GetValue(null) is System.Collections.IList list && _loaderIndex() < list.Count)
+                id = _loaderId?.GetValue(list[_loaderIndex()]) as string ?? "";
+            if (_loaderIndex() == 0) _loadStepSeen.Clear();
+            _loadStepSeen.TryGetValue(id, out int seen);
+            _loadStepSeen[id] = seen + 1;
+            uint h = 2166136261;
+            foreach (char c in id) h = (h ^ c) * 16777619;
+            Randy.resetSeed(TickSeed(Seed ^ 0x5A0E5EED ^ (int)h, seen));
         }
 
         private static void RunTicks(MapBox map)

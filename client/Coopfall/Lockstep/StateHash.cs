@@ -85,6 +85,7 @@ namespace Coopfall.Lockstep
         private static readonly System.Reflection.FieldInfo _aiTaskIndex = AccessTools.Field(typeof(AiSystemActor), "task_index");
         private static readonly AccessTools.FieldRef<Building, BuildingAsset> _bAsset = AccessTools.FieldRefAccess<Building, BuildingAsset>("asset");
         private static readonly AccessTools.FieldRef<MapBox, MapStats> _mapStats = AccessTools.FieldRefAccess<MapBox, MapStats>("map_stats");
+        private static readonly AccessTools.FieldRef<WorldTile, int> _flash = AccessTools.FieldRefAccess<WorldTile, int>("flash_state");
         private static readonly AccessTools.FieldRef<MapBox, WorldTile[]> _tiles = AccessTools.FieldRefAccess<MapBox, WorldTile[]>("tiles_list");
         private static readonly System.Reflection.FieldInfo _randField = AccessTools.Field(typeof(Randy), "rand");
 
@@ -183,7 +184,7 @@ namespace Coopfall.Lockstep
             if (_randField != null)
             {
                 var r = (Unity.Mathematics.Random)_randField.GetValue(null);
-                t.rng = Mix(r.state);
+                t.rng = Mix(r.state) ^ Mix((ulong)Dice.Fingerprint() << 32);
             }
 
             if (TileEvery > 0 && tick % TileEvery == 0)
@@ -200,6 +201,9 @@ namespace Coopfall.Lockstep
                     uint v = (uint)(type * 31 + tile.health * 2 + (fire ? 1 : 0));
                     v = v * 31 + (uint)tile.burned_stages;
                     v = v * 31 + (uint)(tile.main_type != null ? tile.main_type.index_id : -1);
+                    v = v * 31 + (uint)_flash(tile);
+                    v = v * 31 + (uint)tile.timestamp_type_changed.GetHashCode();
+                    v = v * 31 + (tile.data.frozen ? 1u : 0u);
                     th += Mix(((ulong)(uint)i << 32) ^ v);
                 }
                 t.tiles = th;
