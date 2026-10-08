@@ -374,7 +374,7 @@ namespace Coopfall
                 case "diag":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Diag.OnPacket(p);
                     break;
-                case "hit": case "whit":
+                case "hit": case "whit": case "shot":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Combat.OnPacket(t, p);
                     break;
                 case "wu": case "wb": case "wdata": case "wneed":

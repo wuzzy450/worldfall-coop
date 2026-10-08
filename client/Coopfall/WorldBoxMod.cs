@@ -122,6 +122,7 @@ namespace Coopfall
                 Prof.Run("avatars-captureactions", Avatars.CaptureActions);
                 Prof.Run("avatars-late", Avatars.LateTick);
                 Prof.Run("sync-late", Sync.LateTick);
+                Prof.Run("shots-late", Combat.LateTick);
                 Prof.Run("diag-late", Diag.LateTick);
             }
             catch (Exception e) { Log.Error("LateUpdate: " + e); }

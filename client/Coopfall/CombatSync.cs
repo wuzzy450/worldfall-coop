@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using System.Globalization;
 using Newtonsoft.Json.Linq;
@@ -66,12 +67,15 @@ namespace Coopfall
                 int keep = owner.localHp > 0 ? owner.localHp : victim.getMaxHealth();
                 int dmg = keep - victim.getHealth();
                 SetHealth(victim, keep);                       // their game decides
-                if (fromMe && dmg > 0)
+                // The host's creatures (guards hunting a bounty, wolves...) are real only here: their hits count too.
+                Actor npc = by as Actor;
+                bool fromHostSim = _s.IsHost && npc != null && npc != mine && npc != victim && mod.Avatars.PuppetOwner(npc) == null;
+                if ((fromMe || fromHostSim) && dmg > 0)
                 {
                     _s.Net.Send("hit", new JObject
                     {
                         ["to"] = owner.id, ["aid"] = Id(victim), ["dmg"] = dmg,
-                        ["at"] = (int)LastAttackType(victim), ["by"] = Id(mine),
+                        ["at"] = (int)LastAttackType(victim), ["by"] = fromMe ? Id(mine) : Id(npc),
                     });
                     HitsSent++;
                 }
@@ -88,11 +92,69 @@ namespace Coopfall
                 HitsSent++;
                 return;                                        // shown dying here at once; the host confirms
             }
-            if (!victim.hasHealth() && mod.Sync.IsHostUnit(victim.getID()))
+            // My own possessed creature is mine to lose: my game decides its death, not the host's.
+            if (victim != mine && !victim.hasHealth() && mod.Sync.IsHostUnit(victim.getID()))
             {
                 SetHealth(victim, 1);                          // the host announces this creature's death
                 DeathsPrevented++;
             }
+        }
+
+        // ================================================================ shots (arrows, laser guns, spells)
+
+        // Everything that flies goes through the game's projectiles (Worldfall's guns and bows too).
+        // Damage is decided when the attack is made (and players' hits are relayed above), so a
+        // shot is sent for the others to see: the host sends every new one, a guest only its own.
+        private HashSet<Projectile> _shots = new HashSet<Projectile>(), _shotsNext = new HashSet<Projectile>();
+        private readonly HashSet<Projectile> _replayed = new HashSet<Projectile>();
+        public int ShotsSent, ShotsShown;
+
+        public void LateTick()
+        {
+            if (!_s.Online || !_s.InWorld || !WorldBoxApi.WorldReady || World.world.projectiles == null) return;
+            Actor mine = Mine();
+            bool others = _s.OthersInRoom() > 0;
+            _shotsNext.Clear();
+            foreach (Projectile pr in World.world.projectiles.list)
+            {
+                if (pr == null || !pr.isAlive() || pr.asset == null) continue;
+                _shotsNext.Add(pr);
+                if (_shots.Contains(pr) || _replayed.Contains(pr) || !others) continue;
+                var by = R.Get(pr, "by_who") as BaseSimObject;
+                if (!_s.IsHost && (mine == null || by != mine)) continue;
+                var target = R.Get(pr, "_main_target") as BaseSimObject;
+                Vector2 from = pr.getCurrentPosition();
+                Vector2 to = R.Get(pr, "_vector_target") is Vector2 v ? v : from;
+                _s.Net.Send("shot", new JObject
+                {
+                    ["p"] = pr.asset.id, ["x"] = R2(from.x), ["y"] = R2(from.y), ["tx"] = R2(to.x), ["ty"] = R2(to.y), ["z"] = R2(pr.getCurrentHeight()),
+                    ["by"] = by is Actor ba ? Id(ba) : null, ["tg"] = target is Actor ta ? Id(ta) : null,
+                });
+                ShotsSent++;
+            }
+            _replayed.IntersectWith(_shotsNext);
+            var t = _shots; _shots = _shotsNext; _shotsNext = t;
+        }
+
+        private static double R2(float f) { return Math.Round(f, 2); }
+
+        private void OnShot(JObject p)
+        {
+            Actor by = WorldBoxApi.FindActor(ParseId(p["by"]));
+            if (by != null && by == Mine()) return;                // my own shot coming back
+            string asset = (string)p["p"];
+            if (asset == null || AssetManager.projectiles.get(asset) == null) return;
+            Actor target = WorldBoxApi.FindActor(ParseId(p["tg"]));
+            var from = new Vector3((float?)p["x"] ?? 0f, (float?)p["y"] ?? 0f, 0f);
+            var to = new Vector3((float?)p["tx"] ?? 0f, (float?)p["ty"] ?? 0f, 0f);
+            try
+            {
+                _applying = true;
+                Projectile pr = World.world.projectiles.spawn(by, target, asset, from, to, 0f, (float?)p["z"] ?? 0.25f);
+                if (pr != null) { _replayed.Add(pr); ShotsShown++; }
+            }
+            catch (Exception e) { Log.Warn("shot replay: " + e.Message); }
+            finally { _applying = false; }
         }
 
         // ================================================================ incoming
@@ -104,6 +166,7 @@ namespace Coopfall
                 if (t == "hit") OnHitPacket(p);
                 else if (t == "whit") OnHostHit(p);
                 else if (t == "act") OnAct(p);
+                else if (t == "shot") OnShot(p);
             }
             catch (Exception e) { Log.Warn("combat '" + t + "': " + e.Message); }
         }

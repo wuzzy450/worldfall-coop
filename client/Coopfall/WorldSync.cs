@@ -186,7 +186,7 @@ namespace Coopfall
 
         // ================================================================ host
 
-        private class Sent { public string asset; public int x, y, hp, f, h = -1, z, vx, vy; }
+        private class Sent { public string asset; public int x, y, hp, f, h = -1, z, vx, vy; public long bld; }
         private readonly Dictionary<long, int> _heading = new Dictionary<long, int>();   // last direction each creature walked (0-255)
         private class Motion { public Vector2 vel, anchor; public float anchorAt = -1f; public readonly List<KeyValuePair<float, Vector2>> samples = new List<KeyValuePair<float, Vector2>>(); }
         private readonly Dictionary<long, Motion> _motion = new Dictionary<long, Motion>();   // real velocity of each creature (tiles/s)
@@ -243,7 +243,7 @@ namespace Coopfall
             else if (_primed) ForcedTick(now);
         }
 
-        private struct UnitRow { public long id; public string asset; public int x, y, hp, f, h, vx, vy, z; }   // vx, vy: velocity in tiles/s *10   // f: 1 facing right (flip), 2 walking, 4 pushed by forces; h: heading 0-255 or -1
+        private struct UnitRow { public long id; public string asset; public int x, y, hp, f, h, vx, vy, z; public long bld; }   // bld: building it is inside (0: none)   // vx, vy: velocity in tiles/s *10   // f: 1 facing right (flip), 2 walking, 4 pushed by forces; h: heading 0-255 or -1
         private struct BuildRow { public long id; public string asset; public int st; }
 
         /// <summary>The direction a creature last walked in (what Worldfall turns its 3D body to), 0-255, or -1 if unknown.</summary>
@@ -312,6 +312,7 @@ namespace Coopfall
                 f = (GetFlip(a) ? 1 : 0) | (a.is_moving || forced ? 2 : 0) | (forced ? 4 : 0),
                 h = Heading(a, id),
                 vx = Mathf.RoundToInt(vel.x * 10f), vy = Mathf.RoundToInt(vel.y * 10f), z = Mathf.RoundToInt(Mathf.Max(0f, a.position_height) * 10f),
+                bld = WorldBoxApi.InsideBuilding(a)?.getID() ?? 0,
             };
         }
 
@@ -333,7 +334,7 @@ namespace Coopfall
                 if (a == null || !a.isAlive() || a.asset == null || !_sentUnits.TryGetValue(id, out Sent s)) continue;
                 UnitRow row = MakeRow(a, id, now);
                 if ((row.f & 4) != 0) still.Add(id);
-                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z; s.vx = row.vx; s.vy = row.vy; s.vx = row.vx; s.vy = row.vy;
+                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z; s.vx = row.vx; s.vy = row.vy; s.vx = row.vx; s.vy = row.vy; s.bld = row.bld;
                 rows.Add(row);
             }
             _forced.Clear();
@@ -363,12 +364,12 @@ namespace Coopfall
                     _sentUnits[id] = s;
                     _sentRefs[id] = a;
                 }
-                else if (!full && s.asset == row.asset && s.hp == row.hp && s.f == row.f && Mathf.Abs(s.z - row.z) < 2 && Mathf.Abs(s.x - row.x) < 2 && Mathf.Abs(s.y - row.y) < 2
+                else if (!full && s.asset == row.asset && s.hp == row.hp && s.f == row.f && s.bld == row.bld && Mathf.Abs(s.z - row.z) < 2 && Mathf.Abs(s.x - row.x) < 2 && Mathf.Abs(s.y - row.y) < 2
                          && Mathf.Abs(s.vx - row.vx) < 5 && Mathf.Abs(s.vy - row.vy) < 5
                          && (s.h == row.h || (s.h >= 0 && row.h >= 0 && Mathf.Abs(Mathf.DeltaAngle(s.h * 1.40625f, row.h * 1.40625f)) < 12f)))
                     continue;                                // hasn't moved a fifth of a tile or turned: skip in delta ticks
                 if (((s.f ^ row.f) & 1) != 0) _flipAt[id] = now;
-                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z; s.vx = row.vx; s.vy = row.vy;
+                s.asset = row.asset; s.x = row.x; s.y = row.y; s.hp = row.hp; s.f = row.f; s.h = row.h; s.z = row.z; s.vx = row.vx; s.vy = row.vy; s.bld = row.bld;
                 rows.Add(row);
             }
             // Creatures gone since the last tick: announce how they died.
@@ -491,12 +492,12 @@ namespace Coopfall
                     if (u.Length > 0) u.Append(',');
                     u.Append((r.id - prev).ToString(CultureInfo.InvariantCulture)).Append(',').Append(ai).Append(',')
                      .Append(r.x).Append(',').Append(r.y).Append(',').Append(r.hp).Append(',').Append(r.f).Append(',').Append(r.h)
-                     .Append(',').Append(r.vx).Append(',').Append(r.vy).Append(',').Append(r.z);
+                     .Append(',').Append(r.vx).Append(',').Append(r.vy).Append(',').Append(r.z).Append(',').Append(r.bld);
                     prev = r.id;
                 }
                 var sb = Begin("wu");
                 sb.Append(",\"seq\":").Append(seq).Append(",\"part\":").Append(part).Append(",\"parts\":").Append(parts)
-                  .Append(",\"st\":10,\"ts\":").Append(DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond).Append(",\"full\":").Append(full ? "true" : "false").Append(",\"idu\":").Append(idu)
+                  .Append(",\"st\":11,\"ts\":").Append(DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond).Append(",\"full\":").Append(full ? "true" : "false").Append(",\"idu\":").Append(idu)
                   .Append(",\"ck\":[").Append(cities).Append(',').Append(kingdoms).Append("]")
                   .Append(",\"a\":").Append(JsonConvert.SerializeObject(assets)).Append(",\"u\":[").Append(u).Append("]");
                 if (part == 0 && _deaths.Count > 0)
@@ -675,8 +676,10 @@ namespace Coopfall
                 int h = stride > 6 ? (int)u[i + 6] : -1;
                 Vector2? vel = stride > 8 ? new Vector2((int)u[i + 7] / 10f, (int)u[i + 8] / 10f) : (Vector2?)null;
                 float z = stride > 9 ? (int)u[i + 9] / 10f : 0f;
+                long bld = stride > 10 ? (long)u[i + 10] : 0;
                 if (full) _ucSeen.Add(id);
                 ApplyUnit(id, asset, pos, hp, f, h, vel, z, now);
+                if (stride > 10) { Actor ia = WorldBoxApi.FindActor(id); if (ia != null && !Exempt(ia)) SyncInside(ia, bld); }
             }
 
             if (full && ++_ucGot == parts && part == parts - 1)
@@ -795,6 +798,26 @@ namespace Coopfall
 
             // The host decides what this creature does: stop whatever our own AI started.
             try { a.cancelAllBeh(); } catch { }
+        }
+
+        /// <summary>Puts a creature into the building the host has it in (hidden, out of reach), or back out.</summary>
+        public static void SyncInside(Actor a, long bld)
+        {
+            if (a == null || !a.isAlive()) return;
+            try
+            {
+                Building inside = WorldBoxApi.InsideBuilding(a);
+                if (bld != 0)
+                {
+                    if (inside != null && inside.getID() == bld) return;
+                    Building b = World.world.buildings.get(bld);
+                    if (b == null || !b.isAlive()) return;
+                    if (inside != null) WorldBoxApi.ExitBuilding(a);
+                    WorldBoxApi.StayInBuilding(a, b);
+                }
+                else if (inside != null) WorldBoxApi.ExitBuilding(a);
+            }
+            catch (Exception e) { Log.Warn("inside sync #" + a.getID() + ": " + e.Message); }
         }
 
         /// <summary>Guest, diagnostics: what the host last said about a creature (heading in degrees, velocity) and how we drive it.</summary>

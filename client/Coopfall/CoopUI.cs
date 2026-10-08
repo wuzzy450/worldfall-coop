@@ -242,7 +242,9 @@ namespace Coopfall
         private void DrawWorldOverlays()
         {
             if (!_s.InWorld || !WorldBoxApi.WorldReady) return;
-            if (_fp) { DrawFirstPersonOverlays(); return; }
+            // Worldfall's 3D god view (zoomed-in map) covers the 2D map: place tags with its projection too.
+            bool god = !_fp && WorldfallBridge.GodView;
+            if (_fp || god) { DrawFirstPersonOverlays(god); return; }
             Camera cam = WorldBoxApi.MapCamera;
             // cullingMask 0: Worldfall has hidden the 2D map behind one of its own views
             if (cam == null || cam.cullingMask == 0 || !WorldBoxApi.MapCameraIsTopmost(cam)) return;
@@ -295,16 +297,16 @@ namespace Coopfall
         }
 
         /// <summary>Name tags, health bars and chat bubbles over remote players inside Worldfall's 3D view.</summary>
-        private void DrawFirstPersonOverlays()
+        private void DrawFirstPersonOverlays(bool god = false)
         {
             if (!_cfg.showNameTags) return;
             float now = Time.unscaledTime;
             foreach (AvatarManager.Remote r in _av.Remotes.Values)
             {
                 if (!r.on || r.actor == null || !r.actor.isAlive()) continue;
-                if (!WorldfallBridge.ProjectHead(r.actor, 0.35f, out Vector2 sp, out float depth)) continue;
+                if (!WorldfallBridge.ProjectHead(r.actor, 0.35f, out Vector2 sp, out float depth, god)) continue;
                 r.tagAt = now;
-                float fade = 1f - Mathf.Clamp01((depth - 40f) / 20f);
+                float fade = god ? 1f : 1f - Mathf.Clamp01((depth - 40f) / 20f);
                 if (fade <= 0f) continue;
                 Vector2 g = sp / _k;
                 GUI.color = new Color(1f, 1f, 1f, fade);

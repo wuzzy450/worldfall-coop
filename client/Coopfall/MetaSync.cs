@@ -137,6 +137,7 @@ namespace Coopfall
                     created = true;
                     return o;
                 }
+                int oldColor = ColorId(o.data);
                 if (customUpdate != null) customUpdate(o, d);
                 else
                 {
@@ -144,6 +145,7 @@ namespace Coopfall
                     o.loadData(d);
                     afterUpdate?.Invoke(o);
                 }
+                if (ColorId(o.data) != oldColor) Recolor(o);
                 return o;
             }
 
@@ -224,6 +226,26 @@ namespace Coopfall
                         World.world.diplomacy.removeObject(old);
                 };
             });
+        }
+
+        private static int ColorId(object data) { return data is MetaObjectData md ? md.color_id : -1; }
+
+        /// <summary>
+        /// The game caches the color it draws a kingdom/clan/culture... with (MetaObject._cached_color)
+        /// and only refreshes it through its own setter: drop the cache so the host's color shows.
+        /// </summary>
+        public static int Recolors;
+
+        private static void Recolor(object o)
+        {
+            Recolors++;
+            R.Set(o, "_cached_color", null);
+            if (o is Kingdom k)
+            {
+                foreach (Building b in World.world.buildings)
+                    if (b != null && b.isAlive() && b.kingdom == k) R.Call0(b, "updateKingdomColors");
+            }
+            BordersDirty();
         }
 
         private static void ClearTraits(object o)
@@ -501,6 +523,10 @@ namespace Coopfall
             foreach (FieldInfo f in typeof(MapStats).GetFields(BindingFlags.Instance | BindingFlags.Public))
                 if (f.FieldType == typeof(long) && !f.Name.StartsWith("id_")) stats[f.Name] = (long)f.GetValue(ms);
             sb.Append(",\"stats\":").Append(stats.ToString(Formatting.None));
+            var pop = new JObject();
+            foreach (City c in World.world.cities)
+                if (c != null && c.isAlive()) pop[c.getID().ToString(CultureInfo.InvariantCulture)] = c.countUnits();
+            sb.Append(",\"pop\":").Append(pop.ToString(Formatting.None));
             string laws = LawsJson();
             if (laws != null && laws != _lawsSent) { sb.Append(",\"laws\":").Append(laws); _lawsSent = laws; }
             sb.Append('}');
@@ -749,6 +775,8 @@ namespace Coopfall
         private static void ApplyItems(Actor a, string ids)
         {
             if (a.equipment == null) return;
+            // My own possessed creature's gear is mine (Worldfall pickups); remote players' is set from their avatar.
+            if (ControllableUnit.isControllingUnit(a) || (CoopMod.Instance?.Avatars?.IsPuppet(a) ?? false)) return;
             var want = new HashSet<long>();
             foreach (string s in ids.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
                 if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out long id)) want.Add(id);
@@ -766,8 +794,49 @@ namespace Coopfall
 
         // ---------------------------------------------------------------- world
 
+        // ---------------------------------------------------------------- village populations
+
+        public int PopMismatches, PopRecounts;
+        public string LastPop = "";
+        private readonly Dictionary<long, float> _popLogged = new Dictionary<long, float>();
+
+        /// <summary>
+        /// Guest: compares each village's population with the host's. A stale count (the game only
+        /// re-lists a village's creatures when it is marked dirty) is recounted; real differences
+        /// (creatures missing or extra here) are logged with the numbers.
+        /// </summary>
+        private void CheckPopulations(JObject pop)
+        {
+            var actual = new Dictionary<City, int>();
+            foreach (Actor a in World.world.units.units_only_alive)
+                if (a?.city != null) { actual.TryGetValue(a.city, out int n); actual[a.city] = n + 1; }
+            float now = Time.unscaledTime;
+            int off = 0;
+            var sb = new StringBuilder();
+            foreach (var kv in pop)
+            {
+                if (!long.TryParse(kv.Key, NumberStyles.Integer, CultureInfo.InvariantCulture, out long id)) continue;
+                City c = World.world.cities.get(id);
+                if (c == null || !c.isAlive()) continue;
+                int host = (int)kv.Value, listed = c.countUnits();
+                actual.TryGetValue(c, out int real);
+                if (listed != real) { c.setDirty(); PopRecounts++; }
+                if (real == host) continue;
+                off++;
+                if (sb.Length < 300) sb.Append(c.name).Append(' ').Append(real).Append('/').Append(host).Append("  ");
+                if (Math.Abs(real - host) >= 3 && (!_popLogged.TryGetValue(id, out float at) || now - at > 30f))
+                {
+                    _popLogged[id] = now;
+                    PopMismatches++;
+                    Log.Info("population: " + c.name + " #" + id + " has " + real + " here (listed " + listed + "), host " + host);
+                }
+            }
+            LastPop = off == 0 ? "all villages match" : off + " villages differ (here/host): " + sb;
+        }
+
         private void OnWorld(JObject p)
         {
+            if (p["pop"] is JObject pop) { try { CheckPopulations(pop); } catch (Exception e) { Log.Warn("population check: " + e.Message); } }
             MapStats ms = R.MapStats;
             if (ms == null) return;
             double time = (double?)p["time"] ?? ms.world_time;

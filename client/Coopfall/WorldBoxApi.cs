@@ -79,6 +79,33 @@ namespace Coopfall
 
         // ---------------------------------------------------------------- actors
 
+        private static Func<Actor, bool> _isInside;
+        private static Func<Actor, Building> _insideOf;
+        private static Func<Building, bool> _chopped;
+
+        /// <summary>The building this creature is staying inside (internal fields), or null.</summary>
+        public static Building InsideBuilding(Actor a)
+        {
+            if (_isInside == null) { R.FastField("is_inside_building", out _isInside, out Action<Actor, bool> _); R.FastField("inside_building", out _insideOf, out Action<Actor, Building> _); }
+            try { return a != null && _isInside != null && _isInside(a) ? _insideOf?.Invoke(a) : null; } catch { return null; }
+        }
+
+        public static void StayInBuilding(Actor a, Building b) { R.Call(a, "stayInBuilding", new[] { typeof(Building) }, b); }
+        public static void ExitBuilding(Actor a) { R.Call0(a, "exitBuilding"); }
+
+        public static bool Chopped(Building b)
+        {
+            if (_chopped == null) R.FastField("chopped", out _chopped, out Action<Building, bool> _);
+            try { return _chopped != null && _chopped(b); } catch { return false; }
+        }
+
+        /// <summary>Asset id of the weapon in this creature's hand, or null.</summary>
+        public static string WeaponId(Actor a)
+        {
+            try { return a?.equipment?.weapon?.getItem()?.getAsset()?.id; } catch { return null; }
+        }
+
+
         public static Actor FindActor(long id)
         {
             try { return id > 0 && MapBox.instance != null ? MapBox.instance.units.get(id) : null; }

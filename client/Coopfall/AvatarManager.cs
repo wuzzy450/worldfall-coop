@@ -33,6 +33,8 @@ namespace Coopfall
             public Vector2 target;
             public bool flip;
             public int hp, mhp;
+            public string weapon;  // weapon asset in their hand ("": none, null: not told)
+            public long bld;      // building they are inside (0: outside)
             public int localHp;   // health we hold the puppet at (CombatSync undoes other damage)
             public float yaw = float.NaN;   // where their first-person view looks (NaN: not in first person)
             public bool lookSet;
@@ -158,6 +160,8 @@ namespace Coopfall
                 r.yaw = p["yaw"] != null ? (float)p["yaw"] : float.NaN;
                 r.hp = (int?)p["hp"] ?? 0;
                 r.mhp = (int?)p["mhp"] ?? 0;
+                r.weapon = (string)p["wpn"];
+                long.TryParse((string)p["bld"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out r.bld);
                 long aid = 0;
                 long.TryParse((string)p["aid"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out aid);
                 string asset = (string)p["asset"] ?? "human";
@@ -185,6 +189,15 @@ namespace Coopfall
                         case "talk": a.spawnSlashTalk(at); break;
                         case "swear": a.spawnSlashYell(at); break;
                         case "steal": a.spawnSlashSteal(at); break;
+                        case "jump": WorldBoxApi.AddStatus(a, "jump", 0f); break;   // the game's own hop (Worldfall lifts it in 3D)
+                        case "ability": WorldfallBridge.UseAbility(a, (string)p["ab"], at); break;   // their species ability (X)
+                        case "work":                                   // they felled a tree / mined a rock / gathered in Worldfall
+                            long bid;
+                            long.TryParse((string)p["bid"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out bid);
+                            Building b = World.world.buildings.get(bid);
+                            if (b != null && b.isAlive() && !b.isOnRemove() && !WorldBoxApi.Chopped(b))
+                                R.Call(b, "extractResources", new[] { typeof(Actor) }, a);
+                            break;
                     }
                 }
                 catch (Exception e) { Log.Warn("act replay: " + e.Message); }
@@ -308,6 +321,8 @@ namespace Coopfall
             }
 
             a.cancelAllBeh();
+            WorldSync.SyncInside(a, r.bld);   // inside the same building as in their game
+            SyncWeapon(a, r.weapon);
             if (now >= r.nextStatus)
             {
                 r.nextStatus = now + 0.5f;
@@ -359,6 +374,27 @@ namespace Coopfall
             }
         }
 
+        /// <summary>Puts the weapon they hold in their game into their creature's hand here.</summary>
+        private static void SyncWeapon(Actor a, string want)
+        {
+            if (want == null || a.equipment == null) return;
+            try
+            {
+                ActorEquipmentSlot slot = a.equipment.weapon;
+                Item it = slot.getItem();
+                string have = it != null && !it.shouldbe_removed ? it.getAsset()?.id : null;
+                if ((have ?? "") == want) return;
+                if (it != null) WorldSync.Unequip(slot);
+                if (want.Length > 0)
+                {
+                    EquipmentAsset ea = AssetManager.items.get(want);
+                    if (ea != null) a.equipment.setItem(World.world.items.generateItem(ea, null, null, 1, a), a);
+                }
+                a.setStatsDirty();
+            }
+            catch (Exception e) { Log.Warn("weapon sync: " + e.Message); }
+        }
+
         /// <summary>Find the remote player's unit in our world, or spawn a stand-in.</summary>
         private Actor Resolve(Remote r)
         {
@@ -394,6 +430,12 @@ namespace Coopfall
             if (ControllableUnit.isActionPressedTalk()) _pendingActs.Add("talk");
             if (ControllableUnit.isActionPressedSwear()) _pendingActs.Add("swear");
             if (ControllableUnit.isActionPressedSteal()) _pendingActs.Add("steal");
+            if (ControllableUnit.isActionPressedJump()) _pendingActs.Add("jump");
+            if (WorldfallBridge.Present && WorldfallBridge.PollWorkDone(out Building worked))
+                _s.Net.Send("act", new JObject { ["a"] = "work", ["bid"] = worked.getID().ToString(CultureInfo.InvariantCulture),
+                    ["x"] = worked.current_position.x, ["y"] = worked.current_position.y });
+            if (WorldfallBridge.Present && WorldfallBridge.PollMyAbility(out string ab, out Vector2 abAt))
+                _s.Net.Send("act", new JObject { ["a"] = "ability", ["ab"] = ab, ["x"] = abAt.x, ["y"] = abAt.y });
         }
 
         private void SendMine(float now)
@@ -432,6 +474,9 @@ namespace Coopfall
                         ["mhp"] = me.getMaxHealth(),
                     };
                     if (!float.IsNaN(yaw)) msg["yaw"] = Math.Round(yaw, 3);
+                    Building house = WorldBoxApi.InsideBuilding(me) ?? (WorldfallBridge.Present ? WorldfallBridge.InsideHouse : null);
+                    if (house != null) msg["bld"] = house.getID().ToString(CultureInfo.InvariantCulture);
+                    msg["wpn"] = WorldBoxApi.WeaponId(me) ?? "";
                     _s.Net.Send("avatar", msg);
                 }
                 _wasOn = true;

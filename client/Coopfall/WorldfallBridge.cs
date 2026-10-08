@@ -82,6 +82,24 @@ namespace Coopfall
         /// <summary>True while Worldfall's 3D first-person picture covers the screen.</summary>
         public static bool FirstPerson { get { return GetBool(_piIsFp); } }
 
+        private static PropertyInfo _piGodAlpha;
+
+        /// <summary>Worldfall's 3D god view (the zoomed-in map, not possessing) is covering the 2D map.</summary>
+        public static bool GodView
+        {
+            get
+            {
+                object inst = Instance;
+                if (inst == null) return false;
+                try
+                {
+                    if (_piGodAlpha == null) _piGodAlpha = _type.GetProperty("GodAlpha", Any);
+                    return _piGodAlpha != null && (float)_piGodAlpha.GetValue(inst, null) >= 0.5f;
+                }
+                catch { return false; }
+            }
+        }
+
         /// <summary>Worldfall is animating into or out of first person.</summary>
         public static bool Diving { get { return GetBool(_piDiving); } }
 
@@ -223,6 +241,147 @@ namespace Coopfall
             catch { }
         }
 
+        // ---------------------------------------------------------------- house interiors
+
+        private static FieldInfo _fiInterior;
+        private static PropertyInfo _piInside, _piHouse;
+
+        /// <summary>The building my creature is inside in Worldfall's 3D view (its house interiors), or null.</summary>
+        public static Building InsideHouse
+        {
+            get
+            {
+                object inst = Instance;
+                if (inst == null) return null;
+                try
+                {
+                    if (_fiInterior == null)
+                    {
+                        _fiInterior = _type.GetField("Interior", Any);
+                        Type hi = _fiInterior?.FieldType;
+                        _piInside = hi?.GetProperty("Inside", Any);
+                        _piHouse = hi?.GetProperty("House", Any);
+                    }
+                    object room = _fiInterior?.GetValue(inst);
+                    if (room == null || _piInside == null || !(bool)_piInside.GetValue(room, null)) return null;
+                    return _piHouse?.GetValue(room, null) as Building;
+                }
+                catch { return null; }
+            }
+        }
+
+        // ---------------------------------------------------------------- chopping / mining / gathering
+
+        private static FieldInfo _fiWork, _fiWorkTarget, _fiYieldAt;
+        private static float _lastYieldAt = -1f;
+
+        /// <summary>
+        /// Call once a frame while possessing: true on the frame Worldfall finished chopping a tree,
+        /// mining a rock or gathering (it set its yield time and called Building.extractResources).
+        /// </summary>
+        public static bool PollWorkDone(out Building b)
+        {
+            b = null;
+            object inst = Instance;
+            if (inst == null) return false;
+            try
+            {
+                if (_fiWork == null)
+                {
+                    _fiWork = _type.GetField("Work", Any);
+                    _fiWorkTarget = _fiWork?.FieldType.GetField("Target", Any);
+                    _fiYieldAt = _fiWork?.FieldType.GetField("_yieldAt", Any);
+                    Log.Info("Worldfall work: work=" + (_fiWork != null) + " target=" + (_fiWorkTarget != null) + " yield=" + (_fiYieldAt != null));
+                }
+                object work = _fiWork?.GetValue(inst);
+                if (work == null || _fiYieldAt == null || _fiWorkTarget == null) return false;
+                float at = (float)_fiYieldAt.GetValue(work);
+                if (_lastYieldAt < 0f) { _lastYieldAt = at; return false; }
+                if (at == _lastYieldAt) return false;
+                _lastYieldAt = at;
+                b = _fiWorkTarget.GetValue(work) as Building;
+                return b != null;
+            }
+            catch { return false; }
+        }
+
+        // ---------------------------------------------------------------- species abilities (X)
+
+        private static bool _abLooked;
+        private static FieldInfo _fiLastAbility, _fiSinceAbility, _fiAimAt, _fiById, _fiAbEffect;
+        private static FieldInfo _fiUseSelf, _fiUseAt, _fiUseDir, _fiUseToast;
+        private static Type _useType;
+        private static float _lastSince = float.MaxValue;
+
+        private static void LookupAbilities()
+        {
+            if (_abLooked || _type == null) return;
+            _abLooked = true;
+            _fiLastAbility = _type.GetField("LastAbility", Any);
+            _fiSinceAbility = _type.GetField("SinceAbility", Any);
+            _fiAimAt = _type.GetField("AbilityAimAt", Any);
+            Type abs = _type.Assembly.GetType("FirstPerson.Abilities", false);
+            Type ab = _type.Assembly.GetType("FirstPerson.Ability", false);
+            _useType = _type.Assembly.GetType("FirstPerson.AbilityUse", false);
+            _fiById = abs?.GetField("ById", Any);
+            _fiAbEffect = ab?.GetField("Effect", Any);
+            _fiUseSelf = _useType?.GetField("Self", Any);
+            _fiUseAt = _useType?.GetField("At", Any);
+            _fiUseDir = _useType?.GetField("Dir", Any);
+            _fiUseToast = _useType?.GetField("Toast", Any);
+            Log.Info("Worldfall abilities: last=" + (_fiLastAbility != null) + " since=" + (_fiSinceAbility != null) +
+                     " byId=" + (_fiById != null) + " effect=" + (_fiAbEffect != null) + " use=" + (_useType != null));
+        }
+
+        /// <summary>
+        /// Call once a frame while possessing: true on the frame my creature used its ability (X),
+        /// with the ability's id in Abilities.ById and where it was aimed.
+        /// </summary>
+        public static bool PollMyAbility(out string id, out Vector2 at)
+        {
+            id = null; at = Vector2.zero;
+            object inst = Instance;
+            LookupAbilities();
+            if (inst == null || _fiSinceAbility == null || _fiLastAbility == null || _fiById == null) return false;
+            try
+            {
+                float since = (float)_fiSinceAbility.GetValue(inst);
+                bool used = since < _lastSince - 0.05f;   // the timer restarts when an ability goes off
+                _lastSince = since;
+                if (!used) return false;
+                object ab = _fiLastAbility.GetValue(inst);
+                if (ab == null) return false;
+                foreach (System.Collections.DictionaryEntry e in (System.Collections.IDictionary)_fiById.GetValue(null))
+                    if (e.Value == ab) { id = (string)e.Key; break; }
+                if (id == null) return false;
+                if (_fiAimAt != null) at = (Vector2)_fiAimAt.GetValue(inst);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Plays another player's ability on their creature here, aimed where they aimed it.</summary>
+        public static bool UseAbility(Actor self, string id, Vector2 at)
+        {
+            Lookup();
+            LookupAbilities();
+            if (self == null || id == null || _fiById == null || _fiAbEffect == null || _useType == null) return false;
+            try
+            {
+                var byId = (System.Collections.IDictionary)_fiById.GetValue(null);
+                object ab = byId.Contains(id) ? byId[id] : null;
+                if (ab == null || !(_fiAbEffect.GetValue(ab) is Delegate effect)) return false;
+                object use = Activator.CreateInstance(_useType);
+                _fiUseSelf?.SetValue(use, self);
+                _fiUseAt?.SetValue(use, at);
+                Vector2 dir = at - self.current_position;
+                _fiUseDir?.SetValue(use, dir.sqrMagnitude > 0.0001f ? dir.normalized : Vector2.right);
+                _fiUseToast?.SetValue(use, (Action<string>)(_ => { }));
+                return (bool)effect.DynamicInvoke(use);
+            }
+            catch (Exception e) { Log.Warn("ability " + id + ": " + (e.InnerException ?? e).Message); return false; }
+        }
+
         /// <summary>
         /// Projects a point above a unit's head into screen pixels (top-left origin) of Worldfall's
         /// current 3D frame. depth = distance in tiles.
@@ -230,7 +389,11 @@ namespace Coopfall
         /// <summary>Raw numbers of the last ProjectHead call (diagnostics).</summary>
         public static string LastProjection = "";
 
-        public static bool ProjectHead(Actor a, float lift, out Vector2 screen, out float depth)
+        private static FieldInfo _fiRenderer;
+        private static PropertyInfo _piRendererProj;
+
+        /// <param name="god">Worldfall's god view is showing: its frame comes from the renderer, not the first-person "Shown".</param>
+        public static bool ProjectHead(Actor a, float lift, out Vector2 screen, out float depth, bool god = false)
         {
             LastProjection = "";
             screen = Vector2.zero;
@@ -242,7 +405,14 @@ namespace Coopfall
                 var headArgs = new object[] { a, null };
                 if (!(bool)_miStarHead.Invoke(inst, headArgs)) return false;
                 Vector3 head = (Vector3)headArgs[1];
-                object shown = _piShown.GetValue(inst, null);
+                object shown;
+                if (god)
+                {
+                    if (_fiRenderer == null) { _fiRenderer = _type.GetField("Renderer", Any); _piRendererProj = _fiRenderer?.FieldType.GetProperty("Projection", Any); }
+                    if (_piRendererProj == null) return false;
+                    shown = _piRendererProj.GetValue(_fiRenderer.GetValue(inst), null);
+                }
+                else shown = _piShown.GetValue(inst, null);
                 int w = (int)_fiWidth.GetValue(shown), h = (int)_fiHeight.GetValue(shown);
                 if (w <= 0 || h <= 0) return false;
                 var args = new object[] { head.x, head.y, head.z + lift, 0f, 0f, 0f };
