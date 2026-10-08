@@ -6,10 +6,9 @@
 > please report how it went. An official GitHub **release** will follow once it has been
 > confirmed to work.
 >
-> **Want to try it now?** A prebuilt `Coopfall.dll` is in
-> [`release/`](release/), or build it from source with the steps below. You can also point
-> your own AI coding agent at this repository (see [For AI agents](#for-ai-agents)) and let it
-> build, install and test it for you. Bug reports are welcome.
+> **Want to try it now?** See [Download](#download) below. You can also point your own AI
+> coding agent at this repository (see [For AI agents](#for-ai-agents)) and let it build,
+> install and test it for you. Bug reports are welcome.
 
 Coopfall lets several people play WorldBox together over the internet or a LAN:
 
@@ -31,6 +30,19 @@ Works with **[Worldfall](https://worldfall3d.com/)** (optional), an unofficial f
 for WorldBox: other players appear in Worldfall's 3D view with name tags, health bars and chat
 bubbles, and the co-op HUD and chat stay usable in first person.
 
+## Download
+
+| You are | Download | Then |
+|---|---|---|
+| **Every player** | **[Coopfall.dll](https://github.com/wuzzy450/worldfall-coop/raw/main/release/Coopfall.dll)** (the mod, one file) | [1. Install the mod](#1-install-the-mod-every-player) |
+| **The one running the server** | **[Everything (ZIP)](https://github.com/wuzzy450/worldfall-coop/archive/refs/heads/main.zip)** (server, mod and source, about 4 MB) | [2. Run the server](#2-run-the-server-one-person) |
+
+The ZIP also contains the mod (`release\Coopfall.dll`), so the person running the server
+only needs the ZIP. Unzip it anywhere (for example to your Desktop); it unpacks to a folder
+called `worldfall-coop-main`. Keep the `server` folder in it **complete**: the relay needs
+everything in it (`start_server.bat`, `Cuberite.exe`, its DLLs, settings and the
+`Plugins\WorldfallRooms` plugin).
+
 ## Requirements
 
 - **WorldBox** on PC (Steam). Every player needs the **same WorldBox version**.
@@ -42,13 +54,14 @@ bubbles, and the co-op HUD and chat stay usable in first person.
 
 ## 1. Install the mod (every player)
 
-**Prebuilt:** copy [`release/Coopfall.dll`](release/Coopfall.dll) into
+**Prebuilt:** download **[Coopfall.dll](https://github.com/wuzzy450/worldfall-coop/raw/main/release/Coopfall.dll)** and copy it into
 `<WorldBox>\worldbox_Data\StreamingAssets\mods\` (see "Installing by hand" below). It was
 built for WorldBox 0.51.2; if your WorldBox is a different version and the mod doesn't load,
 build it yourself. Its SHA-256 is in `release/Coopfall.dll.sha256`
 (check with `certutil -hashfile Coopfall.dll SHA256`).
 
-**From source:**
+**From source:** download **[everything (ZIP)](https://github.com/wuzzy450/worldfall-coop/archive/refs/heads/main.zip)**, unzip it, then in the
+`worldfall-coop-main` folder:
 
 ```powershell
 cd client
@@ -79,10 +92,14 @@ No Minecraft is involved; Cuberite is only used as the plugin host.
 
 ### Windows
 
-1. Double-click **`server\start_server.bat`** and leave the window open while you play.
-2. Windows Firewall will ask about `Cuberite.exe` the first time: allow it (Private networks
+1. Download **[everything (ZIP)](https://github.com/wuzzy450/worldfall-coop/archive/refs/heads/main.zip)** and unzip it (right-click, **Extract All...**).
+2. In the unzipped `worldfall-coop-main\server` folder, double-click **`start_server.bat`**
+   and leave the window open while you play.
+   If Windows shows "Windows protected your PC" (it does this for programs downloaded from
+   the internet), click **More info**, then **Run anyway**.
+3. Windows Firewall will ask about `Cuberite.exe` the first time: allow it (Private networks
    for LAN; tick Public too if your network is marked public).
-3. In the server window, type `wf` to list players and worlds, and `stop` to shut it down.
+4. In the server window, type `wf` to list players and worlds, and `stop` to shut it down.
 
 Worlds are saved in `server\cuberite\worldfall_rooms\` and survive restarts.
 
