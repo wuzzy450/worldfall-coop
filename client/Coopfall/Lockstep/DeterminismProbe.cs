@@ -34,11 +34,13 @@ namespace Coopfall.Lockstep
         private readonly List<List<SectionTrace.Entry>> _traces = new List<List<SectionTrace.Entry>>();
         private List<TickHash> _cur;
         private long _detailBudget;   // creature records kept per run for pinpointing
-        private const long DetailPerRun = 1000000;
+        private const long DetailPerRun = 4000000;
         private string _dir;
 
         public bool Finished => _phase == Phase.Done;
         private static string _traceExtra;
+        /// <summary>-coopfall-determinism-chaos N: wars, magic users and disasters as inputs, every N ticks.</summary>
+        private static int _chaos;
 
         public static DeterminismProbe FromCommandLine()
         {
@@ -55,6 +57,7 @@ namespace Coopfall.Lockstep
                 else if (s == "-coopfall-determinism-trace" && i + 1 < a.Length) _traceExtra = a[i + 1];
                 else if (s == "-coopfall-determinism-stack" && i + 2 < a.Length) { int.TryParse(a[i + 1], out SectionTrace.StackTile); int.TryParse(a[i + 2], out SectionTrace.StackTile2); }
                 else if (s == "-coopfall-determinism-tiles" && i + 1 < a.Length) int.TryParse(a[i + 1], out StateHash.TileEvery);
+                else if (s == "-coopfall-determinism-chaos" && i + 1 < a.Length) int.TryParse(a[i + 1], out _chaos);
             }
             if (slot < 0) return null;
             var p = new DeterminismProbe(slot, Math.Max(1, ticks), Math.Max(1, runs), seed, quit);
@@ -120,6 +123,7 @@ namespace Coopfall.Lockstep
                     SectionTrace.ResetWatch();
                     _detailBudget = DetailPerRun;
                     _cur.Add(StateHash.Compute(0, TakeDetail()));
+                    if (_chaos > 0) QueueChaos();
                     _phase = Phase.Running;
                     _phaseAt = Time.unscaledTime;
                     LockstepClock.Granted = _ticks;
@@ -145,6 +149,46 @@ namespace Coopfall.Lockstep
             _phaseAt = Time.unscaledTime;
         }
 
+        /// <summary>
+        /// Powers used by the chaos script, in order. Magic users come first so they have time
+        /// to cast; the rest cycle through disasters, curses and bombs.
+        /// </summary>
+        private static readonly string[] ChaosPowers =
+        {
+            "evil_mage", "white_mage", "necromancer", "druid", "plague_doctor", "demon", "dragon",
+            "meteorite", "lightning", "tornado", "earthquake", "lava", "plague", "fire", "acid",
+            "zombie_infection", "curse", "madness", "bomb", "cloud_lightning", "grenade", "rain",
+            "atomic_bomb", "volcano", "blessing", "spite", "napalm_bomb", "cloud_fire", "acid_blob",
+            "fire_skull", "skeleton", "ufo", "heatray", "bowling_ball", "tnt", "geyser", "ghost",
+        };
+
+        /// <summary>
+        /// The scenario for wars, magic and disasters, as lockstep inputs (so it also tests the
+        /// input path): every civ kingdom declares war on the next one at tick 1, then a power
+        /// every _chaos ticks on a creature picked by ID. Picks depend only on the loaded world.
+        /// </summary>
+        private void QueueChaos()
+        {
+            var kingdoms = new List<Kingdom>();
+            foreach (Kingdom k in World.world.kingdoms) if (k != null && k.isAlive() && k.isCiv()) kingdoms.Add(k);
+            kingdoms.Sort((x, y) => x.getID().CompareTo(y.getID()));
+            int seq = 0;
+            for (int k = 0; k + 1 < kingdoms.Count; k += 2)
+                LockstepInput.Queue(new LockstepInput.Input { tick = 1, player = 0, seq = seq++, kind = LockstepInput.Kind.War, id = "normal", a = kingdoms[k].getID(), b = kingdoms[k + 1].getID() });
+            var units = new List<Actor>();
+            foreach (Actor a in World.world.units) if (a != null && a.current_tile != null) units.Add(a);
+            units.Sort((x, y) => x.getID().CompareTo(y.getID()));
+            int n = 0, missing = 0;
+            for (long t = 2; t < _ticks && units.Count > 0; t += _chaos, n++)
+            {
+                string id = ChaosPowers[n % ChaosPowers.Length];
+                if (AssetManager.powers.get(id) == null) { missing++; continue; }
+                WorldTile tile = units[(int)((n * 7919L) % units.Count)].current_tile;
+                LockstepInput.Queue(new LockstepInput.Input { tick = t, player = 1 + n % 2, seq = 0, kind = LockstepInput.Kind.Power, id = id, a = tile.x, b = tile.y, brush = n % 3 == 0 ? "circ_5" : "circ_2" });
+            }
+            Log.Info("DETERMINISM: chaos: " + (seq) + " wars, " + LockstepInput.PendingCount + " inputs" + (missing > 0 ? ", " + missing + " skipped (unknown powers)" : ""));
+        }
+
         private bool TakeDetail()
         {
             int n = World.world.units.Count;
@@ -167,7 +211,8 @@ namespace Coopfall.Lockstep
             if (_dumpBuildings)
                 foreach (Building b in World.world.buildings)
                     if (b != null)
-                        d["building " + b.getID()] = (HarmonyLib.AccessTools.Field(typeof(Building), "asset")?.GetValue(b) as Asset)?.id + " tile " + b.current_tile?.tile_id + " hp " + b.getHealth() + " alive " + b.isAlive();
+                        d["building " + b.getID()] = (HarmonyLib.AccessTools.Field(typeof(Building), "asset")?.GetValue(b) as Asset)?.id + " tile " + b.current_tile?.tile_id + " hp " + b.getHealth() + " alive " + b.isAlive()
+                            + " city " + (b.city?.getID() ?? -1) + " built " + !b.isUnderConstruction() + " slots " + b.hasResidentSlots() + " residents " + string.Join(",", b.residents);
             foreach (Actor a in World.world.units)
                 if (a != null && (_dumpAll || _dumpIds.Contains(a.getID())))
                 {
@@ -177,6 +222,10 @@ namespace Coopfall.Lockstep
                     object data = HarmonyLib.AccessTools.Field(typeof(Actor), "data")?.GetValue(a);
                     if (data != null) DumpObject(d, a.getID() + ".data.", data);
                     if (!_dumpAll && a.city != null) DumpObject(d, a.getID() + ".city.", a.city);
+                    if (HarmonyLib.AccessTools.Field(typeof(Actor), "sprite_animation")?.GetValue(a) is SpriteAnimation an && an != null)
+                        d[a.getID() + ".anim"] = "frame " + an.currentFrameIndex + "/" + (an.frames?.Length ?? -1) + " next " + an.nextFrameTime.ToString("R") + " on " + an.isOn + " looped " + an.looped + " dirty " + an.dirty + " visible " + HarmonyLib.AccessTools.Field(typeof(Actor), "is_visible").GetValue(a);
+                    if (!_dumpAll && HarmonyLib.AccessTools.Field(typeof(Actor), "children_special")?.GetValue(a) is System.Collections.IEnumerable kids)
+                        foreach (object k in kids) DumpObject(d, a.getID() + "." + k.GetType().Name + ".", k);
                     if (!_dumpAll && a.current_tile?.region != null) DumpObject(d, a.getID() + ".region.", a.current_tile.region);
                 }
             return d;
@@ -187,6 +236,8 @@ namespace Coopfall.Lockstep
             for (Type t = o.GetType(); t != null && t != typeof(object); t = t.BaseType)
                 foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
                 {
+                    // real-time stamps and native pointers differ by nature
+                    if (f.Name == "m_CachedPtr" || f.Name.Contains("unscaled")) continue;
                     object v;
                     try { v = f.GetValue(o); } catch { continue; }
                     d[prefix + t.Name + "." + f.Name] = Show(v);
@@ -224,7 +275,7 @@ namespace Coopfall.Lockstep
             {
                 var sb = new System.Text.StringBuilder(v.GetType().Name + "[" + c.Count + "]");
                 int k = 0;
-                foreach (object e in c) { if (k++ >= 40) break; sb.Append(' ').Append(ShowShallow(e)); }
+                foreach (object e in c) { if (k++ >= 400) break; sb.Append(' ').Append(ShowShallow(e)); }
                 return sb.ToString();
             }
             if (v.GetType().IsPrimitive || v is string || v.GetType().IsEnum) return v.ToString();
@@ -355,13 +406,27 @@ namespace Coopfall.Lockstep
                     if (n > 0) lines.Add("  " + kv.Key + ": " + n + " tiles (e.g. tile " + first + ": " + kv.Value[first] + " vs " + o[first] + ")");
                 }
             }
+            for (int r = 0; r < _dumps.Count; r++)
+            {
+                // every dumped tick, for following a field over time
+                var all = new List<string>();
+                for (int i = 0; i < _dumps[r].Count; i++)
+                    foreach (var kv in _dumps[r][i]) all.Add((_dumpTick + i) + " " + kv.Key + " = " + kv.Value);
+                File.WriteAllLines(Path.Combine(_dir, "dump-run" + (r + 1) + "-all.txt"), all);
+            }
             if (_dumps.Count >= 2)
             {
                 int at = -1;
                 for (int i = 0; i < _dumps[0].Count && i < _dumps[1].Count && at < 0; i++)
                     foreach (var kv in _dumps[0][i])
                         if (!_dumps[1][i].TryGetValue(kv.Key, out string o) || o != kv.Value) { at = i; break; }
-                if (at < 0) lines.Add("dumped fields match for ticks " + _dumpTick + "-" + _dumpTo);
+                if (at < 0)
+                {
+                    lines.Add("dumped fields match for ticks " + _dumpTick + "-" + _dumpTo);
+                    var last = new List<string>();
+                    foreach (var kv in _dumps[0][_dumps[0].Count - 1]) last.Add(kv.Key + " = " + kv.Value);
+                    File.WriteAllLines(Path.Combine(_dir, "dump-run1.txt"), last);
+                }
                 else
                 {
                     lines.Add("fields that differ after tick " + (_dumpTick + at) + " (count per field, one example):");

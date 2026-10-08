@@ -131,6 +131,8 @@ namespace Coopfall.Lockstep
                 else Log.Error("lockstep: GameStats.updateStats not found: play time may be saved wrong");
                 VisualIsolation.Install(h);
                 FrameClock.Install(h);
+                FrameUpdates.Install(h);
+                EffectState.Install(h);
                 Installed = true;
                 Log.Info("lockstep: installed (Harmony " + typeof(Harmony).Assembly.GetName().Version + ")");
                 return true;
@@ -177,6 +179,7 @@ namespace Coopfall.Lockstep
             Seed = seed;
             Tick = 0;
             Granted = 0;
+            LockstepInput.Clear();
             StepElapsed = DefaultStep;   // x1 speed; game speed becomes ticks per frame
             Active = true;
             SwapSessionTime(true);
@@ -224,6 +227,7 @@ namespace Coopfall.Lockstep
                 flashState.SetValue(t, 0);   // flash effect; the pending list is cleared too
             }
             SortTileSets();
+            FrameUpdates.Normalize();
             foreach (MapChunk c in ((MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world)).chunks)
                 SortChunkObjects(c.objects);
             // world behaviour timers aren't in the save and carry over from the previous world
@@ -626,12 +630,16 @@ namespace Coopfall.Lockstep
                     // knockback (and throw start points) read the drawn position, which is only
                     // refreshed for creatures on screen: refresh it for all, from simulated state
                     foreach (Actor a in map.units) if (a != null) a.updatePos();
+                    EffectState.RestoreAnimations();
+                    LockstepInput.ApplyFor(Tick);
                     _updateSimulation(map, StepElapsed);
+                    FrameUpdates.AfterSimulation();
                     _inTick = true;
                     try { map.delayed_actions_manager.update(StepElapsed, DefaultStep); }
                     finally { _inTick = false; }
                     _updateFinish(map);
                     FlushContainers(map);
+                    EffectState.SaveAnimations(map);
                     _inTickAll = false;
                     Tick++;
                     n++;

@@ -63,6 +63,18 @@ namespace Coopfall.Lockstep
             // each job of the creature/building batches (AI, movement, spreading, ...)
             n += PatchBatchJobs(h, typeof(BatchActors), post);
             n += PatchBatchJobs(h, typeof(BatchBuildings), post);
+            // decisions of watched creatures: which ones were possible, with what weight
+            MethodInfo useOn = AccessTools.Method(typeof(UtilityBasedDecisionSystem), "useOn");
+            if (useOn != null) h.Patch(useOn, postfix: new HarmonyMethod(typeof(SectionTrace), nameof(DecisionPostfix)));
+            // every behaviour step (BehaviourActionBase<Actor>.execute overrides) of watched creatures
+            var behPost = new HarmonyMethod(typeof(SectionTrace), nameof(BehPostfix));
+            Type behBase = typeof(BehaviourActionBase<Actor>);
+            foreach (Type t in typeof(MapBox).Assembly.GetTypes())
+                if (behBase.IsAssignableFrom(t) && !t.IsAbstract)
+                {
+                    MethodInfo ex = AccessTools.DeclaredMethod(t, "execute", new[] { typeof(Actor) });
+                    if (ex != null) n += TryPatch(h, ex, behPost);
+                }
             Log.Info("lockstep: section trace on " + n + " methods");
         }
 
@@ -119,6 +131,31 @@ namespace Coopfall.Lockstep
             string r = __result is BaseSimObject so ? so.GetType().Name + " " + so.getID() : __result is WorldTile wt ? "tile " + wt.tile_id : __result?.ToString() ?? "null";
             e.section += " -> " + r;
             Current[Current.Count - 1] = e;
+        }
+
+        private static void BehPostfix(MethodBase __originalMethod, Actor __0, ai.behaviours.BehResult __result)
+        {
+            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick || Watch.Count == 0 || __0 == null || !Watch.Contains(__0.getID())) return;
+            Current.Add(new Entry { tick = LockstepClock.Tick + 1, section = "beh[" + __0.getID() + "] " + __originalMethod.DeclaringType.Name + " -> " + __result, state = State() });
+        }
+
+        private static FieldInfo _decActions, _decFactors, _decCount;
+
+        private static void DecisionPostfix(UtilityBasedDecisionSystem __instance, Actor pActor, DecisionAsset __result)
+        {
+            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick || pActor == null || !Watch.Contains(pActor.getID())) return;
+            if (_decActions == null)
+            {
+                _decActions = AccessTools.Field(typeof(UtilityBasedDecisionSystem), "_actions");
+                _decFactors = AccessTools.Field(typeof(UtilityBasedDecisionSystem), "_factors");
+                _decCount = AccessTools.Field(typeof(UtilityBasedDecisionSystem), "_counter_possible");
+            }
+            var acts = (DecisionAsset[])_decActions.GetValue(__instance);
+            var f = (float[])_decFactors.GetValue(__instance);
+            int c = (int)_decCount.GetValue(__instance);
+            var sb = new System.Text.StringBuilder("decision[" + pActor.getID() + "] -> " + (__result?.id ?? "null") + " of");
+            for (int i = 0; i < c; i++) sb.Append(' ').Append(acts[i].id).Append('=').Append(f[i].ToString("R"));
+            Current.Add(new Entry { tick = LockstepClock.Tick + 1, section = sb.ToString(), state = State() });
         }
 
         private static int PatchBatchJobs(Harmony h, Type batch, HarmonyMethod post)

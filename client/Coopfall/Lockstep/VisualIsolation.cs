@@ -20,6 +20,10 @@ namespace Coopfall.Lockstep
         private static readonly string[] Isolated =
         {
             "EffectsLibrary.spawnSlash", "EffectsLibrary.spawnExplosionWave",
+            // happiness/money/conversion pop-ups roll their offset only when the zone is on screen
+            "EffectsLibrary.showMetaEventEffect", "EffectsLibrary.showMoneyEffect",
+            // decorative tile effects are placed in the zones on screen
+            "WorldBehaviourTileEffects.spawnEffect",
             "GlowParticles.spawn",
             "Actor.spawnParticle", "Actor.spawnSlash", "Actor.doCastAnimation", "Actor.startColorEffect",
             "ActionLibrary.flamingWeapon",
@@ -96,6 +100,13 @@ namespace Coopfall.Lockstep
                 h.Patch(fullLow, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(FullLowResPrefix)));
             }
             else Log.Error("lockstep: Actor.updateDeadAnimation not found: corpses may vanish at different times");
+            // simulation that runs differently for creatures on screen: in a tick, always the same way
+            n += PatchVisibility(h, typeof(Actor), "updateWalkJump", true);          // corpses wait for the jump to land
+            n += PatchVisibility(h, typeof(CombatActionLibrary), "doBlockAction", true);
+            n += PatchVisibility(h, typeof(GodFinger), "deathFlip", false);         // rotation only updates in drawing
+            MethodInfo rendered = AccessTools.Method(typeof(Actor), "isRendered");   // hatching eggs spawn a gameplay effect
+            if (rendered != null) h.Patch(rendered, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(RenderedPrefix)));
+            else Log.Error("lockstep: Actor.isRendered not found: hatching may follow the camera");
             Log.Info("lockstep: " + n + " visual methods keep their dice to themselves");
         }
 
@@ -190,6 +201,50 @@ namespace Coopfall.Lockstep
         }
 
         private static void ZoneVisiblePostfix(WorldTile __instance, bool __state) { __instance.zone.visible = __state; }
+
+        private static int PatchVisibility(Harmony h, Type t, string method, bool visible)
+        {
+            MethodInfo m = AccessTools.Method(t, method);
+            if (m == null) { Log.Error("lockstep: " + t.Name + "." + method + " not found: what's on screen may change the world"); return 0; }
+            h.Patch(m, prefix: new HarmonyMethod(typeof(VisualIsolation), visible ? nameof(AsVisiblePrefix) : nameof(AsHiddenPrefix)), postfix: new HarmonyMethod(typeof(VisualIsolation), nameof(VisibleRestorePostfix)));
+            return 1;
+        }
+
+        /// <summary>The creature is the instance or the first argument (static helpers).</summary>
+        private static Actor Subject(object instance, object[] args)
+        {
+            if (instance is Actor a) return a;
+            if (args != null) foreach (object o in args) if (o is Actor oa) return oa;
+            return null;
+        }
+
+        private static void AsVisiblePrefix(object __instance, object[] __args, out Actor __state) => SetVisible(Subject(__instance, __args), true, out __state);
+        private static void AsHiddenPrefix(object __instance, object[] __args, out Actor __state) => SetVisible(Subject(__instance, __args), false, out __state);
+
+        private static readonly Dictionary<Actor, bool> _visBefore = new Dictionary<Actor, bool>();
+
+        private static void SetVisible(Actor a, bool v, out Actor changed)
+        {
+            changed = null;
+            if (!LockstepClock.InTick || a == null || _actorVisible(a) == v) return;
+            _visBefore[a] = _actorVisible(a);
+            _actorVisible(a) = v;
+            changed = a;
+        }
+
+        private static void VisibleRestorePostfix(Actor __state)
+        {
+            if (__state == null || !_visBefore.TryGetValue(__state, out bool v)) return;
+            _visBefore.Remove(__state);
+            _actorVisible(__state) = v;
+        }
+
+        private static bool RenderedPrefix(ref bool __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            __result = false;
+            return false;
+        }
 
         private static bool _inDeadAnim;
 
