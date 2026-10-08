@@ -270,6 +270,91 @@ namespace Coopfall
             }
         }
 
+        private static FieldInfo _fiEye, _fiWalkers, _fiWalkerList, _fiWho, _fiPos, _fiHeading, _fiWait, _fiPath;
+        private static Type _walkerType;
+
+        private static object Room()
+        {
+            object inst = Instance;
+            if (inst == null || InsideHouse == null) return null;
+            try
+            {
+                object room = _fiInterior.GetValue(inst);
+                if (_fiEye == null)
+                {
+                    Type hi = room.GetType();
+                    _fiEye = hi.GetField("Eye", Any);
+                    _fiWalkers = hi.GetField("_walkers", Any);
+                    _fiWalkerList = _fiWalkers?.FieldType.GetField("_list", Any);
+                    _walkerType = _fiWalkers?.FieldType.GetNestedType("Walker", Any);
+                    _fiWho = _walkerType?.GetField("Who", Any);
+                    _fiPos = _walkerType?.GetField("Pos", Any);
+                    _fiHeading = _walkerType?.GetField("Heading", Any);
+                    _fiWait = _walkerType?.GetField("Wait", Any);
+                    _fiPath = _walkerType?.GetField("Path", Any);
+                    Log.Info("Worldfall rooms: eye=" + (_fiEye != null) + " walkers=" + (_fiWalkerList != null) + " walker=" + (_walkerType != null));
+                }
+                return room;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Where I stand inside the house room (room coordinates), if I'm in one.</summary>
+        public static bool RoomEye(out Vector2 eye)
+        {
+            eye = Vector2.zero;
+            object room = Room();
+            if (room == null || _fiEye == null) return false;
+            try { eye = (Vector2)_fiEye.GetValue(room); return true; } catch { return false; }
+        }
+
+        private static System.Collections.IList Walkers(object room)
+        {
+            try { return _fiWalkerList?.GetValue(_fiWalkers.GetValue(room)) as System.Collections.IList; } catch { return null; }
+        }
+
+        /// <summary>
+        /// Shows another player's creature in the room I'm in, standing where they stand in theirs.
+        /// Worldfall fills a room with the people inside once, on entering, and walks them itself:
+        /// this adds them as one of its room walkers and pins it to their position every frame.
+        /// </summary>
+        public static void ShowInRoom(Actor who, Vector2 pos, float heading)
+        {
+            object room = Room();
+            var list = room != null ? Walkers(room) : null;
+            if (list == null || _walkerType == null || who == null) return;
+            try
+            {
+                object w = null;
+                foreach (object x in list) if (_fiWho.GetValue(x) == who) { w = x; break; }
+                if (w == null)
+                {
+                    w = Activator.CreateInstance(_walkerType, true);
+                    _fiWho.SetValue(w, who);
+                    list.Add(w);
+                }
+                _fiPos.SetValue(w, pos);
+                if (!float.IsNaN(heading)) _fiHeading?.SetValue(w, heading);
+                _fiWait?.SetValue(w, 1e6f);                    // never sets off on its own
+                (_fiPath?.GetValue(w) as System.Collections.IList)?.Clear();
+            }
+            catch (Exception e) { Log.Warn("room walker: " + e.Message); }
+        }
+
+        public static void RemoveFromRoom(Actor who)
+        {
+            if (who == null || _fiWho == null) return;
+            object room = Room();
+            var list = room != null ? Walkers(room) : null;
+            if (list == null) return;
+            try
+            {
+                for (int i = list.Count - 1; i >= 0; i--)
+                    if (_fiWho.GetValue(list[i]) == who) list.RemoveAt(i);
+            }
+            catch { }
+        }
+
         // ---------------------------------------------------------------- chopping / mining / gathering
 
         private static FieldInfo _fiWork, _fiWorkTarget, _fiYieldAt;

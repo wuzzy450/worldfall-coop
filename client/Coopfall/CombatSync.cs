@@ -88,6 +88,7 @@ namespace Coopfall
                 _s.Net.Send("whit", new JObject
                 {
                     ["vid"] = Id(victim), ["hp"] = victim.getHealth(), ["at"] = (int)LastAttackType(victim), ["by"] = Id(mine),
+                    ["king"] = SafeIsKing(victim),
                 });
                 HitsSent++;
                 return;                                        // shown dying here at once; the host confirms
@@ -196,8 +197,12 @@ namespace Coopfall
             if (hp <= 0) dmg = Mathf.Max(dmg, v.getHealth());
             if (dmg <= 0) return;
             Actor by = WorldBoxApi.FindActor(ParseId(p["by"]));
+            bool king = false;
+            try { king = v.isKing(); } catch { }
             ApplyHit(v, dmg, (AttackType)((int?)p["at"] ?? (int)AttackType.Weapon), by);
-            if (!v.hasHealth()) Log.Info((string)p["name"] + " killed " + v.asset?.id + " #" + v.getID());
+            if (!v.hasHealth() || !v.isAlive())
+                Log.Info((string)p["name"] + " killed " + v.asset?.id + " #" + v.getID() + (king ? " - the king of " + v.kingdom?.name : "")
+                         + (p["king"] != null && (bool)p["king"] != king ? " (king on their side: " + (bool)p["king"] + ", here: " + king + ")" : ""));
         }
 
         /// <summary>Host: a guest's possessed creature attacked; buildings it hits only take damage here.</summary>
@@ -291,6 +296,8 @@ namespace Coopfall
             var by = R.Get(a, "attackedBy") as BaseSimObject;
             try { var actor = by as Actor; return actor != null && actor.isAlive() ? actor : null; } catch { return null; }
         }
+
+        private static bool SafeIsKing(Actor a) { try { return a.isKing(); } catch { return false; } }
 
         private void SetHealth(Actor a, int hp)
         {

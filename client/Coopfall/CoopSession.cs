@@ -551,6 +551,7 @@ namespace Coopfall
             _repossessId = sameWorld && mine != null && mine.isAlive() ? mine.getID() : 0;
             _repossessView = !WorldfallBridge.Present || WorldfallBridge.ViewEnabled;
 
+            CoopMod.Instance?.Avatars.ForgetMine();
             CoopMod.Instance?.Avatars.ReleaseAll();
             Status = "Loading " + RoomName + "...";
             SetPhase(Phase.Loading);

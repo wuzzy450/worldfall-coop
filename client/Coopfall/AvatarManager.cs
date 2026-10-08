@@ -33,6 +33,7 @@ namespace Coopfall
             public Vector2 target;
             public bool flip;
             public int hp, mhp;
+            public Vector2? roomPos; // where they stand inside Worldfall's house room
             public string weapon;  // weapon asset in their hand ("": none, null: not told)
             public long bld;      // building they are inside (0: outside)
             public int localHp;   // health we hold the puppet at (CombatSync undoes other damage)
@@ -161,6 +162,7 @@ namespace Coopfall
                 r.hp = (int?)p["hp"] ?? 0;
                 r.mhp = (int?)p["mhp"] ?? 0;
                 r.weapon = (string)p["wpn"];
+                r.roomPos = p["rx"] != null ? new Vector2(F(p["rx"]), F(p["ry"])) : (Vector2?)null;
                 long.TryParse((string)p["bld"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out r.bld);
                 long aid = 0;
                 long.TryParse((string)p["aid"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out aid);
@@ -249,6 +251,18 @@ namespace Coopfall
                 foreach (string id in gone) { Release(Remotes[id]); Remotes.Remove(id); }
         }
 
+        /// <summary>
+        /// A world reload replaces my creature with the host's copy (same id, new object): stop
+        /// tracking the old one without reporting it dead, or the others kill my creature.
+        /// </summary>
+        public void ForgetMine()
+        {
+            if (_wasOn) _s.Net.Send("avatar", new JObject { ["on"] = false });
+            _wasOn = false;
+            _mine = null;
+            _pendingActs.Clear();
+        }
+
         public void ReleaseAll()
         {
             foreach (Remote r in Remotes.Values) Release(r);
@@ -258,6 +272,7 @@ namespace Coopfall
         private void Release(Remote r)
         {
             Actor a = r.actor;
+            if (a != null && WorldfallBridge.Present) WorldfallBridge.RemoveFromRoom(a);
             r.actor = null;
             bool wasWalking = r.walking;
             r.walking = false;
@@ -323,6 +338,14 @@ namespace Coopfall
             a.cancelAllBeh();
             WorldSync.SyncInside(a, r.bld);   // inside the same building as in their game
             SyncWeapon(a, r.weapon);
+            if (WorldfallBridge.Present)
+            {
+                // Same house as me in Worldfall's room view: stand where they stand in theirs.
+                Building myHouse = WorldfallBridge.InsideHouse;
+                if (myHouse != null && r.bld != 0 && myHouse.getID() == r.bld && r.roomPos.HasValue)
+                    WorldfallBridge.ShowInRoom(a, r.roomPos.Value, r.yaw);
+                else if (myHouse != null) WorldfallBridge.RemoveFromRoom(a);
+            }
             if (now >= r.nextStatus)
             {
                 r.nextStatus = now + 0.5f;
@@ -476,6 +499,7 @@ namespace Coopfall
                     if (!float.IsNaN(yaw)) msg["yaw"] = Math.Round(yaw, 3);
                     Building house = WorldBoxApi.InsideBuilding(me) ?? (WorldfallBridge.Present ? WorldfallBridge.InsideHouse : null);
                     if (house != null) msg["bld"] = house.getID().ToString(CultureInfo.InvariantCulture);
+                    if (house != null && WorldfallBridge.Present && WorldfallBridge.RoomEye(out Vector2 eye)) { msg["rx"] = Math.Round(eye.x, 3); msg["ry"] = Math.Round(eye.y, 3); }
                     msg["wpn"] = WorldBoxApi.WeaponId(me) ?? "";
                     _s.Net.Send("avatar", msg);
                 }
