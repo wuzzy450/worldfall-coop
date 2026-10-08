@@ -30,6 +30,7 @@ namespace Coopfall
         public TestDriver Test;
         public DiagSync Diag;
         public CoopUI UI;
+        public Lockstep.DeterminismProbe Probe;
         private readonly InputGuard _guard = new InputGuard();
 
         private bool _weLockedControls;
@@ -41,6 +42,7 @@ namespace Coopfall
             if (CoopMod.Instance != null) { Destroy(this); return; }
             CoopMod.Instance = this;
             Log.Init();
+            Lockstep.HarmonyLoader.Init();   // before anything that uses Harmony is compiled
             Log.Info("Coopfall " + CoopMod.Version + " starting (WorldBox " + Application.version + ")");
             CoopConfig cfg = CoopConfig.Load();
             Session = new CoopSession(cfg);
@@ -54,7 +56,18 @@ namespace Coopfall
             Diag = new DiagSync(Session);
             UI = new CoopUI(Session, Avatars);
             Test = TestDriver.FromCommandLine(Session);
+            InitLockstep();
             Log.Info("ready - " + cfg.menuKey + " co-op menu, " + cfg.mapKey + " world map, " + cfg.chatKey + " chat");
+        }
+
+        /// <summary>
+        /// Kept out of Awake: Awake runs HarmonyLoader.Init, and anything that touches a Harmony
+        /// type must be compiled after that, which a separate non-inlined method guarantees.
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private void InitLockstep()
+        {
+            Probe = Lockstep.DeterminismProbe.FromCommandLine();
         }
 
         private void Start()
@@ -80,9 +93,10 @@ namespace Coopfall
                 Prof.Run("tiles", Tiles.Tick);
                 Prof.Run("weather", Weather.Tick);
                 if (Test != null) Prof.Run("test", Test.Tick);
+                if (Probe != null) Prof.Run("determinism", Probe.Tick);
                 Prof.Run("diag", Diag.Tick);
 
-                if (!_autoConnectDone && WorldBoxApi.WorldReady && (Test == null || !Test.HoldConnect))
+                if (!_autoConnectDone && WorldBoxApi.WorldReady && (Test == null || !Test.HoldConnect) && Probe == null)
                 {
                     _autoConnectDone = true;
                     if (Session.Cfg.autoConnect) Session.Connect();

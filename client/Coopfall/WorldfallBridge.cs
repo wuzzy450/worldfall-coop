@@ -49,7 +49,10 @@ namespace Coopfall
                     if (_piShown != null)
                     {
                         Type proj = _piShown.PropertyType;
-                        _miProject = proj.GetMethod("Project", Any);
+                        // Worldfall 0.9.4 added a 7-parameter overload: ask for the 6-parameter one
+                        // (x, y, z, out col, out row, out depth) by its exact signature
+                        Type fo = typeof(float).MakeByRefType();
+                        _miProject = proj.GetMethod("Project", Any, null, new[] { typeof(float), typeof(float), typeof(float), fo, fo, fo }, null);
                         _fiWidth = proj.GetField("Width", Any);
                         _fiHeight = proj.GetField("Height", Any);
                     }

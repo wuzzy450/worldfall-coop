@@ -40,6 +40,10 @@
     <Reference Include="UnityEngine.ScreenCaptureModule"><HintPath>$(ManagedDir)\UnityEngine.ScreenCaptureModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.UI"><HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.UIModule"><HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.Mathematics"><HintPath>$(ManagedDir)\Unity.Mathematics.dll</HintPath><Private>false</Private></Reference>
+    <!-- Harmony (MIT, see THIRD-PARTY-NOTICES.md): compiled against, and shipped inside Coopfall.dll -->
+    <Reference Include="0Harmony"><HintPath>..\lib\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <EmbeddedResource Include="..\lib\0Harmony.dll" LogicalName="Coopfall.0Harmony.dll" />
     <Reference Include="Newtonsoft.Json"><HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
