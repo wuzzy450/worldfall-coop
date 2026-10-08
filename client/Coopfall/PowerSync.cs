@@ -71,10 +71,10 @@ namespace Coopfall
                     GodPower power = p;
                     switch (h.slot)
                     {
-                        case Slot.PowerBrush: p.click_power_brush_action = (tile, gp) => AfterLocal(power, tile, h.origPower(tile, gp)); break;
-                        case Slot.Power: p.click_power_action = (tile, gp) => AfterLocal(power, tile, h.origPower(tile, gp)); break;
-                        case Slot.Brush: p.click_brush_action = (tile, id) => AfterLocal(power, tile, h.origId(tile, id)); break;
-                        case Slot.Action: p.click_action = (tile, id) => AfterLocal(power, tile, h.origId(tile, id)); break;
+                        case Slot.PowerBrush: p.click_power_brush_action = (tile, gp) => AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
+                        case Slot.Power: p.click_power_action = (tile, gp) => AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
+                        case Slot.Brush: p.click_brush_action = (tile, id) => AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
+                        case Slot.Action: p.click_action = (tile, id) => AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
                     }
                     _hooks[p.id] = h;
                     wrapped++;
@@ -82,6 +82,27 @@ namespace Coopfall
                 catch (Exception e) { Log.Warn("hook power " + p?.id + ": " + e.Message); }
             }
             Log.Info("power sync: " + wrapped + " powers relayed, " + skipped + " kept local (filtered: " + string.Join(", ", localIds.ToArray()) + ")");
+        }
+
+        /// <summary>Powers that create creatures (humans, skeletons, aliens, animals...).</summary>
+        private static bool Spawns(GodPower p)
+        {
+            return !string.IsNullOrEmpty(p.actor_asset_id) || (p.actor_asset_ids != null && p.actor_asset_ids.Length > 0);
+        }
+
+        public int SpawnsLeftToHost;
+
+        /// <summary>
+        /// Guest, live sync on: creature-spawning powers run in the host's game only. Running them here
+        /// too made a second set of creatures (and new villages/kingdoms) that had to be thrown away,
+        /// and a flood of spawns pushed the worlds apart. The host's creatures arrive a moment later.
+        /// True = skip the original here (the click is still relayed).
+        /// </summary>
+        private bool HostRuns(GodPower p)
+        {
+            if (_replaying || _s.IsHost || !_s.Online || !_s.InWorld || !_s.Cfg.liveSync || !Spawns(p)) return false;
+            SpawnsLeftToHost++;
+            return true;
         }
 
         private static bool IsLocalOnly(GodPower p, Hook h)
@@ -218,6 +239,13 @@ namespace Coopfall
             if (tile == null) { Log.Warn("remote power '" + id + "' outside the map at " + ev["x"] + "," + ev["y"]); return; }
             string myBrush = Config.current_brush;
             string brush = (string)ev["brush"];
+            if (!_s.IsHost && _s.Cfg.liveSync && Spawns(h.power))
+            {
+                // The host runs it; its creatures arrive through the live sync.
+                Replayed++;
+                CoopMod.Instance?.Avatars.NotePowerUse((string)envelope["id"], tile, id);
+                return;
+            }
             _replaying = true;
             long firstNew = _s.IsHost ? 0 : WorldSync.MapStatsId("id_unit");
             try

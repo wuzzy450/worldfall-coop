@@ -20,6 +20,7 @@ Status key: **patched** = code changed and builds, not yet play-tested with two 
 | 14 | Host wasn't alerted when the guest killed a king | The host's game logs a king's death itself when its copy dies, so the alert can only be missing if the host's world didn't have that creature as king (kingdom data drift) | **diagnostic**: host log now says `Defect killed human #N - the king of X`, and notes when the two games disagree on whether it was the king |
 | 15 | A forced re-sync (world reload) killed the guest's possessed creature (log: `Defect's alien #604 died (Other)` right after `snapshot requested (resync)`) | After the reload the guest steps back into the same creature, but as a new copy from the reloaded world. Coopfall saw the old copy gone and reported the creature dead, so the host killed it | **patched** (`AvatarManager.ForgetMine` before the reload: send "off", not "dead") |
 | 16 | Village populations still way off after `/sync` | A village's count is the living creatures listed for it, and the game only re-lists them when the village is marked dirty | **diagnostic + fix** (host sends each village's count every 2 s. The guest recounts stale villages and logs `population: <village> has N here (listed M), host K` for real differences) |
+| 17 | Flooding god powers (hundreds of humans/skeletons) pushed the worlds apart and caused a reload | On a guest, every spawn power ran locally too: a second set of creatures, plus villages/kingdoms the host never had, all to be thrown away. The drift check (counts differ for 90 s) also fired while the host's counts were still climbing | **patched** (creature-spawning powers run only in the host's game. The guest's click is still relayed and the creatures arrive by live sync. The drift re-sync waits until the host's counts stop changing) |
 
 ## Testing checklist (both players need the new Coopfall.dll)
 - Guest takes damage to 0: dies on both screens.
@@ -29,5 +30,6 @@ Status key: **patched** = code changed and builds, not yet play-tested with two 
 - Walk into a house: the other player sees you disappear inside, not standing at the door.
 - Guest murders in a town: guards attack and do damage.
 - Shoot a laser/bow and watch an alien NPC shoot: the other player sees the shots.
+- Flood: both players spam humans/skeletons for a few minutes. No freeze or reload, and the counts settle afterwards.
 - Village populations: check the guest's log for `population:` lines.
 - Log lines to look for: `Worldfall abilities:`, `Worldfall work:`, `inside sync`, `weapon sync`, `ability ...` warnings.

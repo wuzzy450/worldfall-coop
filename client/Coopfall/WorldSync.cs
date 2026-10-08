@@ -630,6 +630,7 @@ namespace Coopfall
         private int _ucSeq = -1, _ucGot, _bcSeq = -1, _bcGot;
         private HashSet<long> _ucSeen = new HashSet<long>(), _bcSeen = new HashSet<long>();
         private float _nextNeed, _driftSince = -1f;
+        private int _driftHostKey = -1;
 
         public void OnPacket(string t, JObject p)
         {
@@ -1352,6 +1353,10 @@ namespace Coopfall
             int cities = SafeCount(() => World.world.cities.Count), kingdoms = SafeCount(() => World.world.kingdoms.Count);
             bool same = cities == (int)ck[0] && kingdoms == (int)ck[1];
             if (same) { _driftSince = -1f; return; }
+            // The host's own counts are still changing (a flood of spawns founding villages): the
+            // live sync is catching up, a reload now would only freeze the guest. Wait until it settles.
+            int hostKey = (int)ck[0] * 100003 + (int)ck[1];
+            if (hostKey != _driftHostKey) { _driftHostKey = hostKey; _driftSince = now; return; }
             if (_driftSince < 0f) { _driftSince = now; return; }
             if (now - _driftSince > DriftResyncAfter && !CoopMod.UiBlocking)
             {
