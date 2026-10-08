@@ -15,7 +15,7 @@ namespace Coopfall
     /// creature. Both log every step as "TEST ..." in their coopfall log and take screenshots
     /// (coopfall/.../test-*.png), so the result can be checked afterwards.
     /// </summary>
-    public class TestDriver
+    public partial class TestDriver
     {
         private readonly CoopSession _s;
         private float _t0 = -1f, _nextStep, _nextReport;
@@ -86,7 +86,8 @@ namespace Coopfall
             if (!_s.Online || !_s.InWorld || !WorldBoxApi.WorldReady || _s.OthersInRoom() == 0) { _t0 = -1f; return; }
             float now = Time.unscaledTime;
             if (_t0 < 0f) { _t0 = now; _nextStep = now + 20f; _step = 0; Log.Info("TEST start as " + (_s.IsHost ? "host" : "guest")); }
-            if (_scenario == "meet") { Meet(now); return; }
+            if (_scenario == "patched") PatchedTick(now);
+            if (_scenario == "meet" || _scenario == "patched") { Meet(now); return; }
             if (now >= _nextReport) { _nextReport = now + 15f; Report(); }
             if (_victim != null) KeepHitting();
             if (now < _nextStep) return;
@@ -330,6 +331,7 @@ namespace Coopfall
         {
             if (!_s.IsHost) { GuestMeet(now); return; }
             if (now < _meetAt) return;
+            if (_scenario == "patched" && _meetPhase == 6) { Patched(now); return; }
             switch (_meetPhase)
             {
                 case 0:
@@ -490,6 +492,7 @@ namespace Coopfall
         {
             if ((string)p["for"] != _s.MyId) return;
             Vector2 look = new Vector2((float?)p["lx"] ?? 0f, (float?)p["ly"] ?? 0f);
+            if (GuestCommand(cmd, p)) return;
             switch (cmd)
             {
                 case "possess":

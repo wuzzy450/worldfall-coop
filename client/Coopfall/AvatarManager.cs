@@ -90,6 +90,18 @@ namespace Coopfall
         private string _lastPowerSent;
         private readonly List<string> _pendingActs = new List<string>();
 
+        /// <summary>Actions replayed from other players, by kind (scripted tests check these).</summary>
+        public readonly Dictionary<string, int> ActsSeen = new Dictionary<string, int>();
+
+        /// <summary>Scripted tests: relay an action as if my creature did it (jump, work, ...).</summary>
+        public void SendAct(string act, JObject extra = null)
+        {
+            var m = extra ?? new JObject();
+            m["a"] = act;
+            if (m["x"] == null) { m["x"] = 0; m["y"] = 0; }
+            _s.Net.Send("act", m);
+        }
+
         public AvatarManager(CoopSession s)
         {
             _s = s;
@@ -183,6 +195,8 @@ namespace Coopfall
                 Actor a = r.actor;
                 if (a == null || !a.isAlive()) return;
                 Vector2 at = new Vector2(F(p["x"]), F(p["y"]));
+                string act = (string)p["a"] ?? "?";
+                ActsSeen.TryGetValue(act, out int seen); ActsSeen[act] = seen + 1;
                 try
                 {
                     switch ((string)p["a"])
@@ -424,8 +438,12 @@ namespace Coopfall
             Actor real = WorldBoxApi.FindActor(r.aid);
             if (real != null && real.isAlive() && real.asset != null && real.asset.id == r.asset
                 && !ControllableUnit.isControllingUnit(real)
-                && Vector2.Distance(real.current_position, r.target) < 12f)
+                && (Vector2.Distance(real.current_position, r.target) < 12f || WorldBoxApi.InsideBuilding(real) != null || r.standin))
             {
+                // Same id and species is their creature, even if it's somewhere else here (e.g. still
+                // inside a house it entered, or after a re-sync): it walks to them. A stricter check
+                // here than in Drive's stand-in swap made a release/stand-in loop every second.
+                if (WorldBoxApi.InsideBuilding(real) != null && r.bld == 0) WorldBoxApi.ExitBuilding(real);
                 r.actor = real;
                 r.standin = false;
                 r.localHp = Mathf.Max(1, r.hp > 0 ? r.hp : real.getHealth());

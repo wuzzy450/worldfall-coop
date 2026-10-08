@@ -791,7 +791,7 @@ Handlers["delete-room"] = function(a_Client, a_Msg)
 end
 
 --- Messages relayed verbatim (plus sender id/name) to the other members of the sender's room.
-local RELAYED = { avatar = true, cursor = true, power = true, speed = true, act = true, emote = true, hit = true, whit = true, diag = true }
+local RELAYED = { avatar = true, cursor = true, power = true, speed = true, act = true, emote = true, hit = true, whit = true, shot = true, diag = true }
 
 local function RelayToRoom(a_Client, a_Msg)
 	local room = a_Client.Room

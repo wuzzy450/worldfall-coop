@@ -145,6 +145,8 @@ namespace Coopfall
         public bool UseLocal(string powerId, WorldTile tile)
         {
             if (tile == null || !_hooks.TryGetValue(powerId ?? "", out Hook h)) return false;
+            bool hostRuns = !_s.IsHost && _s.Online && _s.InWorld && _s.Cfg.liveSync && Spawns(h.power);
+            if (!hostRuns)
             try
             {
                 _replaying = true;   // the wrapped delegate must not relay it a second time

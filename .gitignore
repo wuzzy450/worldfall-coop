@@ -25,5 +25,7 @@ __pycache__/
 server/cuberite_pid.txt
 server/stop_cuberite.flag
 server/cuberite/worldfall_rooms.bak-*/
+server/cuberite/worldfall_rooms.test-*/
+server/cuberite/worldfall_rooms.real-*/
 server/cuberite/console.log
 server/cuberite/console.bak-*.log

@@ -523,9 +523,13 @@ namespace Coopfall
             foreach (FieldInfo f in typeof(MapStats).GetFields(BindingFlags.Instance | BindingFlags.Public))
                 if (f.FieldType == typeof(long) && !f.Name.StartsWith("id_")) stats[f.Name] = (long)f.GetValue(ms);
             sb.Append(",\"stats\":").Append(stats.ToString(Formatting.None));
+            // Actual living members (the game's own listed count is only refreshed now and then).
+            var counts = new Dictionary<City, int>();
+            foreach (Actor a in World.world.units.units_only_alive)
+                if (a?.city != null) { counts.TryGetValue(a.city, out int n); counts[a.city] = n + 1; }
             var pop = new JObject();
             foreach (City c in World.world.cities)
-                if (c != null && c.isAlive()) pop[c.getID().ToString(CultureInfo.InvariantCulture)] = c.countUnits();
+                if (c != null && c.isAlive()) { counts.TryGetValue(c, out int n); pop[c.getID().ToString(CultureInfo.InvariantCulture)] = n; }
             sb.Append(",\"pop\":").Append(pop.ToString(Formatting.None));
             string laws = LawsJson();
             if (laws != null && laws != _lawsSent) { sb.Append(",\"laws\":").Append(laws); _lawsSent = laws; }
@@ -799,6 +803,7 @@ namespace Coopfall
         public int PopMismatches, PopRecounts;
         public string LastPop = "";
         private readonly Dictionary<long, float> _popLogged = new Dictionary<long, float>();
+        private readonly Dictionary<long, float> _popOffSince = new Dictionary<long, float>();
 
         /// <summary>
         /// Guest: compares each village's population with the host's. A stale count (the game only
@@ -821,7 +826,10 @@ namespace Coopfall
                 int host = (int)kv.Value, listed = c.countUnits();
                 actual.TryGetValue(c, out int real);
                 if (listed != real) { c.setDirty(); PopRecounts++; }
-                if (real == host) continue;
+                if (real == host) { _popOffSince.Remove(id); continue; }
+                // Counts are sent every 2 s, deaths and births in between: only a lasting difference counts.
+                if (!_popOffSince.TryGetValue(id, out float since)) { _popOffSince[id] = now; continue; }
+                if (now - since < 6f) continue;
                 off++;
                 if (sb.Length < 300) sb.Append(c.name).Append(' ').Append(real).Append('/').Append(host).Append("  ");
                 if (Math.Abs(real - host) >= 3 && (!_popLogged.TryGetValue(id, out float at) || now - at > 30f))

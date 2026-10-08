@@ -355,6 +355,60 @@ namespace Coopfall
             catch { }
         }
 
+        /// <summary>Is this player's creature one of the people in my house room?</summary>
+        public static bool RoomHas(Actor who)
+        {
+            object room = Room();
+            var list = room != null ? Walkers(room) : null;
+            if (list == null || who == null) return false;
+            try { foreach (object x in list) if (_fiWho.GetValue(x) == who) return true; } catch { }
+            return false;
+        }
+
+        /// <summary>Scripted tests: walk forward inside the house room (Worldfall's own room movement).</summary>
+        public static bool RoomStep(float forward, float side, float seconds)
+        {
+            object room = Room();
+            if (room == null) return false;
+            try
+            {
+                MethodInfo m = room.GetType().GetMethod("Move", Any);
+                float yaw = ViewYaw;
+                for (float t = 0f; t < seconds; t += 0.05f) m.Invoke(room, new object[] { forward, side, float.IsNaN(yaw) ? 0f : yaw, 0.05f });
+                return true;
+            }
+            catch (Exception e) { Log.Warn("room step: " + (e.InnerException ?? e).Message); return false; }
+        }
+
+        /// <summary>Scripted tests: Worldfall's own test hooks (enter/leave a house, press the ability key).</summary>
+        public static bool TestCall(string method, params object[] args)
+        {
+            object inst = Instance;
+            if (inst == null) return false;
+            try
+            {
+                foreach (MethodInfo m in _type.GetMethods(Any))
+                    if (m.Name == method && m.GetParameters().Length == args.Length) { m.Invoke(inst, args); return true; }
+                Log.Warn("Worldfall has no " + method + "/" + args.Length);
+            }
+            catch (Exception e) { Log.Warn("Worldfall " + method + ": " + (e.InnerException ?? e).Message); }
+            return false;
+        }
+
+        public static bool IsEnterable(Building b)
+        {
+            object inst = Instance;
+            if (inst == null || b == null) return false;
+            try
+            {
+                if (_fiInterior == null) { var _ = InsideHouse; }
+                object room = _fiInterior?.GetValue(inst);
+                MethodInfo m = room?.GetType().GetMethod("IsEnterable", Any);
+                return m != null && (bool)m.Invoke(room, new object[] { b });
+            }
+            catch { return false; }
+        }
+
         // ---------------------------------------------------------------- chopping / mining / gathering
 
         private static FieldInfo _fiWork, _fiWorkTarget, _fiYieldAt;
