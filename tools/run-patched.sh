@@ -1,5 +1,5 @@
 #!/bin/sh
-# Two-game test of the 2026-10-07 sync fixes ("patched" scenario). See TESTSCENARIO.md.
+# Two-game test of the 2026-10-07 sync fixes ("patched" scenario). Notes are kept locally, not in the repository.
 # Builds the mod, installs it, starts a private relay (your real worlds are set aside and put back
 # afterwards), starts a host and a guest game, waits for the scenario to finish, then prints every
 # "TEST CHECK" line from both games and the DIAG summaries from the host.

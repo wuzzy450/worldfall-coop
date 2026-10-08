@@ -29,3 +29,8 @@ server/cuberite/worldfall_rooms.test-*/
 server/cuberite/worldfall_rooms.real-*/
 server/cuberite/console.log
 server/cuberite/console.bak-*.log
+
+# local notes (handoffs, test plans), kept out of the repository
+NEXT-STEPS.md
+TESTSCENARIO.md
+SYNC-ISSUES-*.md

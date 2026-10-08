@@ -12,7 +12,7 @@ namespace Coopfall
     /// then runs one step per fix. Each step does something in one game and checks it in the
     /// game that should see it ("TEST CHECK name: PASS|FAIL detail"), followed by a paired
     /// diagnostic snapshot with screenshots of both games (DIAG lines in the host's log).
-    /// See TESTSCENARIO.md.
+    /// (Scenario notes are kept locally, not in the repository.)
     /// </summary>
     public partial class TestDriver
     {
