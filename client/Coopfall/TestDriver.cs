@@ -344,6 +344,8 @@ namespace Coopfall
                     Actor b = World.world.units.spawnNewUnit("human", tb, false, false, 0f);
                     if (a == null || b == null) { Log.Warn("TEST meet: couldn't spawn the two humans"); _meetPhase = 99; return; }
                     a.setName("Host Hero", false); b.setName("Guest Hero", false);
+                    // Possessed creatures don't eat by themselves: start them fed, or they can starve mid-test.
+                    a.setNutrition(a.getMaxNutrition()); b.setNutrition(b.getMaxNutrition());
                     _aId = a.getID(); _bId = b.getID();
                     Log.Info("TEST meet: spawned #" + _aId + " and #" + _bId + " around " + _spot.x + "," + _spot.y + " (clear, flat, 6 tiles apart)");
                     _meetPhase = 1; _meetAt = now + 4f;

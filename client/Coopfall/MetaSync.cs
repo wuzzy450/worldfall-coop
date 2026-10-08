@@ -63,7 +63,7 @@ namespace Coopfall
         public void Reset()
         {
             foreach (Kind k in _kinds) k.st = new KState();
-            _sentRows.Clear(); _actorsPrimed = false; _nextActors = _nextActorsFull = _nextWorld = 0f;
+            _sentRows.Clear(); _rowCity.Clear(); _popAsked.Clear(); _actorsPrimed = false; _nextActors = _nextActorsFull = _nextWorld = 0f;
             _askAt.Clear(); _expect.Clear(); _lawsSent = null; _nextTick = 0f;
         }
 
@@ -410,12 +410,15 @@ namespace Coopfall
                         foreach (JToken t in ids) k.st.forced.Add((long)t);
             if (p["a"] is JArray actors)
                 foreach (JToken t in actors) _sentRows.Remove((long)t);
+            if (p["pc"] is JArray cities)
+                foreach (JToken t in cities) _popAsked.Add((long)t);
             CoopMod.Instance?.Tiles.OnAsk(p);
         }
 
         // ---------------------------------------------------------------- creatures' details
 
         private readonly Dictionary<long, string> _sentRows = new Dictionary<long, string>();
+        private readonly HashSet<long> _popAsked = new HashSet<long>();   // villages a guest wants the member list of
         private bool _actorsPrimed;
         private float _nextActors, _nextActorsFull, _nextWorld;
 
@@ -525,12 +528,29 @@ namespace Coopfall
             sb.Append(",\"stats\":").Append(stats.ToString(Formatting.None));
             // Actual living members (the game's own listed count is only refreshed now and then).
             var counts = new Dictionary<City, int>();
-            foreach (Actor a in World.world.units.units_only_alive)
-                if (a?.city != null) { counts.TryGetValue(a.city, out int n); counts[a.city] = n + 1; }
+            var members = _popAsked.Count > 0 ? new Dictionary<long, JArray>() : null;
+            foreach (Actor a in Living())
+            {
+                if (a?.city == null) continue;
+                counts.TryGetValue(a.city, out int n); counts[a.city] = n + 1;
+                if (members != null && _popAsked.Contains(a.city.getID()))
+                {
+                    if (!members.TryGetValue(a.city.getID(), out JArray l)) members[a.city.getID()] = l = new JArray();
+                    l.Add(a.getID());
+                }
+            }
             var pop = new JObject();
             foreach (City c in World.world.cities)
                 if (c != null && c.isAlive()) { counts.TryGetValue(c, out int n); pop[c.getID().ToString(CultureInfo.InvariantCulture)] = n; }
             sb.Append(",\"pop\":").Append(pop.ToString(Formatting.None));
+            if (members != null)
+            {
+                // Member lists for villages a guest found off: it fixes memberships from them.
+                var pl = new JObject();
+                foreach (long id in _popAsked) pl[id.ToString(CultureInfo.InvariantCulture)] = members.TryGetValue(id, out JArray l) ? l : new JArray();
+                sb.Append(",\"pl\":").Append(pl.ToString(Formatting.None));
+                _popAsked.Clear();
+            }
             string laws = LawsJson();
             if (laws != null && laws != _lawsSent) { sb.Append(",\"laws\":").Append(laws); _lawsSent = laws; }
             sb.Append('}');
@@ -553,6 +573,7 @@ namespace Coopfall
         private readonly Dictionary<string, int> _expect = new Dictionary<string, int>();   // kind:id -> host fingerprint we couldn't reach
         private readonly Dictionary<string, List<long>> _ask = new Dictionary<string, List<long>>();
         private readonly List<long> _askActors = new List<long>();
+        private readonly List<long> _askPop = new List<long>();
         private int _diffLogs;
 
         public void OnPacket(string t, JObject p)
@@ -669,16 +690,18 @@ namespace Coopfall
 
         private void SendAsk()
         {
-            if (_ask.Count == 0 && _askActors.Count == 0) return;
+            if (_ask.Count == 0 && _askActors.Count == 0 && _askPop.Count == 0) return;
             var m = new JObject();
             foreach (var kv in _ask) if (kv.Value.Count > 0) m[kv.Key] = new JArray(kv.Value.ConvertAll(x => (object)x).ToArray());
             var sb = Begin("wask");
             sb.Append(",\"m\":").Append(m.ToString(Formatting.None));
+            if (_askPop.Count > 0) sb.Append(",\"pc\":[").Append(string.Join(",", _askPop.ConvertAll(x => x.ToString(CultureInfo.InvariantCulture)).ToArray())).Append("]");
             if (_askActors.Count > 0) sb.Append(",\"a\":[").Append(string.Join(",", _askActors.ConvertAll(x => x.ToString(CultureInfo.InvariantCulture)).ToArray())).Append("]");
             sb.Append('}');
             _s.Net.SendRaw(sb.ToString(), false);
             _ask.Clear();
             _askActors.Clear();
+            _askPop.Clear();
         }
 
         // ---------------------------------------------------------------- creatures' details
@@ -691,6 +714,7 @@ namespace Coopfall
                 if (!(t is JArray r) || r.Count < 20) continue;
                 Actor a = WorldBoxApi.FindActor((long)r[0]);
                 if (a == null || !a.isAlive() || WorldBoxApi.IsStandin(a)) continue;
+                _rowCity[a.getID()] = L(r[2]);
                 try
                 {
                     if (Row(a) == r.ToString(Formatting.None)) continue;
@@ -699,6 +723,12 @@ namespace Coopfall
                 }
                 catch (Exception e) { Log.Warn("meta sync: creature #" + a.getID() + ": " + e.Message); }
             }
+        }
+
+        /// <summary>Living creatures, from the same list the creature rows use (so counts, member lists and rows agree).</summary>
+        private static IEnumerable<Actor> Living()
+        {
+            foreach (Actor a in World.world.units.getSimpleList()) if (a != null && a.isAlive()) yield return a;
         }
 
         private static long L(JToken t) { return t == null ? -1 : (long)t; }
@@ -804,6 +834,71 @@ namespace Coopfall
         public string LastPop = "";
         private readonly Dictionary<long, float> _popLogged = new Dictionary<long, float>();
         private readonly Dictionary<long, float> _popOffSince = new Dictionary<long, float>();
+        private readonly Dictionary<long, float> _popAskAt = new Dictionary<long, float>();
+        private readonly Dictionary<long, long> _rowCity = new Dictionary<long, long>();   // creature -> village in the host's last row
+
+        /// <summary>
+        /// Guest: the other players' creatures aren't driven by this game's AI, but the game still files
+        /// them into villages they walk through. Keep them in the village the host's row says.
+        /// </summary>
+        private void KeepPuppetCities()
+        {
+            AvatarManager av = CoopMod.Instance?.Avatars;
+            if (av == null) return;
+            foreach (AvatarManager.Remote r in av.Remotes.Values)
+            {
+                Actor a = r.actor;
+                if (!r.on || a == null || !a.isAlive() || !_rowCity.TryGetValue(a.getID(), out long cid)) continue;
+                City want = cid > 0 ? World.world.cities.get(cid) : null;
+                if (a.city == want || (want == null && cid > 0)) continue;
+                City was = a.city;
+                R.Call(a, "setCity", new[] { typeof(City) }, want);
+                was?.setDirty(); want?.setDirty();
+            }
+        }
+        public int PopFixed;
+
+        /// <summary>
+        /// Guest: the host's member list for villages that were off. Creatures listed there join the
+        /// village here; creatures that are members only here leave it, and their rows are asked for
+        /// again (a creature the host no longer has is live sync's to remove).
+        /// </summary>
+        private void FixMembers(JObject pl)
+        {
+            foreach (var kv in pl)
+            {
+                if (!long.TryParse(kv.Key, NumberStyles.Integer, CultureInfo.InvariantCulture, out long id) || !(kv.Value is JArray ids)) continue;
+                City c = World.world.cities.get(id);
+                if (c == null || !c.isAlive()) continue;
+                Actor mine = CoopMod.Instance?.Avatars?.Mine;   // the player's own creature: never moved
+                var want = new HashSet<long>();
+                int joined = 0, left = 0, absent = 0;
+                foreach (JToken t in ids)
+                {
+                    long aid = (long)t;
+                    want.Add(aid);
+                    Actor a = WorldBoxApi.FindActor(aid);
+                    if (a == null || !a.isAlive()) { absent++; continue; }
+                    if (a == mine) continue;
+                    if (a.city != c) { R.Call(a, "setCity", new[] { typeof(City) }, c); joined++; }
+                }
+                var extra = new List<Actor>();
+                var gone = new StringBuilder();
+                foreach (Actor a in Living())
+                    if (a != null && a != mine && a.city == c && !want.Contains(a.getID()) && !WorldBoxApi.IsStandin(a)) extra.Add(a);
+                foreach (Actor a in extra)
+                {
+                    R.Call(a, "setCity", new[] { typeof(City) }, (City)null);
+                    if (gone.Length < 200) gone.Append(" #").Append(a.getID()).Append(' ').Append(a.asset?.id);
+                    if (_askActors.Count < 200) _askActors.Add(a.getID());
+                    left++;
+                }
+                if (joined + left == 0 && absent == 0) continue;
+                c.setDirty();
+                PopFixed += joined + left;
+                Log.Info("population fix: " + c.name + " #" + id + " joined " + joined + ", left " + left + gone + (absent > 0 ? ", " + absent + " not here yet" : ""));
+            }
+        }
 
         /// <summary>
         /// Guest: compares each village's population with the host's. A stale count (the game only
@@ -812,8 +907,9 @@ namespace Coopfall
         /// </summary>
         private void CheckPopulations(JObject pop)
         {
+            KeepPuppetCities();
             var actual = new Dictionary<City, int>();
-            foreach (Actor a in World.world.units.units_only_alive)
+            foreach (Actor a in Living())
                 if (a?.city != null) { actual.TryGetValue(a.city, out int n); actual[a.city] = n + 1; }
             float now = Time.unscaledTime;
             int off = 0;
@@ -829,6 +925,12 @@ namespace Coopfall
                 if (real == host) { _popOffSince.Remove(id); continue; }
                 // Counts are sent every 2 s, deaths and births in between: only a lasting difference counts.
                 if (!_popOffSince.TryGetValue(id, out float since)) { _popOffSince[id] = now; continue; }
+                // Off for a while: ask for the host's member list (at most every 4 s per village).
+                if (now - since >= 3f && (!_popAskAt.TryGetValue(id, out float asked) || now - asked >= 4f) && _askPop.Count < 50)
+                {
+                    _popAskAt[id] = now;
+                    _askPop.Add(id);
+                }
                 if (now - since < 6f) continue;
                 off++;
                 if (sb.Length < 300) sb.Append(c.name).Append(' ').Append(real).Append('/').Append(host).Append("  ");
@@ -844,6 +946,7 @@ namespace Coopfall
 
         private void OnWorld(JObject p)
         {
+            if (p["pl"] is JObject pl) { try { FixMembers(pl); } catch (Exception e) { Log.Warn("population fix: " + e.Message); } }
             if (p["pop"] is JObject pop) { try { CheckPopulations(pop); } catch (Exception e) { Log.Warn("population check: " + e.Message); } }
             MapStats ms = R.MapStats;
             if (ms == null) return;

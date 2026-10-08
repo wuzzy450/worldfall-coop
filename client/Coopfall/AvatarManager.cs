@@ -64,6 +64,7 @@ namespace Coopfall
         private float _nextSend, _nextCursor;
         private bool _wasOn;
         private Actor _mine;
+        public Actor Mine => _mine;
         private long _mineId;
 
         /// <summary>If the creature I possessed died, everybody's copy dies the same way (cause, killer).</summary>

@@ -83,9 +83,18 @@ setup and `DiagSync.cs` the paired DIAG capture.
   (it walks to the player, and is brought out of a house it was left in)
 - population counts compared the host's *listed* count with the guest's *actual* count. Both now count actual living members
 
-Still open: **population** is occasionally off by 1–2 in one village for longer than 6 s after a flood (`Zames 94/93`).
-It's a small creature-count drift, not a counting mistake. Look at which creature is extra on the guest
-(the DIAG after step 13 lists creatures).
+Population drift (`Zames 94/93`) was fixed afterwards, see the run 7–9 notes below.
+
+## Runs 7–9 (2026-10-07)
+
+- **Population fix:** when a village stays off for 3 s, the guest asks the host for that village's member list and fixes memberships
+  (guest log: `population fix: <village> joined N, left M #id ...`). The first version also pulled the guest's own possessed
+  creature out of its village, which then starved. The player's own creature is never touched now.
+- A `population fix` repeating every 10 s showed the guest's game filing the **host's puppet** into a village it walked through.
+  The guest now keeps puppets in the village the host's last row names.
+- **`nameplate-godview` failed once** because the host's creature burned to death during the flood, leaving no host to tag.
+  The host now possesses a fresh human before step 14 if its creature died (`TEST host's creature died in the flood`).
+- Result: **20 of 20 checks pass** (run 9, after test humans start fed: a possessed creature never eats, and one starved mid-test in runs 7 and 8).
 
 ## Reading a failure
 

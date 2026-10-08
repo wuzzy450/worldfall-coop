@@ -199,6 +199,19 @@ namespace Coopfall
                     return 50f;   // let the live sync catch up afterwards
                 case "population":
                     ToGuest("pop");
+                    if (me == null)
+                    {
+                        // The flood can kill the host's creature (fire, skeletons): the name tag step needs one.
+                        WorldTile t = World.world.GetTile((int)_spot.x, (int)_spot.y);
+                        Actor fresh = t == null ? null : World.world.units.spawnNewUnit("human", t, false, false, 0f);
+                        if (fresh != null)
+                        {
+                            fresh.setNutrition(fresh.getMaxNutrition());
+                            ControllableUnit.setControllableCreature(fresh);
+                            if (WorldfallBridge.Present) WorldfallBridge.ViewEnabled = true;
+                            Log.Info("TEST host's creature died in the flood: possessing new human #" + fresh.getID());
+                        }
+                    }
                     return 4f;
                 case "nameplate-godview":
                     ToGuest("godview", new JObject { ["lx"] = me != null ? me.current_position.x : _spot.x, ["ly"] = me != null ? me.current_position.y : _spot.y });
@@ -440,7 +453,7 @@ namespace Coopfall
                     return true;
                 }
                 case "pop":
-                    Check("population", CoopMod.Instance.Meta.LastPop == "all villages match", CoopMod.Instance.Meta.LastPop + " (recounts " + CoopMod.Instance.Meta.PopRecounts + ")");
+                    Check("population", CoopMod.Instance.Meta.LastPop == "all villages match", CoopMod.Instance.Meta.LastPop + " (recounts " + CoopMod.Instance.Meta.PopRecounts + ", fixed " + CoopMod.Instance.Meta.PopFixed + ")");
                     return true;
                 case "godview":
                 {

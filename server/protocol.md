@@ -29,8 +29,8 @@ TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"`
 | `wm` | `room, k, d?[data], s?[fingerprints], gone?[ids], full?, h?[id, fingerprint, ...]` | host only: meta objects of kind `k` (`subspecies, family, language, religion, item, book, culture, clan, kingdom, city, war, army, alliance, plot, diplomacy`). `d` = full save data of changed objects, `h` = every object's fingerprint (every 15 s) |
 | `wa` | `room, r[[id, name, city, kingdom, clan, family, culture, religion, language, subspecies, army, plot, lover, profession, level, experience, kills, renown, "traits", "items"], ...]` | host only: creatures' details (changed ones every 2 s, all every 20 s). `kingdom` is a civ id or `w:<asset>` for wild kingdoms |
 | `wt` | `room, k?[tile keys], z?[[zone, key index x64], ...], n?, zh?[fingerprints]` | host only: terrain. Zones are WorldBox's 8x8-tile zones sorted by (y, x); a tile key is `main|top|fire|burned`. `zh` = every zone's fingerprint (every 10 s) |
-| `ww` | `room, time, age, slot, prog, dur, apause, amul, slots, stats{}, laws?[[name, bool, int, string], ...]` | host only: world time, age/era, statistics and (when changed) world laws, every 2 s |
-| `wask` | `room, m?{kind: [ids]}, a?[creature ids], z?[zones]` | guest asks the host for meta objects, creature details or zones that are missing or differ |
+| `ww` | `room, time, age, slot, prog, dur, apause, amul, slots, stats{}, laws?[[name, bool, int, string], ...], pop{village: living members}, pl?{village: [creature ids]}` | host only: world time, age/era, statistics and (when changed) world laws, every 2 s. `pl` answers a guest's `pc` |
+| `wask` | `room, m?{kind: [ids]}, a?[creature ids], z?[zones], pc?[village ids]` | guest asks the host for meta objects, creature details or zones that are missing or differ, and (`pc`) member lists of villages whose population is off |
 | `chat` | `text` | server-wide chat |
 | `rename-room` / `delete-room` | `room, name?` | owner only |
 | `ping` | `ts` | keep-alive (every 5 s when idle) |
