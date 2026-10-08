@@ -42,8 +42,19 @@ namespace Coopfall.Lockstep
             UnityEngine.Random.state = s.unity;
         }
 
+        public static uint UnityState()
+        {
+            UnityEngine.Random.State st = UnityEngine.Random.state;
+            uint h = 0;
+            foreach (System.Reflection.FieldInfo f in typeof(UnityEngine.Random.State).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                h = h * 31 + (uint)(int)f.GetValue(st);
+            return h;
+        }
+
         /// <summary>Fingerprint of all three generators' state.</summary>
-        public static uint Fingerprint()
+        public static uint Fingerprint() => Fingerprint(true);
+
+        public static uint Fingerprint(bool withUnity)
         {
             uint h = _rand().state;
             System.Random r = _rnd();
@@ -53,7 +64,7 @@ namespace Coopfall.Lockstep
                 h = h * 31 + (uint)i * 7 + (uint)j;
                 if (_seeds?.GetValue(r) is int[] a && a.Length > 0) h = h * 31 + (uint)a[i % a.Length] + (uint)a[j % a.Length] * 3;
             }
-            h = h * 31 + (uint)UnityEngine.Random.state.GetHashCode();
+            if (withUnity) h = h * 31 + UnityState();
             return h;
         }
     }

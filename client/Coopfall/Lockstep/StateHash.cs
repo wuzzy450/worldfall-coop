@@ -48,6 +48,8 @@ namespace Coopfall.Lockstep
     {
         public long tick;
         public ulong units, buildings, meta, rng, tiles;
+        /// <summary>UnityEngine.Random's state (only informative: little simulation code uses it).</summary>
+        public uint urng;
         public int unitCount, buildingCount;
         /// <summary>Per-creature detail (only when asked for).</summary>
         public Dictionary<long, UnitRec> detail;
@@ -184,7 +186,8 @@ namespace Coopfall.Lockstep
             if (_randField != null)
             {
                 var r = (Unity.Mathematics.Random)_randField.GetValue(null);
-                t.rng = Mix(r.state) ^ Mix((ulong)Dice.Fingerprint() << 32);
+                t.rng = Mix(r.state) ^ Mix((ulong)Dice.Fingerprint(false) << 32);
+                t.urng = Dice.UnityState();
             }
 
             if (TileEvery > 0 && tick % TileEvery == 0)
