@@ -116,6 +116,7 @@ namespace Coopfall.Lockstep
             if (p == null || tile == null) { Log.Error("lockstep: input " + i + ": no such power or tile"); return; }
             string brush = Config.current_brush;
             if (i.brush != null) Config.current_brush = i.brush;
+            InputPointer.Pointer = new Vector2(tile.x + 0.5f, tile.y + 0.5f);
             try
             {
                 if (p.click_special_action != null) p.click_special_action(tile, p.id);

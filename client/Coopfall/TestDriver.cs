@@ -46,6 +46,7 @@ namespace Coopfall
                     if (d == null) { Application.runInBackground = true; d = new TestDriver(s); }
                     d._scenario = args[i + 1].ToLowerInvariant();
                     Log.Info("TEST scenario " + d._scenario);
+                    if (d._scenario == "lockstep") s.Cfg.lockstep = true;   // this run only, not saved
                 }
             if (d != null)
                 for (int i = 0; i + 1 < args.Length; i++)
@@ -84,6 +85,7 @@ namespace Coopfall
             Application.runInBackground = true;
             if (_loadSlot > 0) { LoadFirst(); return; }
             if (_scenario == "lobby") { LobbyTick(); return; }
+            if (_scenario == "lockstep") { LockstepTick(); return; }
             if (!_s.Online || !_s.InWorld || !WorldBoxApi.WorldReady || _s.OthersInRoom() == 0) { _t0 = -1f; return; }
             float now = Time.unscaledTime;
             if (_t0 < 0f) { _t0 = now; _nextStep = now + 20f; _step = 0; Log.Info("TEST start as " + (_s.IsHost ? "host" : "guest")); }

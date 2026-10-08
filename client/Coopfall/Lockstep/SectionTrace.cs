@@ -93,7 +93,8 @@ namespace Coopfall.Lockstep
                 int n = 0;
                 if (t != null)
                     foreach (MethodInfo mi in t.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-                        if (mi.Name == name && !mi.IsAbstract) n += TryPatch(h, mi, mi.ReturnType == typeof(void) ? post : postResult);
+                        if ((mi.Name == name || name == "*") && !mi.IsAbstract && !mi.ContainsGenericParameters && !mi.Name.StartsWith("<") && mi.GetMethodBody() != null)
+                            n += TryPatch(h, mi, mi.ReturnType == typeof(void) ? post : postResult);
                 Log.Info("lockstep: tracing " + item + ": " + n + " methods");
             }
         }
@@ -104,6 +105,7 @@ namespace Coopfall.Lockstep
             if (!Enabled || !LockstepClock.Active || LockstepClock.Tick >= MaxTick) return;
             string arg = LockstepClock.InTick ? "" : "BETWEEN TICKS ";
             if (__instance is BaseSimObject self) arg = "[" + self.getID() + "]";
+            else if (__instance is BaseEffect fx) arg = "[fx " + fx.GetInstanceID() + " " + fx.current_position.x.ToString("R") + "," + fx.current_position.y.ToString("R") + "]";
             if (!LockstepClock.InTick && _betweenLogged < 10)
             {
                 _betweenLogged++;
@@ -208,15 +210,20 @@ namespace Coopfall.Lockstep
         /// <summary>First part of tick `tick` where the two traces' dice states differ.</summary>
         public static string FirstSplit(List<Entry> a, List<Entry> b, long tick)
         {
-            var x = a.FindAll(e => e.tick == tick);
-            var y = b.FindAll(e => e.tick == tick);
+            // between-tick records only show that something ran there; their dice are the frame's
+            var x = a.FindAll(e => e.tick == tick && !e.section.StartsWith("BETWEEN"));
+            var y = b.FindAll(e => e.tick == tick && !e.section.StartsWith("BETWEEN"));
             int n = Math.Min(x.Count, y.Count);
             for (int i = 0; i < n; i++)
             {
                 if (x[i].section != y[i].section)
                 {
                     string before = "";
-                    for (int k = Math.Max(0, i - 6); k < i; k++) before += " | step " + k + ": " + x[k].section;
+                    for (int k = Math.Max(0, i - 12); k < i; k++) before += " | step " + k + ": " + x[k].section + (x[k].state != y[k].state ? " (dice differ)" : "");
+                    before += " || run B next:";
+                    for (int k = i; k < Math.Min(y.Count, i + 6); k++) before += " | " + y[k].section;
+                    before += " || run A next:";
+                    for (int k = i; k < Math.Min(x.Count, i + 6); k++) before += " | " + x[k].section;
                     return "order differs at step " + i + ": " + x[i].section + " vs " + y[i].section + before;
                 }
                 if (x[i].state != y[i].state) return "after " + x[i].section + " (step " + i + " of the tick; previous: " + (i > 0 ? x[i - 1].section : "tick start") + ")";

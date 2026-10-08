@@ -52,8 +52,16 @@ namespace Coopfall.Lockstep
             foreach (MethodInfo m in typeof(HotkeyLibrary).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
                 if (m.Name.StartsWith("isHolding") && m.ReturnType == typeof(bool)) { h.Patch(m, prefix: new HarmonyMethod(typeof(EffectState), nameof(NoKeysPrefix))); keys++; }
             if (keys == 0) Log.Error("lockstep: HotkeyLibrary.isHolding* not found: held keys may change the world");
+            // Worldfall's 3D view slows down the meteorites it draws (SceneCollector.MeteorPath), so
+            // their landing followed each player's camera: in a tick they fall at the game's speed
+            MethodInfo met = AccessTools.Method(typeof(Meteorite), "update");
+            _meteorSpeed = AccessTools.Field(typeof(Meteorite), "_falling_speed");
+            if (met != null && _meteorSpeed != null) h.Patch(met, prefix: new HarmonyMethod(typeof(EffectState), nameof(MeteorPrefix)));
+            else Log.Error("lockstep: Meteorite.update not found: meteorites may land at different times");
             if (Environment.GetEnvironmentVariable("COOPFALL_DNADBG") != null)
                 h.Patch(AccessTools.Method(typeof(Subspecies), "generateNucleus"), prefix: new HarmonyMethod(typeof(EffectState), nameof(DnaDbg)));
+            if (Environment.GetEnvironmentVariable("COOPFALL_METDBG") != null)
+                h.Patch(AccessTools.Method(typeof(Meteorite), "update"), prefix: new HarmonyMethod(typeof(EffectState), nameof(MetDbg)));
             if (Environment.GetEnvironmentVariable("COOPFALL_DNADBG") != null)
                 h.Patch(AccessTools.Method(typeof(Subspecies), "recalcBaseStats"), postfix: new HarmonyMethod(typeof(EffectState), nameof(DnaDbg2)));
         }
@@ -65,6 +73,21 @@ namespace Coopfall.Lockstep
             float traits = 0;
             foreach (SubspeciesTrait t in (System.Collections.IEnumerable)AccessTools.Field(__instance.GetType().BaseType, "_traits").GetValue(__instance)) traits += t.base_stats["lifespan"];
             Log.Info("DNADBG2 tick " + LockstepClock.Tick + " " + a.id + " total " + __instance.base_stats["lifespan"] + " asset " + a.base_stats["lifespan"] + " traits " + traits + " nucleus " + __instance.nucleus.getStats()["lifespan"]);
+        }
+
+        private static FieldInfo _meteorSpeed;
+        private static readonly object _vanillaSpeed = 200f;
+
+        private static void MeteorPrefix(Meteorite __instance)
+        {
+            if (LockstepClock.InTick) _meteorSpeed.SetValue(__instance, _vanillaSpeed);
+        }
+
+        private static int _metLogged;
+        private static void MetDbg(Meteorite __instance, float pElapsed)
+        {
+            if (_metLogged++ > 12) return;
+            Log.Info("METDBG tick " + LockstepClock.Tick + " in " + LockstepClock.InTick + " el " + pElapsed.ToString("R") + " speed " + AccessTools.Field(typeof(Meteorite), "_falling_speed").GetValue(__instance) + " pos " + __instance.current_position + (LockstepClock.InTick ? "" : " " + Environment.StackTrace));
         }
 
         private static void DnaDbg(Subspecies __instance)

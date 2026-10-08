@@ -41,6 +41,12 @@ namespace Coopfall.Lockstep
         private static string _traceExtra;
         /// <summary>-coopfall-determinism-chaos N: wars, magic users and disasters as inputs, every N ticks.</summary>
         private static int _chaos;
+        /// <summary>
+        /// -coopfall-determinism-camera: from run 2 on, the camera flies over the map (run 2 zoomed
+        /// out, run 3 zoomed in, ...), like another player's view. Anything the camera changes in
+        /// the world shows up as a difference.
+        /// </summary>
+        private static bool _moveCamera;
 
         public static DeterminismProbe FromCommandLine()
         {
@@ -58,6 +64,7 @@ namespace Coopfall.Lockstep
                 else if (s == "-coopfall-determinism-stack" && i + 2 < a.Length) { int.TryParse(a[i + 1], out SectionTrace.StackTile); int.TryParse(a[i + 2], out SectionTrace.StackTile2); }
                 else if (s == "-coopfall-determinism-tiles" && i + 1 < a.Length) int.TryParse(a[i + 1], out StateHash.TileEvery);
                 else if (s == "-coopfall-determinism-chaos" && i + 1 < a.Length) int.TryParse(a[i + 1], out _chaos);
+                else if (s == "-coopfall-determinism-camera") _moveCamera = true;
             }
             if (slot < 0) return null;
             var p = new DeterminismProbe(slot, Math.Max(1, ticks), Math.Max(1, runs), seed, quit);
@@ -130,10 +137,22 @@ namespace Coopfall.Lockstep
                     break;
 
                 case Phase.Running:
+                    if (_moveCamera && _run > 0) MoveCamera();
                     if (LockstepClock.Tick < _ticks) return;
                     FinishRun();
                     break;
             }
+        }
+
+        private void MoveCamera()
+        {
+            Camera cam = WorldBoxApi.MapCamera;
+            if (cam == null) return;
+            float t = Time.unscaledTime * (0.05f + 0.03f * _run);
+            float x = MapBox.width * (0.5f + 0.4f * Mathf.Sin(t * 1.3f + _run));
+            float y = MapBox.height * (0.5f + 0.4f * Mathf.Cos(t * 0.9f + 2 * _run));
+            cam.transform.position = new Vector3(x, y, cam.transform.position.z);
+            cam.orthographicSize = _run % 2 == 1 ? 150f : 12f;
         }
 
         private void StartLoad()
@@ -475,6 +494,14 @@ namespace Coopfall.Lockstep
                     if (split != null) lines.Add("  watched creatures/dice first split " + split);
                 }
             }
+            if (!string.IsNullOrEmpty(_traceExtra))
+                for (int r = 0; r < _traces.Count; r++)
+                {
+                    // the extra traced calls (they carry their object/arguments), for diffing whole runs
+                    var tl = new List<string>();
+                    foreach (SectionTrace.Entry e in _traces[r]) if (e.section.Contains("[") || e.section.Contains("(")) tl.Add(e.tick + "	" + e.section + "	" + e.state.ToString("x8"));
+                    File.WriteAllLines(Path.Combine(_dir, "trace-run" + (r + 1) + ".txt"), tl);
+                }
             foreach (string l in lines) Log.Info("DETERMINISM: " + l);
             File.WriteAllLines(Path.Combine(_dir, "report.txt"), lines);
             Log.Info("DETERMINISM done");

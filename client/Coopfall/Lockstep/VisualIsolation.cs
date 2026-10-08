@@ -103,6 +103,8 @@ namespace Coopfall.Lockstep
             // simulation that runs differently for creatures on screen: in a tick, always the same way
             n += PatchVisibility(h, typeof(Actor), "updateWalkJump", true);          // corpses wait for the jump to land
             n += PatchVisibility(h, typeof(CombatActionLibrary), "doBlockAction", true);
+            // the hit flash's timestamp doubles as the damage cooldown (lava, fire, ocean, drowning)
+            n += PatchVisibility(h, typeof(Actor), "startColorEffect", true);
             n += PatchVisibility(h, typeof(GodFinger), "deathFlip", false);         // rotation only updates in drawing
             MethodInfo rendered = AccessTools.Method(typeof(Actor), "isRendered");   // hatching eggs spawn a gameplay effect
             if (rendered != null) h.Patch(rendered, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(RenderedPrefix)));

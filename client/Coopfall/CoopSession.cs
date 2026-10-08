@@ -325,6 +325,7 @@ namespace Coopfall
         }
 
         public bool Downloading { get { return Phase == Phase.Downloading; } }
+        public bool Uploading { get { return _uploading; } }
 
         public bool SpeedAllowed { get { return !Restricted || (!Spectating && (CurrentRoom?.guestSpeed ?? true)); } }
 

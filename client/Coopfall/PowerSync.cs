@@ -194,6 +194,7 @@ namespace Coopfall
         public bool UseLocal(string powerId, WorldTile tile)
         {
             if (tile == null || !_hooks.TryGetValue(powerId ?? "", out Hook h)) return false;
+            if (_s.Lockstep != null && _s.Lockstep.Active) return _s.Lockstep.SubmitPower(powerId, tile, Config.current_brush);
             bool hostRuns = !_s.IsHost && _s.Online && _s.InWorld && _s.Cfg.liveSync && Spawns(h.power);
             if (!hostRuns)
             try

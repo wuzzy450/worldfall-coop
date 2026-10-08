@@ -44,7 +44,7 @@ namespace Coopfall.Lockstep
         /// <summary>Waiting for (or loading) the save of a new epoch.</summary>
         public bool Starting => _epoch > 0 && !_loaded;
         public int Epoch => _epoch;
-        public int Desyncs, Epochs;
+        public int Desyncs, Epochs, Checked;
         public string LastDesync;
 
         private int _epoch, _seed;
@@ -89,6 +89,7 @@ namespace Coopfall.Lockstep
                 return;
             }
             if (!LockstepClock.Install()) { Log.Error("lockstep: can't hook the game loop; staying on live sync"); return; }
+            if (_s.Uploading) return;   // an autosave is still going up; try again next frame
             byte[] data;
             try { data = WorldBoxApi.TakeSnapshot(); }
             catch (Exception e) { Log.Error("lockstep: snapshot failed: " + e); return; }
@@ -123,6 +124,7 @@ namespace Coopfall.Lockstep
             _grantAcc = 0;
             _lastHashTick = -1;
             // freeze the world and seed loading before anything is loaded
+            if (!LockstepClock.Install()) { Log.Error("lockstep: can't hook the game loop"); _epoch = 0; return; }
             LockstepClock.Start(_seed);
             Randy.resetSeed(_seed);
             if (data != null) _s.LoadOwnSnapshot(data);
@@ -248,6 +250,7 @@ namespace Coopfall.Lockstep
         public bool SubmitPower(string powerId, WorldTile tile, string brush)
         {
             if (!Active || tile == null) return false;
+            if (_s.IsHost && _waitingReady) { CoopMod.Instance?.UI.ShowToast("Everyone is still loading the world"); return true; }
             if (_s.IsHost) Assign(_s.MyId, LockstepInput.Kind.Power, powerId, tile.x, tile.y, brush);
             else Send("wlr", new JObject { ["e"] = _epoch, ["from"] = _s.MyId, ["k"] = (int)LockstepInput.Kind.Power, ["id"] = powerId, ["a"] = tile.x, ["b"] = tile.y, ["brush"] = brush, ["s"] = _localSeq++ });
             return true;
@@ -273,8 +276,28 @@ namespace Coopfall.Lockstep
 
         // ============================================================== checks
 
+        /// <summary>"-coopfall-lockstep-trace": every tick's checksum to lockstep-epochN.tsv (compare with tools/compare-determinism.py).</summary>
+        private static readonly bool TraceTicks = Array.Exists(Environment.GetCommandLineArgs(), a => a.Equals("-coopfall-lockstep-trace", StringComparison.OrdinalIgnoreCase));
+        private System.IO.StreamWriter _trace;
+        private int _traceEpoch;
+
+        private void TraceTick(long tick)
+        {
+            if (_traceEpoch != _epoch)
+            {
+                _trace?.Dispose();
+                _traceEpoch = _epoch;
+                string f = System.IO.Path.Combine(Log.Dir ?? Application.persistentDataPath, "lockstep-epoch" + _epoch + ".tsv");
+                _trace = new System.IO.StreamWriter(f) { AutoFlush = true };
+                _trace.WriteLine("# epoch " + _epoch + " seed " + _seed + " " + (_s.IsHost ? "host" : "guest"));
+                _trace.WriteLine(TickHash.Header);
+            }
+            _trace.WriteLine(StateHash.Compute(tick, false).Line());
+        }
+
         private void OnTick(long tick)
         {
+            if (TraceTicks && Active) TraceTick(tick);
             if (!Active || tick % HashEvery != 0 || tick == _lastHashTick) return;
             _lastHashTick = tick;
             string h = StateHash.Compute(tick, false).Line();
@@ -296,7 +319,7 @@ namespace Coopfall.Lockstep
                 }
                 _theirHashes.RemoveAt(i);
                 string theirs = (string)p["h"];
-                if (theirs == mine) continue;
+                if (theirs == mine) { Checked++; continue; }
                 Desyncs++;
                 LastDesync = (_s.Player(who)?.name ?? who) + " at tick " + tick;
                 Log.Warn("lockstep: " + LastDesync + " differs: " + Describe(mine, theirs));
@@ -342,6 +365,7 @@ namespace Coopfall.Lockstep
                         _s.AddChat(null, "Lockstep needs the same mods (and the same Worldfall build) as the host. Playing on live sync.", true);
                         return;
                     }
+                    if (e == _epoch && (string)p["sha"] == _sha) return;   // the relay repeats it ahead of the save it serves
                     _epoch = e;
                     _seed = (int?)p["seed"] ?? 1;
                     _sha = (string)p["sha"];
@@ -360,7 +384,7 @@ namespace Coopfall.Lockstep
                     LockstepClock.Granted = Math.Max(LockstepClock.Granted, (long?)p["g"] ?? 0);
                     break;
                 case "wlr":
-                    if (e != _epoch || !_s.IsHost || !Active) return;
+                    if (e != _epoch || !_s.IsHost || !Active || _waitingReady) return;   // players still loading would miss it
                     string from = (string)p["from"];
                     string id = (string)p["id"];
                     PlayerInfo pl = _s.Player(from);

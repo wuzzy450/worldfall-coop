@@ -47,6 +47,8 @@ namespace Coopfall.Lockstep
         private static AccessTools.FieldRef<MapBox, GameStats> _gameStats;
         private static AccessTools.FieldRef<GameStats, GameStatsData> _gameStatsData;
         private static AccessTools.FieldRef<Actor, double> _staminaStamp;
+        private static readonly AccessTools.FieldRef<MapBox, QualityChanger> _quality = AccessTools.FieldRefAccess<MapBox, QualityChanger>("quality_changer");
+        private static readonly AccessTools.FieldRef<QualityChanger, bool> _lowRes = AccessTools.FieldRefAccess<QualityChanger, bool>("_low_resolution");
         /// <summary>
         /// "Session time" in WorldBox is the player's real play time (it adds Time.deltaTime every
         /// frame), yet creatures use it for eating/stamina/social cooldowns. During a tick it reads a
@@ -136,6 +138,7 @@ namespace Coopfall.Lockstep
                 FrameClock.Install(h);
                 FrameUpdates.Install(h);
                 EffectState.Install(h);
+                InputPointer.Install(h);
                 Installed = true;
                 Log.Info("lockstep: installed (Harmony " + typeof(Harmony).Assembly.GetName().Version + ")");
                 return true;
@@ -253,11 +256,22 @@ namespace Coopfall.Lockstep
                 timer -= pElapsed;
                 if (timer > 0f) return false;
             }
+            if (VisualBehaviours.Contains(asset.id))
+            {
+                // map overlays, decorative waves, achievements: their timers are touched by the UI
+                // (map modes, zoom), so they keep to their own dice
+                Dice.Snapshot d = Dice.Isolate();
+                try { timer += asset.interval + Randy.randomFloat(0f, asset.interval_random); asset.action(); }
+                finally { Dice.Restore(d); }
+                return false;
+            }
             timer += asset.interval + Randy.randomFloat(0f, asset.interval_random);
             asset.action();
             SectionTrace.Mark("world behaviour " + asset.id);
             return false;
         }
+
+        private static readonly HashSet<string> VisualBehaviours = new HashSet<string> { "zones_meta_data_visualizer", "debug_highlight", "waves", "achievements_checks" };
 
         /// <summary>Static simulation timers that aren't saved and carry over from the previous world.</summary>
         private static void ResetStatics()
@@ -645,6 +659,10 @@ namespace Coopfall.Lockstep
             float elapsed = _elapsed(map), delta = _deltaTime(map), fixedDelta = _fixedDeltaTime(map);
             SwapSessionTime(true);
             GameStatsData stats = _gameStatsData(_gameStats(map));
+            // zoomed out to the minimap ("low res"), the game skips dice rolls for effects
+            // (burning, ...): in a tick, always the zoomed-in way
+            QualityChanger quality = _quality(map);
+            bool lowRes = quality != null && _lowRes(quality);
             int n = 0;
             try
             {
@@ -652,6 +670,7 @@ namespace Coopfall.Lockstep
                 {
                     BeforeTick?.Invoke(Tick);
                     _inTickAll = true;
+                    if (quality != null) _lowRes(quality) = false;
                     Randy.resetSeed(TickSeed(Seed, Tick));
                     _isPaused(map) = false;   // local windows/pause must not change the shared world
                     // much of the simulation reads these instead of its argument
@@ -661,7 +680,9 @@ namespace Coopfall.Lockstep
                     stats.gameTime = SessionTime;
                     // knockback (and throw start points) read the drawn position, which is only
                     // refreshed for creatures on screen: refresh it for all, from simulated state
-                    foreach (Actor a in map.units) if (a != null) a.updatePos();
+                    // ...and the rotation (attacks wait for it to be level) is only copied from its
+                    // target while drawing, i.e. for creatures on screen: copy it for all
+                    foreach (Actor a in map.units) if (a != null) { a.updatePos(); a.updateRotation(); }
                     EffectState.RestoreAnimations();
                     LockstepInput.ApplyFor(Tick);
                     _updateSimulation(map, StepElapsed);
@@ -678,7 +699,7 @@ namespace Coopfall.Lockstep
                     AfterTick?.Invoke(Tick);
                 }
             }
-            finally { _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
+            finally { if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
         }
 
         public static int TickSeed(int seed, long tick)
