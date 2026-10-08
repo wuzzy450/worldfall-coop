@@ -23,7 +23,8 @@ God powers, game speed/pause and chat are synced, and **live sync** keeps the wh
 step with the host's simulation: creatures, buildings and trees, kingdoms, cities and their
 borders, wars, alliances, diplomacy, cultures, religions, languages, clans, families, armies,
 plots, books, items, every creature's name, traits, job and memberships, terrain and fire, the
-world's time, age and laws. Kills count everywhere: hit someone in your game and they die in
+world's time, age and laws, and the weather (clouds with their rain, snow and storms, and
+Worldfall's wind gusts). Kills count everywhere: hit someone in your game and they die in
 everyone's game.
 
 Works with **[Worldfall](https://worldfall3d.com/)** (optional), an unofficial first-person mod
@@ -117,8 +118,9 @@ In WorldBox press **F8** (or click **Co-op** at the top of the screen):
 - **Server IP**: `127.0.0.1` on the server PC itself, the server PC's LAN IP on the same network,
   or the public IP / VPN address over the internet
 - **Port**: `25598`
-- choose **Shared world** or **Own worlds**, then **Connect**. Tick "Connect automatically" to
-  skip this next time.
+- choose **Shared world** or **Own worlds**, then **Connect**. "Connect automatically" is on by
+  default, so after the first time Coopfall connects by itself when WorldBox starts (untick it
+  in the Co-op menu to stop that).
 
 If the connection drops, Coopfall reconnects by itself. If you were hosting, your open world
 is kept and uploaded, not replaced by an older server copy.
@@ -146,15 +148,13 @@ owner can also allow guests to have extra mods.
 
 Out of the box everybody can do everything: every player in a world is an **admin** (may change
 the settings below and kick), guests can use **all god powers** and change **speed / pause**
-(synced for everyone), and nobody has to be let in. Coopfall also **connects automatically**
-when WorldBox starts (switch it off in the Co-op menu).
+(synced for everyone), there is no password, and nobody has to be let in.
 
 The owner of a world (for the shared world: whoever hosts it) can tighten that in the
 **This world's settings** section of the Co-op menu:
 
 - **Everyone here is an admin**: switch off so only the owner changes settings and kicks, and
   the guest limits below apply. Only the owner can flip this, and nobody can kick the owner.
-
 - **Password**: players are asked for it when they travel there (stored hashed on the server).
 - **Locked**: nobody new can join.
 - **Ask me before people join**: a box at the top of your screen with **Let in** / **No**.
@@ -163,8 +163,9 @@ The owner of a world (for the shared world: whoever hosts it) can tighten that i
 - **Guests may change speed / pause**.
 - **Allow guests' extra mods**.
 
-In the player list the owner can **Kick** a player (they can't come back for 10 minutes). The
-list also shows everyone's **ping**.
+In the player list an admin (by default: anyone in the world) can **Kick** a player from that
+world (they can't come back for 10 minutes). The owner can't be kicked. The list also shows
+everyone's **ping**.
 
 **Spectating**: the **Watch** button on a World Map card lets you join a world without playing:
 no god powers, no speed changes, no possessing creatures.
@@ -181,7 +182,8 @@ name, home folder and the server address are removed, so it can be posted public
 |---|---|
 | **F7** | World Map |
 | **F8** | Co-op menu |
-| **Enter** | chat (`/sync` full re-sync, `/home` your world, `/shared` the shared world, `/export` diagnostics zip) |
+| **F9** | capture a sync report in every game of your world (for bug reports; also `/report`) |
+| **Enter** | chat (`/sync` full re-sync, `/home` your world, `/shared` the shared world, `/report` sync report, `/export` diagnostics zip) |
 
 Keys can be changed in `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\config.json`.
 They avoid Worldfall's keys (F1, F2, F5, G, V, E, X).
@@ -211,6 +213,12 @@ top-down view so you can use the mouse, and returns to first person when you clo
   the terrain (8x8-tile zones: ground, roads, fields, lava, ice, fire, burn marks) and for the
   world's time, age and laws. Changes are applied in place through WorldBox's own functions,
   so there is no loading screen.
+- **Guests don't roll their own dice**: WorldBox's random world events (disasters, migrants,
+  plants spreading, fire spreading, biomes, erosion, clouds, ...) are switched off on guests,
+  and their earthquakes and tornadoes don't change tiles. The host's results arrive through the
+  sync instead, so a guest's world can't drift off by itself.
+- **Weather**: the host sends its clouds (type, place, speed) and Worldfall's wind gust state
+  about once a second; guests show the same clouds and the same gusts.
 - **Kills**: the host announces every death with its cause and killer, and guests kill the same
   creature the same way. When a guest's possessed creature hits something, the hit is applied
   in the host's world (so the kill counts for everybody). A possessed creature belongs to its
@@ -228,20 +236,30 @@ top-down view so you can use the mouse, and returns to first person when you clo
 - Everyone needs the same Coopfall version (the server refuses older ones: protocol v3).
 - The mods check compares files. It can't tell whether a mod is really safe to mix; that is
   up to the `clientOnly` marks.
-- Every guest's WorldBox still simulates the world too, so small things can differ for a
-  moment (a creature's local fight, a tree growing, lava flowing) until the host's state
-  arrives, usually within a few seconds; terrain and the object lists are checked every 10-15 s.
+- Every change reaches the guests after the network delay (on a LAN well under a second,
+  over the internet about your ping more). Guests still run the parts of the simulation that
+  aren't random (creatures walking, buildings, lava flowing), so a guest's world can differ
+  for a moment until the host's state arrives; guests check their terrain against the host's
+  every half second and the object lists every 15 s, and fix what differs. A full lockstep
+  simulation (every game computing exactly the same thing) isn't possible, because WorldBox
+  itself isn't deterministic.
 - Dragons (and a few other special creatures) can't be possessed. That's WorldBox's own rule,
   not something Coopfall or Worldfall changes.
 
 ## Testing tools
 
 - `python server/test_client.py`: end-to-end test of the relay (start the server first).
-  Plays several fake clients and checks joining, snapshots, relays, live sync, host migration
-  and resuming after a dropped connection. Takes the port as an optional argument.
-- `sh tools/run-lobby.sh` (Git Bash, relay running): two games on one PC test the world
-  settings: password, mods check, approval, guest limits, spectating, kick and the diagnostics
-  zip. Results are `TEST lobby:` lines in both logs, plus `lobby-*.png` screenshots.
+  Plays several fake clients and checks joining, snapshots, relays, live sync, host migration,
+  resuming after a dropped connection, world settings (password, mods check, approval, guest
+  limits, spectators, kick, the open defaults) and ping. Takes the port as an optional argument.
+- `sh tools/run-meet.sh` (Git Bash): two games on one PC (host loads save slot 1). Two humans
+  meet, host and guest take turns using god powers (creatures, curses, terrain, meteorite, bomb,
+  a rain cloud, ...), and after each one both games compare a sync report. Prints one `DIAG`
+  line per step ("everything matches" or what differs). About 5 minutes.
+- `sh tools/run-lobby.sh` (Git Bash): two games on one PC test the world settings: password,
+  mods check, approval, guest limits, spectating, kick and the diagnostics zip. Results are
+  `TEST lobby:` lines in both logs, plus `lobby-*.png` screenshots. Both scripts install the
+  built DLL and restart the relay with no stored worlds first.
 - `python tools/fake_player.py --room shared`: a scripted second player (walks an avatar,
   uses god powers, chats) so you can test without a friend. `--help` for options.
 - Mod log: `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\log.txt`. Attach it
@@ -269,6 +287,7 @@ top-down view so you can use the mouse, and returns to first person when you clo
 | `server/protocol.md` | wire protocol |
 | `server/test_client.py` | relay end-to-end test |
 | `tools/fake_player.py` | scripted test player |
+| `tools/run-meet.sh`, `tools/run-lobby.sh` | two-game tests (sync, world settings) |
 
 ## For AI agents
 
@@ -281,9 +300,11 @@ If you are an AI coding agent asked to build and test this project:
   `worldbox_Data/StreamingAssets/mods/` and adds the MonoBehaviour `Coopfall.WorldBoxMod`.
   Start reading at `WorldBoxMod.cs`, then `CoopSession.cs` (connection, rooms, snapshots),
   `WorldSync.cs` (live sync of creatures and buildings), `MetaSync.cs` (everything else),
-  `TileSync.cs` (terrain), `CombatSync.cs` (hits and kills), `AvatarManager.cs`,
-  `PowerSync.cs`, `CoopUI.cs`, `TestDriver.cs` (automated two-game test), and
-  `WorldfallBridge.cs` (optional Worldfall integration via reflection).
+  `TileSync.cs` (terrain and fire), `WeatherSync.cs` (clouds and wind gusts), `CombatSync.cs`
+  (hits and kills), `AvatarManager.cs`, `PowerSync.cs` (god powers, guest limits), `CoopUI.cs`,
+  `ModScan.cs` (mods check), `DiagExport.cs` (diagnostics zip), `DiagSync.cs` (sync reports),
+  `TestDriver.cs` / `TestLobby.cs` (automated two-game tests), and `WorldfallBridge.cs`
+  (optional Worldfall integration via reflection).
 - Relay: `server/cuberite/Plugins/WorldfallRooms/Main.lua`; protocol in `server/protocol.md`.
   Run `server/start_server.bat`, then `python server/test_client.py` should report all
   checks passed.

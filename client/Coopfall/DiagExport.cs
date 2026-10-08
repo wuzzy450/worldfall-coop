@@ -15,8 +15,11 @@ namespace Coopfall
     /// </summary>
     public static class DiagExport
     {
+        private static string _server;
+
         public static string Create(CoopSession s)
         {
+            _server = (s.Cfg.serverHost ?? "").Trim();
             Log.Flush();
             string dir = Path.Combine(Log.Dir ?? Log.DataDir(), "reports");
             Directory.CreateDirectory(dir);
@@ -113,6 +116,8 @@ namespace Coopfall
                 {
                     text = text.Replace(home, "<home>").Replace(home.Replace('\\', '/'), "<home>");
                 }
+                if (_server != null && _server.Length >= 3 && _server != "127.0.0.1" && _server != "localhost")
+                    text = text.Replace(_server, "<server>");
                 string user = Environment.UserName;
                 if (!string.IsNullOrEmpty(user) && user.Length >= 3)
                     text = System.Text.RegularExpressions.Regex.Replace(text, "\\b" + System.Text.RegularExpressions.Regex.Escape(user) + "\\b", "<user>",
