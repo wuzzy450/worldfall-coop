@@ -126,7 +126,11 @@ namespace Coopfall.Lockstep
                 _loaderId = AccessTools.Field(AccessTools.TypeByName("MapLoaderContainer"), "id");
                 if (loadStep != null) h.Patch(loadStep, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(LoadStepPrefix)));
                 else Log.Error("lockstep: SmoothLoader.doActions not found: loading may roll different dice on each PC");
+                MethodInfo statsUpdate = AccessTools.Method(typeof(GameStats), "updateStats");
+                if (statsUpdate != null) h.Patch(statsUpdate, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(StatsUpdatePrefix)), postfix: new HarmonyMethod(typeof(LockstepClock), nameof(StatsUpdatePostfix)));
+                else Log.Error("lockstep: GameStats.updateStats not found: play time may be saved wrong");
                 VisualIsolation.Install(h);
+                FrameClock.Install(h);
                 Installed = true;
                 Log.Info("lockstep: installed (Harmony " + typeof(Harmony).Assembly.GetName().Version + ")");
                 return true;
@@ -135,6 +139,39 @@ namespace Coopfall.Lockstep
         }
 
         /// <summary>Freeze the world at tick 0; nothing advances until Granted is raised.</summary>
+        /// <summary>The player's real play time (a statistic), kept aside while session time is shared.</summary>
+        private static double _realPlayTime;
+        private static bool _sessionSwapped;
+
+        private static GameStatsData Stats() => World.world == null ? null : _gameStatsData(_gameStats(World.world));
+
+        /// <summary>
+        /// Session time is read by the simulation (cooldowns, building tweens, ...) inside and
+        /// outside ticks: while lockstep runs it is the shared clock everywhere. The real play time
+        /// keeps counting aside and is what the game saves to its statistics file.
+        /// </summary>
+        private static void SwapSessionTime(bool shared)
+        {
+            GameStatsData d = Stats();
+            if (d == null || shared == _sessionSwapped) return;
+            if (shared) { _realPlayTime = d.gameTime; d.gameTime = SessionTime; }
+            else d.gameTime = _realPlayTime;
+            _sessionSwapped = shared;
+        }
+
+        private static void StatsUpdatePrefix(GameStats __instance)
+        {
+            if (!_sessionSwapped) return;
+            _gameStatsData(__instance).gameTime = _realPlayTime;   // add the frame's time to the real value, save that
+        }
+
+        private static void StatsUpdatePostfix(GameStats __instance)
+        {
+            if (!_sessionSwapped) return;
+            _realPlayTime = _gameStatsData(__instance).gameTime;
+            _gameStatsData(__instance).gameTime = SessionTime;
+        }
+
         public static void Start(int seed)
         {
             Seed = seed;
@@ -142,9 +179,14 @@ namespace Coopfall.Lockstep
             Granted = 0;
             StepElapsed = DefaultStep;   // x1 speed; game speed becomes ticks per frame
             Active = true;
+            SwapSessionTime(true);
         }
 
-        public static void Stop() { Active = false; }
+        public static void Stop()
+        {
+            Active = false;
+            SwapSessionTime(false);
+        }
 
         /// <summary>
         /// Run once a save has finished loading, before tick 0. Loading rolls creatures' decision
@@ -539,8 +581,8 @@ namespace Coopfall.Lockstep
             if (po != null && po.MaxDegreeOfParallelism != 1) po.MaxDegreeOfParallelism = 1;
             bool paused = _isPaused(map);
             float elapsed = _elapsed(map), delta = _deltaTime(map), fixedDelta = _fixedDeltaTime(map);
+            SwapSessionTime(true);
             GameStatsData stats = _gameStatsData(_gameStats(map));
-            double realSession = stats.gameTime;
             int n = 0;
             try
             {
@@ -569,7 +611,7 @@ namespace Coopfall.Lockstep
                     AfterTick?.Invoke(Tick);
                 }
             }
-            finally { _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = realSession; }
+            finally { _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
         }
 
         public static int TickSeed(int seed, long tick)

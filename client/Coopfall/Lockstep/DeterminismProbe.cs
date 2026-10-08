@@ -21,7 +21,7 @@ namespace Coopfall.Lockstep
         private readonly int _slot, _ticks, _runs, _seed;
         private readonly bool _quit;
         private long _dumpTick = -1, _dumpTo = -1;
-        private bool _dumpAll;
+        private bool _dumpAll, _dumpBuildings;
         private readonly HashSet<long> _dumpIds = new HashSet<long>();
         /// <summary>Per run, per dumped tick.</summary>
         private readonly List<List<Dictionary<string, string>>> _dumps = new List<List<Dictionary<string, string>>>();
@@ -67,6 +67,7 @@ namespace Coopfall.Lockstep
                     p._dumpTo = p._dumpTick;
                     if (range.Length > 1) long.TryParse(range[1], out p._dumpTo);
                     if (a[i + 2] == "all") p._dumpAll = true;
+                    else if (a[i + 2] == "buildings") p._dumpBuildings = true;
                     else foreach (string id in a[i + 2].Split(',')) if (long.TryParse(id, out long v)) { p._dumpIds.Add(v); SectionTrace.Watch.Add(v); }
                 }
             return p;
@@ -154,6 +155,10 @@ namespace Coopfall.Lockstep
         private Dictionary<string, string> DumpFields()
         {
             var d = new Dictionary<string, string>();
+            if (_dumpBuildings)
+                foreach (Building b in World.world.buildings)
+                    if (b != null)
+                        d["building " + b.getID()] = (HarmonyLib.AccessTools.Field(typeof(Building), "asset")?.GetValue(b) as Asset)?.id + " tile " + b.current_tile?.tile_id + " hp " + b.getHealth() + " alive " + b.isAlive();
             foreach (Actor a in World.world.units)
                 if (a != null && (_dumpAll || _dumpIds.Contains(a.getID())))
                 {
@@ -254,8 +259,13 @@ namespace Coopfall.Lockstep
         {
             if (_phase != Phase.Running || _cur == null || _cur.Count == 0 || _betweenReports >= 5) return;
             TickHash last = _cur[_cur.Count - 1];
+            TickHash now = StateHash.Compute(tick, last.detail != null);
+            if (now.buildings != last.buildings || now.buildingCount != last.buildingCount)
+            {
+                _betweenReports++;
+                Log.Info("DETERMINISM: run " + (_run + 1) + ": buildings changed BETWEEN ticks " + tick + " and " + (tick + 1) + " (count " + last.buildingCount + " -> " + now.buildingCount + ")");
+            }
             if (last.detail == null) return;
-            TickHash now = StateHash.Compute(tick, true);
             if (now.units == last.units && now.unitCount == last.unitCount) return;
             _betweenReports++;
             Log.Info("DETERMINISM: run " + (_run + 1) + ": creatures changed BETWEEN ticks " + tick + " and " + (tick + 1) + " (frame " + Time.frameCount + ")");

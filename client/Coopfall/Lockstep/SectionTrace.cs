@@ -85,8 +85,9 @@ namespace Coopfall.Lockstep
 
         private static void ArgPostfix(MethodBase __originalMethod, object[] __args, object __instance)
         {
-            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick) return;
-            string arg = "";
+            // traced methods are recorded between ticks too: anything changing the world there is a leak
+            if (!Enabled || !LockstepClock.Active || LockstepClock.Tick >= MaxTick) return;
+            string arg = LockstepClock.InTick ? "" : "BETWEEN TICKS ";
             if (__instance is BaseSimObject self) arg = "[" + self.getID() + "]";
             if (__args != null && __args.Length > 0)
             {
@@ -94,12 +95,12 @@ namespace Coopfall.Lockstep
                 if (a is WorldTile wt) arg += "(tile " + wt.tile_id + ")";
                 else if (a is BaseSimObject so) arg += "(" + so.GetType().Name + " " + so.getID() + ")";
             }
-            Current.Add(new Entry { tick = LockstepClock.Tick + 1, section = __originalMethod.DeclaringType.Name + "." + __originalMethod.Name + arg, state = State() });
+            Current.Add(new Entry { tick = LockstepClock.Tick + 1, section = arg.StartsWith("BETWEEN") ? arg + __originalMethod.DeclaringType.Name + "." + __originalMethod.Name : __originalMethod.DeclaringType.Name + "." + __originalMethod.Name + arg, state = State() });
         }
 
         private static void ArgResultPostfix(MethodBase __originalMethod, object[] __args, object __instance, object __result)
         {
-            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick) return;
+            if (!Enabled || !LockstepClock.Active || LockstepClock.Tick >= MaxTick) return;
             ArgPostfix(__originalMethod, __args, __instance);
             Entry e = Current[Current.Count - 1];
             string r = __result is BaseSimObject so ? so.GetType().Name + " " + so.getID() : __result is WorldTile wt ? "tile " + wt.tile_id : __result?.ToString() ?? "null";
