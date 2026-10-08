@@ -9,6 +9,8 @@
 > **Want to try it now?** See [Download](#download) below. You can also point your own AI
 > coding agent at this repository (see [For AI agents](#for-ai-agents)) and let it build,
 > install and test it for you. Bug reports are welcome.
+>
+> **Join the Discord** for help, bug reports and people to play with: https://discord.gg/nuvpXycag8
 
 Coopfall lets several people play WorldBox together over the internet or a LAN:
 
