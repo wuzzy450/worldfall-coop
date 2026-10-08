@@ -236,6 +236,11 @@ If you are an AI coding agent asked to build and test this project:
 - Note: Cuberite exits when its standard input closes; keep stdin open if you launch it
   from a script.
 
+## Credits
+
+- **Wuzzy450**: creator of Coopfall
+- **Defect**: tester. Thanks for all the co-op playtesting and bug reports!
+
 ## Support Coopfall
 
 Coopfall is free and always will be. If you enjoy it and would like to help out, a small

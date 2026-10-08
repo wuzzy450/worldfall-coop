@@ -1,4 +1,4 @@
-# Co-op sync issues from the 2026-10-07 session (host and one guest)
+# Co-op sync issues from the 2026-10-07 session (Wuzzy450 hosting, Defect testing as guest)
 
 Status key: **patched** = code changed and builds, not yet play-tested with two players.
 
