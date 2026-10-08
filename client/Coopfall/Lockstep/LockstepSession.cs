@@ -73,6 +73,7 @@ namespace Coopfall.Lockstep
         {
             _s = s;
             LockstepClock.AfterTick += OnTick;
+            LockstepInput.Applied += i => { if (TraceTicks) Log.Info("lockstep: applied " + i + " (epoch " + _epoch + ")"); };
         }
 
         private bool Wanted => _s.Cfg.lockstep && _s.Online && _s.RoomId != null;
@@ -292,12 +293,80 @@ namespace Coopfall.Lockstep
                 _trace.WriteLine("# epoch " + _epoch + " seed " + _seed + " " + (_s.IsHost ? "host" : "guest"));
                 _trace.WriteLine(TickHash.Header);
             }
-            _trace.WriteLine(StateHash.Compute(tick, false).Line());
+            TickHash th = StateHash.Compute(tick, tick % HashEvery == 0);
+            _trace.WriteLine(th.Line());
+            if (th.detail != null)
+            {
+                // every creature's record at the check ticks (diff host and guest to see who drifted)
+                if (_units == null || _unitsEpoch != _epoch)
+                {
+                    _units?.Dispose();
+                    _unitsEpoch = _epoch;
+                    _units = new System.IO.StreamWriter(System.IO.Path.Combine(Log.Dir ?? Application.persistentDataPath, "lockstep-units" + _epoch + ".txt"));
+                }
+                var ids = new List<long>(th.detail.Keys);
+                ids.Sort();
+                foreach (long id in ids)
+                {
+                    UnitRec r = th.detail[id];
+                    _units.WriteLine(tick + "	" + id + "	" + r.px + "," + r.py + "	hp " + r.hp + "	tile " + r.tile + "	asset " + r.asset + "	timer " + r.timer + "	cool " + r.cool + "	task " + r.task + "	path " + r.path);
+                }
+                _units.Flush();
+            }
+            // which part of the tick rolled which dice (diff host and guest files to find a split)
+            if (_sections == null)
+            {
+                SectionTrace.Install();
+                SectionTrace.Enabled = true;
+                SectionTrace.MaxTick = long.MaxValue;
+            }
+            if (_sectionsEpoch != _epoch || _sections == null)
+            {
+                _sections?.Dispose();
+                _sectionsEpoch = _epoch;
+                _sections = new System.IO.StreamWriter(System.IO.Path.Combine(Log.Dir ?? Application.persistentDataPath, "lockstep-sections" + _epoch + ".txt")) { AutoFlush = false };
+                SectionTrace.Current.Clear();
+            }
+            if (tick <= 3000)
+                foreach (SectionTrace.Entry en in SectionTrace.Current) _sections.WriteLine(en.tick + "	" + en.section + "	" + en.state.ToString("x8"));
+            SectionTrace.Current.Clear();
+            if (tick % 100 == 0) _sections.Flush();
         }
+
+        /// <summary>"-coopfall-lockstep-dump N": zone owners and cultures after tick N of every epoch.</summary>
+        private static readonly long DumpAt = DumpTick();
+        private static long DumpTick()
+        {
+            string[] a = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < a.Length; i++) if (a[i].Equals("-coopfall-lockstep-dump", StringComparison.OrdinalIgnoreCase) && long.TryParse(a[i + 1], out long t)) return t;
+            return -1;
+        }
+
+        private void DumpMeta(long tick)
+        {
+            var lines = new List<string>();
+            object calc = R.Get(World.world, "zone_calculator");
+            if (R.Get(calc, "zones") is System.Collections.IEnumerable zones)
+                foreach (TileZone z in zones)
+                    lines.Add("zone " + R.Get(z, "id") + " city " + (z.city?.getID() ?? -1) + " tiles " + ((System.Collections.ICollection)R.Get(z, "tiles")).Count);
+            foreach (City c in World.world.cities)
+            {
+                if (c == null) continue;
+                string traits = "";
+                if (c.culture != null) foreach (var t in c.culture.getTraits()) traits += " " + t.id;
+                lines.Add("city " + c.getID() + " alive " + c.isAlive() + " culture " + (c.culture?.getID() ?? -1) + " roads " + (c.culture?.canUseRoads() ?? false) + " traits" + traits + " zones " + ((R.Get(c, "zones") as System.Collections.ICollection)?.Count ?? -1) + " kingdom " + ((R.Get(c, "kingdom") as Kingdom)?.getID() ?? -1));
+            }
+            System.IO.File.WriteAllLines(System.IO.Path.Combine(Log.Dir ?? Application.persistentDataPath, "lockstep-meta" + _epoch + "-" + tick + ".txt"), lines);
+        }
+
+        private System.IO.StreamWriter _sections, _units;
+        private int _unitsEpoch;
+        private int _sectionsEpoch;
 
         private void OnTick(long tick)
         {
             if (TraceTicks && Active) TraceTick(tick);
+            if (Active && DumpAt > 0 && (tick == 1 || (tick % DumpAt == 0 && tick <= 2000))) DumpMeta(tick);
             if (!Active || tick % HashEvery != 0 || tick == _lastHashTick) return;
             _lastHashTick = tick;
             string h = StateHash.Compute(tick, false).Line();

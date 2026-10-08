@@ -25,7 +25,7 @@ namespace Coopfall.Lockstep
             // decorative tile effects are placed in the zones on screen
             "WorldBehaviourTileEffects.spawnEffect",
             "GlowParticles.spawn",
-            "Actor.spawnParticle", "Actor.spawnSlash", "Actor.doCastAnimation", "Actor.startColorEffect",
+            "Actor.spawnParticle", "Actor.spawnSlash", "Actor.doCastAnimation",
             "ActionLibrary.flamingWeapon",
             "BehBoatFishing.spawnFishnet",
             "WorldBehaviourActions.buildingSparks",
@@ -101,10 +101,11 @@ namespace Coopfall.Lockstep
             }
             else Log.Error("lockstep: Actor.updateDeadAnimation not found: corpses may vanish at different times");
             // simulation that runs differently for creatures on screen: in a tick, always the same way
-            n += PatchVisibility(h, typeof(Actor), "updateWalkJump", true);          // corpses wait for the jump to land
+            n += PatchActorVisibility(h, "updateWalkJump", nameof(ActorVisiblePrefix));   // corpses wait for the jump to land
             n += PatchVisibility(h, typeof(CombatActionLibrary), "doBlockAction", true);
-            // the hit flash's timestamp doubles as the damage cooldown (lava, fire, ocean, drowning)
-            n += PatchVisibility(h, typeof(Actor), "startColorEffect", true);
+            // the hit flash's timestamp doubles as the damage cooldown (lava, fire, ocean, drowning);
+            // it also rolls dice for the flash itself
+            n += PatchActorVisibility(h, "startColorEffect", nameof(ColorEffectPrefix));
             n += PatchVisibility(h, typeof(GodFinger), "deathFlip", false);         // rotation only updates in drawing
             MethodInfo rendered = AccessTools.Method(typeof(Actor), "isRendered");   // hatching eggs spawn a gameplay effect
             if (rendered != null) h.Patch(rendered, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(RenderedPrefix)));
@@ -203,6 +204,38 @@ namespace Coopfall.Lockstep
         }
 
         private static void ZoneVisiblePostfix(WorldTile __instance, bool __state) { __instance.zone.visible = __state; }
+
+        private struct VisState { public Actor actor; public bool was; public Dice.Snapshot dice; }
+
+        private static int PatchActorVisibility(Harmony h, string method, string prefix)
+        {
+            MethodInfo m = AccessTools.Method(typeof(Actor), method);
+            if (m == null) { Log.Error("lockstep: Actor." + method + " not found: what's on screen may change the world"); return 0; }
+            h.Patch(m, prefix: new HarmonyMethod(typeof(VisualIsolation), prefix), postfix: new HarmonyMethod(typeof(VisualIsolation), nameof(ActorVisiblePostfix)));
+            return 1;
+        }
+
+        private static void ActorVisiblePrefix(Actor __instance, out VisState __state)
+        {
+            __state = default;
+            if (!LockstepClock.InTick) return;
+            __state.actor = __instance;
+            __state.was = _actorVisible(__instance);
+            _actorVisible(__instance) = true;
+        }
+
+        private static void ColorEffectPrefix(Actor __instance, out VisState __state)
+        {
+            ActorVisiblePrefix(__instance, out __state);
+            if (__state.actor != null) { __state.dice = Dice.Isolate(); _depth++; }
+        }
+
+        private static void ActorVisiblePostfix(VisState __state)
+        {
+            if (__state.actor == null) return;
+            _actorVisible(__state.actor) = __state.was;
+            if (__state.dice.rnd != null) { Dice.Restore(__state.dice); _depth--; }
+        }
 
         private static int PatchVisibility(Harmony h, Type t, string method, bool visible)
         {

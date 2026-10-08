@@ -234,6 +234,11 @@ namespace Coopfall.Lockstep
             }
             SortTileSets();
             FrameUpdates.Normalize();
+            // the map's zone list is shuffled (unseeded) when zones are made, once per map size and
+            // game session; "a random zone" is picked from it by index
+            object calc = AccessTools.Field(typeof(MapBox), "zone_calculator")?.GetValue(World.world);
+            if (AccessTools.Field(calc?.GetType(), "zones")?.GetValue(calc) is List<TileZone> zones) zones.Sort((x, y) => x.id.CompareTo(y.id));
+            else Log.Error("lockstep: ZoneCalculator.zones not found: random zones may differ between PCs");
             foreach (MapChunk c in ((MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world)).chunks)
                 SortChunkObjects(c.objects);
             // world behaviour timers aren't in the save and carry over from the previous world
