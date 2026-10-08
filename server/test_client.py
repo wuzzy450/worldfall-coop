@@ -90,8 +90,8 @@ class Client:
         except TimeoutError:
             return True
 
-    def hello(self, color="#33aaff"):
-        self.send({"t": "hello", "name": self.name, "version": 2, "color": color, "game": "test"})
+    def hello(self, color="#33aaff", mods=None):
+        self.send({"t": "hello", "name": self.name, "version": 3, "color": color, "game": "test", "mods": mods or []})
         w = self.expect("welcome")
         self.id = w["yourId"]
         self.name = w["name"]
@@ -129,7 +129,7 @@ def rooms_by_id(msg):
 
 
 def main():
-    print(f"WorldfallRooms v2 end-to-end test -> {HOST}:{PORT}\n")
+    print(f"WorldfallRooms v3 end-to-end test -> {HOST}:{PORT}\n")
     try:
         socket.create_connection((HOST, PORT), timeout=3).close()
     except OSError:
@@ -139,7 +139,7 @@ def main():
 
     # --- version check -------------------------------------------------------------------
     v = Client("old")
-    v.send({"t": "hello", "name": "old", "version": 1})
+    v.send({"t": "hello", "name": "old", "version": 2})
     err = v.expect("error")
     check("old protocol version rejected", "version" in err["msg"])
     v.sock.close()
@@ -341,6 +341,133 @@ def main():
     erin.expect("rooms", where=lambda m: extra not in rooms_by_id(m))
     erin.close()
     frank.close()
+
+    # --- world settings: password, mods, approval, spectators, guest limits, kick ---------------
+    MODS = [{"id": "Worldfall", "ver": "abc123"}]
+    gina = Client("gina" + RUN)
+    gina.hello(mods=MODS)
+    lobby = "world-l" + RUN
+    gina.send({"t": "join", "room": lobby, "name": "Locked test", "seed": True, "preferLocal": True})
+    gina.expect("joined", where=lambda m: m.get("room") == lobby)
+    gina.expect("snap-request", where=lambda m: m.get("room") == lobby)
+    gina.upload(lobby, b"lobby-v1")
+    gina.drop("rooms")
+    gina.send({"t": "room-settings", "password": "pw", "guestPowers": "safe", "blocked": ["bomb"], "guestSpeed": False, "everyoneAdmin": False})
+    lr = gina.expect("rooms", where=lambda m: rooms_by_id(m).get(lobby, {}).get("settings", {}).get("hasPassword"))
+    st = rooms_by_id(lr)[lobby]["settings"]
+    check("settings: world list shows them, never the password", st["guestPowers"] == "safe" and "password" not in st and st["everyoneAdmin"] is False, str(st))
+
+    hank = Client("hank" + RUN)
+    hank.hello(mods=[])
+    hank.send({"t": "room-settings", "locked": True})
+    check("settings: only the owner can change them", "owner" in hank.expect("error")["msg"])
+    hank.send({"t": "join", "room": lobby})
+    check("password: refused without it", hank.expect("error")["code"] == "password")
+    hank.send({"t": "join", "room": lobby, "password": "nope"})
+    check("password: wrong one refused", "wrong" in hank.expect("error")["msg"])
+    hank.send({"t": "join", "room": lobby, "password": "pw"})
+    e = hank.expect("error")
+    check("mods: missing gameplay mod blocks the join", e["code"] == "mods" and e["mods"]["missing"], str(e))
+    hank.close()
+
+    hank = Client("hank" + RUN)
+    hank.hello(mods=MODS)
+    gina.send({"t": "room-settings", "approval": True})
+    time.sleep(0.3)
+    hank.send({"t": "join", "room": lobby, "password": "pw"})
+    req = gina.expect("join-request")
+    hank.expect("waiting")
+    check("approval: the owner is asked", req["name"] == hank.name)
+    gina.send({"t": "approve", "id": hank.id, "ok": False})
+    check("approval: a no is passed on", hank.expect("error")["code"] == "denied")
+    hank.send({"t": "join", "room": lobby, "password": "pw"})
+    req = gina.expect("join-request")
+    gina.send({"t": "approve", "id": hank.id, "ok": True})
+    jh = hank.expect("joined", where=lambda m: m.get("room") == lobby)
+    check("approval: a yes lets them in", jh["role"] == "guest")
+    gina.expect("snap-request", where=lambda m: m.get("room") == lobby)
+    gina.upload(lobby, b"lobby-v2")
+    hank.download(lobby)
+
+    hank.send({"t": "power", "p": "bomb", "x": 1, "y": 1})
+    hank.send({"t": "speed", "s": "x5", "paused": False})
+    hank.send({"t": "power", "batch": [{"p": "bomb", "x": 1, "y": 1}, {"p": "rain", "x": 2, "y": 2}]})
+    pw = gina.expect("power")
+    check("guest limits: blocked powers and speed are dropped", pw["batch"] == [{"p": "rain", "x": 2, "y": 2}] and gina.none_of("speed"), str(pw))
+
+    ivy = Client("ivy" + RUN)
+    ivy.hello(mods=MODS)
+    gina.send({"t": "room-settings", "approval": False})
+    time.sleep(0.3)
+    ivy.send({"t": "join", "room": lobby, "password": "pw", "spectate": True})
+    ivy.expect("joined", where=lambda m: m.get("room") == lobby)
+    gina.expect("snap-request", where=lambda m: m.get("room") == lobby)
+    gina.upload(lobby, b"lobby-v3")
+    ivy.download(lobby)
+    ivy.send({"t": "power", "p": "rain", "x": 1, "y": 1})
+    check("spectators: their powers are dropped", gina.none_of("power"))
+    pl = gina.expect("players", where=lambda m: any(p["name"] == ivy.name and p["spectator"] for p in m["players"]))
+    check("spectators: shown in the player list", True)
+
+    gina.send({"t": "ping", "ts": 1, "rtt": 87})
+    gina.expect("pong")
+    pl = hank.expect("players", timeout=15, where=lambda m: any(p["name"] == gina.name and p["ping"] == 87 for p in m["players"]))
+    check("ping: each player's ping reaches the others", True)
+
+    gina.send({"t": "kick", "id": hank.id})
+    k = hank.expect("kicked")
+    check("kick: the player is told", k["room"] == lobby and k["by"] == gina.name)
+    hank.send({"t": "join", "room": lobby, "password": "pw"})
+    check("kick: they can't come straight back", hank.expect("error")["code"] == "kicked")
+    ivy.send({"t": "kick", "id": gina.id})
+    check("kick: only the owner can", "owner" in ivy.expect("error")["msg"])
+    hank.close()
+    ivy.close()
+    gina.send({"t": "leave"})
+    time.sleep(0.3)
+    gina.drop("rooms")
+    gina.send({"t": "delete-room", "room": lobby})
+    gina.expect("rooms", where=lambda m: lobby not in rooms_by_id(m))
+    gina.close()
+
+    # --- defaults: everyone in a world is an admin, all powers, speed, no approval --------------
+    jo = Client("jo" + RUN)
+    jo.hello()
+    dflt = "world-d" + RUN
+    jo.send({"t": "join", "room": dflt, "seed": True, "preferLocal": True})
+    jo.expect("joined", where=lambda m: m.get("room") == dflt)
+    jo.expect("snap-request", where=lambda m: m.get("room") == dflt)
+    jo.upload(dflt, b"d1")
+    kim = Client("kim" + RUN)
+    kim.hello()
+    kim.send({"t": "join", "room": dflt})
+    kim.expect("joined", where=lambda m: m.get("room") == dflt)
+    check("defaults: no approval needed", True)
+    jo.expect("snap-request", where=lambda m: m.get("room") == dflt)
+    jo.upload(dflt, b"d2")
+    kim.download(dflt)
+    kim.send({"t": "power", "p": "bomb", "x": 1, "y": 1})
+    kim.send({"t": "speed", "s": "x5", "paused": True})
+    check("defaults: guests use every power and change speed / pause",
+          jo.expect("power")["p"] == "bomb" and jo.expect("speed")["paused"] is True)
+    kim.drop("rooms")
+    kim.send({"t": "room-settings", "locked": True})
+    kim.expect("rooms", where=lambda m: rooms_by_id(m).get(dflt, {}).get("settings", {}).get("locked"))
+    check("defaults: a guest is an admin too", True)
+    kim.send({"t": "room-settings", "everyoneAdmin": False})
+    kim.send({"t": "kick", "id": jo.id})
+    check("defaults: guest admins can't remove the owner or switch admin rights off", "owner" in kim.expect("error")["msg"])
+    jo.send({"t": "room-settings", "everyoneAdmin": False})
+    time.sleep(0.3)
+    kim.send({"t": "room-settings", "locked": False})
+    check("admin rights off: guests can't change settings", "owner" in kim.expect("error")["msg"])
+    kim.close()
+    jo.send({"t": "leave"})
+    time.sleep(0.3)
+    jo.drop("rooms")
+    jo.send({"t": "delete-room", "room": dflt})
+    jo.expect("rooms", where=lambda m: dflt not in rooms_by_id(m))
+    jo.close()
 
     # --- ping, players, bye ---------------------------------------------------------------------
     alice.send({"t": "ping", "ts": 123})

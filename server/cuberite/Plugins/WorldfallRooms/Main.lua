@@ -22,7 +22,7 @@
 ---------------------------------------------------------------------
 
 local PLUGIN_NAME = "WorldfallRooms"
-local PROTOCOL_VERSION = 2
+local PROTOCOL_VERSION = 3
 
 local CFG =
 {
@@ -33,6 +33,9 @@ local CFG =
 	MAX_PREVIEW_BYTES  = 256 * 1024,        -- base64 PNG thumbnail
 	TIMEOUT_MS         = 45 * 1000,         -- drop links silent for longer than this
 	SNAP_TIMEOUT_MS    = 90 * 1000,         -- host did not answer a snapshot request in time
+	APPROVAL_MS        = 60 * 1000,         -- a join request nobody answered is turned down
+	KICK_MS            = 10 * 60 * 1000,    -- a kicked player can't rejoin that world for this long
+	MAX_MODS           = 200,
 	DATA_DIR           = "worldfall_rooms", -- relative to the Cuberite folder
 }
 
@@ -43,6 +46,7 @@ local g_Rooms = {}     -- id -> room record
 local g_ClockMs = 0
 local g_NextSweepMs = 1000
 local g_IdCounter = 0
+local g_NextPingBroadcastMs = 0
 
 local function Log(a_Msg)  LOG("[" .. PLUGIN_NAME .. "] " .. a_Msg) end
 local function Warn(a_Msg) LOGWARNING("[" .. PLUGIN_NAME .. "] " .. a_Msg) end
@@ -176,15 +180,56 @@ local function PlayerList()
 			host = (c.Room ~= nil) and (c.Room.host == c),
 			synced = c.Synced and true or false,
 			game = c.GameVersion or "",
+			ping = c.Ping or -1,
+			spectator = c.Spectator and true or false,
+			mods = c.Mods and #c.Mods or 0,
 		})
 	end)
 	return out
 end
 
+local function DefaultSettings()
+	return
+	{
+		password = "",           -- empty = none
+		locked = false,          -- nobody new may join
+		approval = false,        -- the world's admin lets each joiner in
+		maxPlayers = 0,          -- 0 = no limit (spectators don't count)
+		spectators = true,       -- spectators may join
+		guestPowers = "all",     -- all | safe | none
+		blocked = {},            -- power ids guests may not use ("safe")
+		guestSpeed = true,       -- guests may change speed / pause
+		allowExtraMods = false,  -- guests may run gameplay mods the host doesn't have
+		everyoneAdmin = true,    -- every player in the world may change these settings and kick
+	}
+end
+
+--- Settings as other players see them (never the password itself).
+local function PublicSettings(a_Room)
+	local s = a_Room.settings
+	return
+	{
+		hasPassword = (s.password ~= ""),
+		locked = s.locked,
+		approval = s.approval,
+		maxPlayers = s.maxPlayers,
+		spectators = s.spectators,
+		guestPowers = s.guestPowers,
+		blocked = s.blocked,
+		guestSpeed = s.guestSpeed,
+		allowExtraMods = s.allowExtraMods,
+		everyoneAdmin = s.everyoneAdmin,
+	}
+end
+
 local function RoomInfo(a_Room)
 	local names = {}
+	local watching = 0
 	for _, m in ipairs(a_Room.members) do
 		table.insert(names, m.Name)
+		if m.Spectator then
+			watching = watching + 1
+		end
 	end
 	local snap = a_Room.snap
 	local stats = a_Room.stats or {}
@@ -206,6 +251,9 @@ local function RoomInfo(a_Room)
 		pop = stats.pop or 0,
 		w = stats.w or 0,
 		h = stats.h or 0,
+		spectating = watching,
+		settings = PublicSettings(a_Room),
+		mods = a_Room.mods and #a_Room.mods or 0,
 	}
 end
 
@@ -309,6 +357,8 @@ local function SaveRoomMeta(a_Room)
 		version = snap and snap.version or 0,
 		time = snap and snap.time or 0,
 		stats = a_Room.stats or {},
+		settings = a_Room.settings,
+		mods = a_Room.mods,
 	}) or "{}")
 end
 
@@ -356,6 +406,9 @@ local function NewRoom(a_Id, a_Name, a_Kind, a_Owner)
 		preview = nil,     -- base64 PNG
 		stats = nil,
 		snapRequestedAt = nil,
+		settings = DefaultSettings(),
+		mods = nil,        -- the gameplay mods of the host whose world this is: { {id, ver}, ... }
+		kicked = {},       -- lower-case name -> clock ms until which they can't come back
 	}
 end
 
@@ -370,6 +423,16 @@ local function LoadRooms()
 		if meta then
 			local r = NewRoom(sid, SanitizeText(meta.name, 64, sid), meta.kind or "world", meta.owner or "")
 			r.stats = (type(meta.stats) == "table") and meta.stats or nil
+			if type(meta.settings) == "table" then
+				for k, v in pairs(meta.settings) do
+					if type(v) == type(r.settings[k]) then
+						r.settings[k] = v
+					end
+				end
+			end
+			if type(meta.mods) == "table" then
+				r.mods = meta.mods
+			end
 			local chunks = {}
 			local f = io.open(RoomDir(sid) .. "/snapshot.b64", "rb")
 			if f then
@@ -492,11 +555,12 @@ local function LeaveRoom(a_Client)
 	if room.host == a_Client then
 		room.host = nil
 		room.lastHost = a_Client.Name   -- may resume it from their open world (connection drop)
-		-- Prefer a member that already runs this world.
-		for _, m in ipairs(room.members) do
-			if m.Synced and (not m.WaitingSnap) then
-				SetHost(room, m)
-				break
+		-- Prefer a player (not a spectator) that already runs this world.
+		for pass = 1, 2 do
+			for _, m in ipairs(room.members) do
+				if (room.host == nil) and m.Synced and (not m.WaitingSnap) and ((pass == 2) or (not m.Spectator)) then
+					SetHost(room, m)
+				end
 			end
 		end
 		if room.host == nil and (#room.members > 0) then
@@ -520,6 +584,102 @@ local function LeaveRoom(a_Client)
 	if (#room.members == 0) and (room.snap == nil) then
 		g_Rooms[room.id] = nil
 	end
+end
+
+--- Room passwords are stored hashed (salted with the room id), never as typed.
+local function HashPassword(a_RoomId, a_Password)
+	local ok, h = pcall(function() return cCryptoHash.sha1HexString("wfrooms|" .. a_RoomId .. "|" .. a_Password) end)
+	if ok and (type(h) == "string") and (#h > 0) then
+		return "sha1:" .. string.lower(h)
+	end
+	return "plain:" .. a_Password
+end
+
+--- The world's real admin: its owner, or (the shared world) its current host.
+local function IsRealAdmin(a_Client, a_Room)
+	if a_Room.owner ~= "" then
+		return string.lower(a_Room.owner) == string.lower(a_Client.Name or "")
+	end
+	return a_Room.host == a_Client
+end
+
+--- May change settings and kick: the real admin, or (everyoneAdmin, the default) any player in
+--- the world who isn't just watching. Joiners are not in the world yet, so they are still checked.
+local function IsAdmin(a_Client, a_Room)
+	if IsRealAdmin(a_Client, a_Room) then
+		return true
+	end
+	return a_Room.settings.everyoneAdmin and (a_Client.Room == a_Room) and (not a_Client.Spectator)
+end
+
+local function FindAdmin(a_Room)
+	if a_Room.owner == "" then
+		return a_Room.host
+	end
+	local found = nil
+	ForEachPlayer(function(c)
+		if string.lower(c.Name) == string.lower(a_Room.owner) then
+			found = c
+		end
+	end)
+	return found
+end
+
+local function FindPlayer(a_Id)
+	local found = nil
+	ForEachPlayer(function(c)
+		if c.Id == a_Id then
+			found = c
+		end
+	end)
+	return found
+end
+
+--- Differences between the mods a world needs and a player's mods; nil if they match.
+local function ModDiff(a_Need, a_Have, a_AllowExtra)
+	if type(a_Need) ~= "table" then
+		return nil
+	end
+	local need, have = {}, {}
+	for _, m in ipairs(a_Need) do need[string.lower(m.id)] = m end
+	for _, m in ipairs(a_Have or {}) do have[string.lower(m.id)] = m end
+	local diff = { missing = {}, extra = {}, different = {} }
+	local any = false
+	for k, m in pairs(need) do
+		local h = have[k]
+		if h == nil then
+			table.insert(diff.missing, m.id .. " " .. m.ver)
+			any = true
+		elseif h.ver ~= m.ver then
+			table.insert(diff.different, m.id .. " (needs " .. m.ver .. ", you have " .. h.ver .. ")")
+			any = true
+		end
+	end
+	if not a_AllowExtra then
+		for k, h in pairs(have) do
+			if need[k] == nil then
+				table.insert(diff.extra, h.id .. " " .. h.ver)
+				any = true
+			end
+		end
+	end
+	return any and diff or nil
+end
+
+local function SanitizeMods(a_List)
+	if type(a_List) ~= "table" then
+		return {}
+	end
+	local out = {}
+	for _, m in ipairs(a_List) do
+		if (type(m) == "table") and (#out < CFG.MAX_MODS) then
+			local id = SanitizeText(m.id, 64, nil)
+			if id then
+				table.insert(out, { id = id, ver = SanitizeText(m.ver, 64, "?") })
+			end
+		end
+	end
+	return out
 end
 
 local function CountRooms()
@@ -563,7 +723,8 @@ function Handlers.hello(a_Client, a_Msg)
 	a_Client.Name = name
 	a_Client.Color = SanitizeColor(a_Msg.color)
 	a_Client.GameVersion = SanitizeText(a_Msg.game, 32, "")
-	Send(a_Client, { t = "welcome", yourId = a_Client.Id, name = name, rooms = RoomList(), players = PlayerList(), server = "WorldfallRooms v2" })
+	a_Client.Mods = SanitizeMods(a_Msg.mods)
+	Send(a_Client, { t = "welcome", yourId = a_Client.Id, name = name, rooms = RoomList(), players = PlayerList(), server = "WorldfallRooms v3" })
 	for _, r in pairs(g_Rooms) do
 		if r.preview then
 			SendLine(a_Client, '{"t":"preview","room":' .. JStr(r.id) .. ',"png":"' .. r.preview .. '"}')
@@ -597,8 +758,61 @@ function Handlers.join(a_Client, a_Msg)
 	if (room == nil) and (CountRooms() >= CFG.MAX_ROOMS) then
 		return SendError(a_Client, "the server has too many worlds (" .. CFG.MAX_ROOMS .. "); delete one first")
 	end
+	local spectate = (a_Msg.spectate == true)
+
+	if room and not IsAdmin(a_Client, room) then
+		local st = room.settings
+		local function Refuse(a_Code, a_Text, a_Extra)
+			local m = { t = "error", msg = a_Text, code = a_Code, room = id }
+			for k, v in pairs(a_Extra or {}) do m[k] = v end
+			Send(a_Client, m)
+		end
+		local kickedUntil = room.kicked[string.lower(a_Client.Name)]
+		if kickedUntil and (kickedUntil > g_ClockMs) then
+			return Refuse("kicked", "you were removed from " .. room.name .. "; try again in a few minutes")
+		end
+		if st.locked then
+			return Refuse("locked", room.name .. " is locked")
+		end
+		if (st.password ~= "") and ((type(a_Msg.password) ~= "string") or (HashPassword(id, a_Msg.password) ~= st.password)) then
+			return Refuse("password", a_Msg.password and ("wrong password for " .. room.name) or (room.name .. " needs a password"))
+		end
+		if spectate then
+			if not st.spectators then
+				return Refuse("spectators", room.name .. " doesn't allow spectators")
+			end
+			if room.host == nil then
+				return Refuse("empty", "nobody is playing in " .. room.name .. " right now")
+			end
+		elseif st.maxPlayers > 0 then
+			local players = 0
+			for _, m in ipairs(room.members) do
+				if not m.Spectator then players = players + 1 end
+			end
+			if players >= st.maxPlayers then
+				return Refuse("full", room.name .. " is full (" .. st.maxPlayers .. " players)")
+			end
+		end
+		local diff = ModDiff(room.mods, a_Client.Mods, st.allowExtraMods)
+		if diff then
+			return Refuse("mods", "your mods don't match " .. room.name .. "'s", { mods = diff })
+		end
+		if st.approval and (a_Client.ApprovedFor ~= id) then
+			local admin = FindAdmin(room)
+			if (admin == nil) or (admin == a_Client) then
+				return Refuse("approval", room.name .. " needs its owner's approval, and they aren't online")
+			end
+			a_Client.PendingJoin = { room = id, msg = a_Msg, at = g_ClockMs }
+			Send(admin, { t = "join-request", room = id, id = a_Client.Id, name = a_Client.Name, spectate = spectate })
+			Send(a_Client, { t = "waiting", room = id, admin = admin.Name })
+			return
+		end
+	end
+	a_Client.ApprovedFor = nil
+	a_Client.PendingJoin = nil
 
 	LeaveRoom(a_Client)
+	a_Client.Spectator = spectate
 
 	if room == nil then
 		local kind, owner, defName = "world", a_Client.Name, a_Client.Name .. "'s world"
@@ -626,19 +840,23 @@ function Handlers.join(a_Client, a_Msg)
 			((a_Msg.resume == true) and (room.lastHost ~= nil) and (string.lower(room.lastHost) == string.lower(a_Client.Name)))))) then
 		-- The joiner's currently open world becomes this world.
 		room.host = a_Client
+		room.mods = a_Client.Mods
 		a_Client.Synced = true
 		Send(a_Client, { t = "joined", room = id, name = room.name, role = "host", load = false })
 		RequestSnapshot(room, "seed")
 	elseif room.snap then
 		-- Dormant world: load the stored copy and run it.
 		room.host = a_Client
+		if room.mods == nil then
+			room.mods = a_Client.Mods
+		end
 		Send(a_Client, { t = "joined", room = id, name = room.name, role = "host", load = true })
 		SendSnapshot(a_Client, room)
 	else
 		LeaveRoom(a_Client)
 		return SendError(a_Client, "that world has no saved copy yet")
 	end
-	Log(a_Client.Name .. " joined room " .. id .. " as " .. ((room.host == a_Client) and "host" or "guest"))
+	Log(a_Client.Name .. " joined room " .. id .. " as " .. ((room.host == a_Client) and "host" or "guest") .. (spectate and " (spectating)" or ""))
 	BroadcastPlayers()
 	BroadcastRooms()
 end
@@ -790,6 +1008,82 @@ Handlers["delete-room"] = function(a_Client, a_Msg)
 	BroadcastRooms()
 end
 
+Handlers["room-settings"] = function(a_Client, a_Msg)
+	local room = a_Client.Room
+	if (room == nil) or not IsAdmin(a_Client, room) then
+		return SendError(a_Client, "only the world's owner (or the shared world's host) can change its settings")
+	end
+	local st = room.settings
+	if type(a_Msg.password) == "string" then
+		local pw = SanitizeText(a_Msg.password, 32, "")
+		st.password = (pw == "") and "" or HashPassword(room.id, pw)
+	end
+	for _, k in ipairs({ "locked", "approval", "spectators", "guestSpeed", "allowExtraMods" }) do
+		if type(a_Msg[k]) == "boolean" then
+			st[k] = a_Msg[k]
+		end
+	end
+	if (type(a_Msg.everyoneAdmin) == "boolean") and IsRealAdmin(a_Client, room) then
+		st.everyoneAdmin = a_Msg.everyoneAdmin
+	end
+	if IsNumber(a_Msg.maxPlayers) then
+		st.maxPlayers = math.max(0, math.min(64, math.floor(a_Msg.maxPlayers)))
+	end
+	if (a_Msg.guestPowers == "all") or (a_Msg.guestPowers == "safe") or (a_Msg.guestPowers == "none") then
+		st.guestPowers = a_Msg.guestPowers
+	end
+	if type(a_Msg.blocked) == "table" then
+		local list = {}
+		for _, p in ipairs(a_Msg.blocked) do
+			local pid = SanitizeText(p, 48, nil)
+			if pid and (#list < 200) then
+				table.insert(list, pid)
+			end
+		end
+		st.blocked = list
+	end
+	SaveRoomMeta(room)
+	Log(a_Client.Name .. " changed the settings of " .. room.id)
+	BroadcastRooms()
+end
+
+function Handlers.approve(a_Client, a_Msg)
+	local who = FindPlayer(a_Msg.id)
+	local pj = who and who.PendingJoin
+	local room = pj and g_Rooms[pj.room]
+	if (room == nil) or not IsAdmin(a_Client, room) then
+		return
+	end
+	who.PendingJoin = nil
+	if a_Msg.ok == true then
+		who.ApprovedFor = pj.room
+		Handlers.join(who, pj.msg)
+	else
+		Send(who, { t = "error", msg = a_Client.Name .. " didn't let you into " .. room.name, code = "denied", room = room.id })
+	end
+end
+
+function Handlers.kick(a_Client, a_Msg)
+	local room = a_Client.Room
+	if (room == nil) or not IsAdmin(a_Client, room) then
+		return SendError(a_Client, "only the world's owner (or the shared world's host) can remove players")
+	end
+	local who = FindPlayer(a_Msg.id)
+	if (who == nil) or (who.Room ~= room) or (who == a_Client) then
+		return
+	end
+	if IsRealAdmin(who, room) then
+		return SendError(a_Client, "the world's owner can't be removed")
+	end
+	room.kicked[string.lower(who.Name)] = g_ClockMs + CFG.KICK_MS
+	LeaveRoom(who)
+	Send(who, { t = "kicked", room = room.id, name = room.name, by = a_Client.Name })
+	Log(a_Client.Name .. " removed " .. who.Name .. " from " .. room.id)
+	Toast(who.Name .. " was removed from " .. room.name)
+	BroadcastPlayers()
+	BroadcastRooms()
+end
+
 --- Messages relayed verbatim (plus sender id/name) to the other members of the sender's room.
 local RELAYED = { avatar = true, cursor = true, power = true, speed = true, act = true, emote = true, hit = true, whit = true, shot = true, diag = true }
 
@@ -797,6 +1091,40 @@ local function RelayToRoom(a_Client, a_Msg)
 	local room = a_Client.Room
 	if (room == nil) or (not a_Client.Synced) then
 		return
+	end
+	local t = a_Msg.t
+	if a_Client.Spectator and (t ~= "cursor") and (t ~= "diag") and (t ~= "emote") then
+		return  -- spectators watch: no powers, speed changes, creatures or fights
+	end
+	if (room.host ~= a_Client) and not IsAdmin(a_Client, room) then
+		local st = room.settings
+		if (t == "speed") and not st.guestSpeed then
+			return
+		end
+		if t == "power" then
+			if st.guestPowers == "none" then
+				return
+			end
+			if st.guestPowers == "safe" then
+				local blocked = {}
+				for _, p in ipairs(st.blocked) do blocked[p] = true end
+				if blocked[a_Msg.p] then
+					return
+				end
+				if type(a_Msg.batch) == "table" then
+					local keep = {}
+					for _, ev in ipairs(a_Msg.batch) do
+						if (type(ev) == "table") and not blocked[ev.p] then
+							table.insert(keep, ev)
+						end
+					end
+					if #keep == 0 then
+						return
+					end
+					a_Msg.batch = keep
+				end
+			end
+		end
 	end
 	a_Msg.id = a_Client.Id
 	a_Msg.name = a_Client.Name
@@ -855,6 +1183,13 @@ end
 
 function Handlers.ping(a_Client, a_Msg)
 	Send(a_Client, { t = "pong", ts = a_Msg.ts })
+	if IsNumber(a_Msg.rtt) and (a_Msg.rtt >= 0) then
+		local rtt = math.floor(math.min(a_Msg.rtt, 99999))
+		if math.abs(rtt - (a_Client.Ping or -1000)) >= 15 then
+			a_Client.PingDirty = true
+		end
+		a_Client.Ping = rtt
+	end
 end
 
 ---------------------------------------------------------------------
@@ -983,6 +1318,22 @@ local function OnTick(a_DeltaMs)
 	end
 	for _, c in ipairs(dead) do
 		RemoveClient(c, true, "timed out")
+	end
+
+	local pingChanged = false
+	ForEachPlayer(function(c)
+		if c.PendingJoin and ((g_ClockMs - c.PendingJoin.at) > CFG.APPROVAL_MS) then
+			c.PendingJoin = nil
+			Send(c, { t = "error", msg = "nobody answered your request to join", code = "denied" })
+		end
+		if c.PingDirty then
+			c.PingDirty = false
+			pingChanged = true
+		end
+	end)
+	if pingChanged and (g_ClockMs >= g_NextPingBroadcastMs) then
+		g_NextPingBroadcastMs = g_ClockMs + 10000
+		BroadcastPlayers()
 	end
 
 	-- Hosts that never answered a snapshot request: fall back to the stored copy.

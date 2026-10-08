@@ -71,10 +71,10 @@ namespace Coopfall
                     GodPower power = p;
                     switch (h.slot)
                     {
-                        case Slot.PowerBrush: p.click_power_brush_action = (tile, gp) => AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
-                        case Slot.Power: p.click_power_action = (tile, gp) => AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
-                        case Slot.Brush: p.click_brush_action = (tile, id) => AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
-                        case Slot.Action: p.click_action = (tile, id) => AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
+                        case Slot.PowerBrush: p.click_power_brush_action = (tile, gp) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
+                        case Slot.Power: p.click_power_action = (tile, gp) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origPower(tile, gp)); break;
+                        case Slot.Brush: p.click_brush_action = (tile, id) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
+                        case Slot.Action: p.click_action = (tile, id) => !Denied(power, tile) && AfterLocal(power, tile, HostRuns(power) || h.origId(tile, id)); break;
                     }
                     _hooks[p.id] = h;
                     wrapped++;
@@ -116,6 +116,42 @@ namespace Coopfall
                     if (part.Method.Name.ToLowerInvariant().Contains(bad)) return true;
             }
             return false;
+        }
+
+        private float _deniedToastAt;
+
+        /// <summary>
+        /// The world's guest rules (spectating, "no destructive powers", "no powers") stop a local
+        /// click before it changes anything here. The relay drops such clicks too.
+        /// </summary>
+        private bool Denied(GodPower p, WorldTile tile)
+        {
+            if (_replaying || tile == null || !_s.Online || _s.PowerAllowed(p.id)) return false;
+            GodPower sel = World.world.selected_power;
+            if (sel == null || sel.id != p.id) return false;
+            if (Time.unscaledTime - _deniedToastAt > 2f)
+            {
+                _deniedToastAt = Time.unscaledTime;
+                CoopMod.Instance?.UI.ShowToast(_s.Spectating ? "You're watching - god powers are off"
+                                                             : "The world's owner doesn't let guests use " + p.id.Replace('_', ' '));
+            }
+            return true;
+        }
+
+        /// <summary>Destructive powers ("no destructive powers" for guests) that exist in this game.</summary>
+        public static List<string> DestructivePowers()
+        {
+            string[] ids =
+            {
+                "bomb", "grenade", "napalm_bomb", "atomic_bomb", "czar_bomba", "antimatter_bomb", "cluster_bomb", "meteorite",
+                "earthquake", "tornado", "lightning", "heatray", "fire", "lava", "acid", "demolish", "madness", "plague",
+                "tumor_infection", "zombie_infection", "mush_infection", "curse", "spite", "blood_rain", "infinity_coin",
+                "bowling_ball", "demon", "dragon", "evil_mage", "necromancer", "cold_one", "fire_skull", "jumpy_skull",
+                "alien", "greg", "crabzilla", "robot_santa",
+            };
+            var list = new List<string>();
+            foreach (string id in ids) if (AssetManager.powers?.get(id) != null) list.Add(id);
+            return list;
         }
 
         /// <summary>Runs after the original power action. Relays genuine local mouse use only.</summary>
@@ -183,6 +219,15 @@ namespace Coopfall
             if (speed != _lastSpeed || paused != _lastPaused)
             {
                 bool first = _lastSpeed == null;
+                if (!first && Time.unscaledTime >= _ignoreSpeedUntil && !_s.SpeedAllowed && AssetManager.time_scales.get(_lastSpeed) != null)
+                {
+                    // guests may not change the speed here: put it back
+                    _ignoreSpeedUntil = Time.unscaledTime + 0.25f;
+                    if (speed != _lastSpeed) Config.setWorldSpeed(_lastSpeed);
+                    Config.paused = _lastPaused;
+                    CoopMod.Instance?.UI.ShowToast(_s.Spectating ? "You're watching - speed is up to the players" : "Only the world's owner can change the speed here");
+                    return;
+                }
                 _lastSpeed = speed;
                 _lastPaused = paused;
                 if (!first && Time.unscaledTime >= _ignoreSpeedUntil)

@@ -1,4 +1,4 @@
-# WorldfallRooms protocol v2
+# WorldfallRooms protocol v3
 
 TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"` (type).
 
@@ -6,8 +6,8 @@ TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"`
 
 | t | fields | meaning |
 |---|---|---|
-| `hello` | `name, version:2, color "#rrggbb", game` | first message; names are made unique |
-| `join` | `room, name?, seed, preferLocal, resume?` | enter a world. `seed`: willing to provide my open world if the room is new/empty. `preferLocal`: replace the stored copy with my open world (owner of a `home-` room, or `shared`). `resume`: I was this world's last host (connection dropped), so `preferLocal` is allowed for me too |
+| `hello` | `name, version:3, color "#rrggbb", game, mods[{id, ver}]` | first message; names are made unique. `mods` = gameplay mods (client-only mods left out), `ver` a file fingerprint |
+| `join` | `room, name?, seed, preferLocal, resume?, password?, spectate?` | enter a world. `seed`: willing to provide my open world if the room is new/empty. `preferLocal`: replace the stored copy with my open world (owner of a `home-` room, or `shared`). `resume`: I was this world's last host (connection dropped), so `preferLocal` is allowed for me too |
 | `leave` | | leave the current world |
 | `resync` | | guest asks for a fresh copy of the world from the host |
 | `snap-begin` | `room, size, sha, total` | host uploads a snapshot (zlib'd save JSON, like `map.wbox`) |
@@ -33,7 +33,10 @@ TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"`
 | `wask` | `room, m?{kind: [ids]}, a?[creature ids], z?[zones], pc?[village ids]` | guest asks the host for meta objects, creature details or zones that are missing or differ, and (`pc`) member lists of villages whose population is off |
 | `chat` | `text` | server-wide chat |
 | `rename-room` / `delete-room` | `room, name?` | owner only |
-| `ping` | `ts` | keep-alive (every 5 s when idle) |
+| `ping` | `ts, rtt?` | keep-alive (every 5 s); `rtt` = my last measured round trip, shown to everyone |
+| `room-settings` | any of `password, locked, approval, maxPlayers, spectators, guestPowers (all/safe/none), blocked[power ids], guestSpeed, allowExtraMods, everyoneAdmin` | admin only (see below); only the given fields change; `everyoneAdmin` only by the owner |
+| `approve` | `id, ok` | admin answers a `join-request` |
+| `kick` | `id` | admin removes a player from their world (no rejoin for 10 min) |
 | `bye` | | disconnect |
 
 `avatar, cursor, act, power, speed, hit, whit, diag` are relayed to the other synced players in the
@@ -52,9 +55,28 @@ own simulation creates from `idu`/`idb` + 50,000,000, so they never reuse one of
 `preview {room, png}`, `joined {room, name, role: host|guest, load, host}`, `role {room, role:"host"}`
 (host migration), `snap-request {room, reason}` (to the host), `snap-begin/chunk/end` (to joiners),
 `snap-stored {room, version}`, `chat {id, name, color, room, text}`, `notice {text}`,
-`error {msg}`, `pong {ts}`, plus the relayed messages above.
+`error {msg, code?, room?, mods?}`, `pong {ts}`, `join-request {room, id, name, spectate}` (to the
+admin), `waiting {room, admin}` (to the joiner), `kicked {room, name, by}`, plus the relayed
+messages above. Error codes on a refused join: `password, locked, full, spectators, empty,
+kicked, approval, denied, mods` (`mods` = `{missing[], different[], extra[]}`).
+
+`players` entries have `id, name, color, room, host, synced, game, ping, spectator, mods` (count).
+`rooms` entries have `settings {hasPassword, locked, approval, maxPlayers, spectators,
+guestPowers, blocked, guestSpeed, allowExtraMods, everyoneAdmin}` (never the password), `spectating` and `mods`.
+
+Defaults: no password, not locked, no approval, any number of players, spectators allowed,
+`guestPowers` all, `guestSpeed` true, `allowExtraMods` false, `everyoneAdmin` true.
 
 ## Room rules
+
+- **Owner** of a world: its owner; for the shared world (no owner), its current host. **Admin**:
+  the owner, or, while `everyoneAdmin` is on (the default), every player in the world who isn't
+  spectating. The owner skips all join checks; the owner can't be kicked. Everyone else is checked in this order: kicked, locked, password,
+  spectators allowed / someone playing (spectators) or max players, mods (the world's mods are
+  those of the player who seeded it), approval.
+- Guests (not the host, not the admin) have `power` messages dropped per `guestPowers` /
+  `blocked`, and `speed` unless `guestSpeed`. Spectators can only send `cursor` and `diag`.
+- Passwords are stored as a salted SHA-1 hash in `worldfall_rooms/<id>/meta.json`.
 
 - Joining a room that has a host: the joiner waits; the host gets `snap-request` and its upload is
   streamed to everyone waiting and stored (disk: `cuberite/worldfall_rooms/<id>/`).

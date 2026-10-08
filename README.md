@@ -1,8 +1,10 @@
 # Coopfall: online co-op for WorldBox (with Worldfall's 3D first person)
 
-> **Status: work in progress.** Coopfall has been tested end-to-end with two WorldBox games
-> (host and guest) on one PC, with Worldfall, but not yet by real players over the internet.
-> An official GitHub **release** will follow once it has been confirmed to work.
+> **Status: work in progress.** Coopfall has been tested by two players on **two different
+> PCs** (with Defect), but both PCs were on the **same network** (LAN). It has **not yet been
+> confirmed to work over the internet via a public IP** (port forwarding). If you try that,
+> please report how it went. An official GitHub **release** will follow once it has been
+> confirmed to work.
 >
 > **Want to try it now?** A prebuilt `Coopfall.dll` is in
 > [`release/`](release/), or build it from source with the steps below. You can also point
@@ -123,7 +125,55 @@ is kept and uploaded, not replaced by an older server copy.
 
 The first time a world from the server replaces the one you had open, your own world is backed
 up to `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\backups\` (normal WorldBox
-save folders: copy one into `...\WorldBox\saves\save<N>` to load it).
+save folders: copy one into `...\WorldBox\saves\save<N>` to load it). If that backup can't be
+written, the server's world is **not** loaded and your world stays untouched. The Co-op menu
+also has a **Back up this map now** button.
+
+### Mods
+
+Everyone in a world needs the **same gameplay mods** (same files): a missing or different mod
+makes the worlds drift apart without anyone noticing. Coopfall sends a list of your mods (DLLs
+and folders in `StreamingAssets\mods` and the game's `Mods` folder, each with a fingerprint of
+its files) when you connect, and the server keeps you out of a world whose mods don't match.
+A window lists what is missing, different or extra; chat keeps working.
+
+Mods that only change your own screen don't count. Worldfall is one by default; add others to
+`clientOnlyMods` in `config.json`, or (mod authors) ship a `coopfall.json` with
+`{"clientOnly": true}` in the mod's folder (or `<name>.coopfall.json` next to a DLL). The world's
+owner can also allow guests to have extra mods.
+
+### World settings (owner)
+
+Out of the box everybody can do everything: every player in a world is an **admin** (may change
+the settings below and kick), guests can use **all god powers** and change **speed / pause**
+(synced for everyone), and nobody has to be let in. Coopfall also **connects automatically**
+when WorldBox starts (switch it off in the Co-op menu).
+
+The owner of a world (for the shared world: whoever hosts it) can tighten that in the
+**This world's settings** section of the Co-op menu:
+
+- **Everyone here is an admin**: switch off so only the owner changes settings and kicks, and
+  the guest limits below apply. Only the owner can flip this, and nobody can kick the owner.
+
+- **Password**: players are asked for it when they travel there (stored hashed on the server).
+- **Locked**: nobody new can join.
+- **Ask me before people join**: a box at the top of your screen with **Let in** / **No**.
+- **Max players** (spectators don't count) and **Spectators** on/off.
+- **Guest powers**: all, no destructive powers (bombs, meteorites, plague, lava, ...), or none.
+- **Guests may change speed / pause**.
+- **Allow guests' extra mods**.
+
+In the player list the owner can **Kick** a player (they can't come back for 10 minutes). The
+list also shows everyone's **ping**.
+
+**Spectating**: the **Watch** button on a World Map card lets you join a world without playing:
+no god powers, no speed changes, no possessing creatures.
+
+### Bug reports
+
+Co-op menu, **Export diagnostics** (or `/export` in chat) writes one zip to
+`coopfall\reports\` with the logs, settings, mod list and recent sync reports. Your Windows user
+name, home folder and the server address are removed, so it can be posted publicly.
 
 ### Keys
 
@@ -131,7 +181,7 @@ save folders: copy one into `...\WorldBox\saves\save<N>` to load it).
 |---|---|
 | **F7** | World Map |
 | **F8** | Co-op menu |
-| **Enter** | chat (`/sync` full re-sync, `/home` your world, `/shared` the shared world) |
+| **Enter** | chat (`/sync` full re-sync, `/home` your world, `/shared` the shared world, `/export` diagnostics zip) |
 
 Keys can be changed in `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\config.json`.
 They avoid Worldfall's keys (F1, F2, F5, G, V, E, X).
@@ -173,8 +223,11 @@ top-down view so you can use the mouse, and returns to first person when you clo
 
 ## Known limits
 
-- Tested with two games on one PC (host and guest, with Worldfall), not yet by real players
-  over the internet (see the top of this page).
+- Tested on two PCs on the same network (LAN), not yet over the internet via a public IP (see
+  the top of this page).
+- Everyone needs the same Coopfall version (the server refuses older ones: protocol v3).
+- The mods check compares files. It can't tell whether a mod is really safe to mix; that is
+  up to the `clientOnly` marks.
 - Every guest's WorldBox still simulates the world too, so small things can differ for a
   moment (a creature's local fight, a tree growing, lava flowing) until the host's state
   arrives, usually within a few seconds; terrain and the object lists are checked every 10-15 s.
@@ -186,6 +239,9 @@ top-down view so you can use the mouse, and returns to first person when you clo
 - `python server/test_client.py`: end-to-end test of the relay (start the server first).
   Plays several fake clients and checks joining, snapshots, relays, live sync, host migration
   and resuming after a dropped connection. Takes the port as an optional argument.
+- `sh tools/run-lobby.sh` (Git Bash, relay running): two games on one PC test the world
+  settings: password, mods check, approval, guest limits, spectating, kick and the diagnostics
+  zip. Results are `TEST lobby:` lines in both logs, plus `lobby-*.png` screenshots.
 - `python tools/fake_player.py --room shared`: a scripted second player (walks an avatar,
   uses god powers, chats) so you can test without a friend. `--help` for options.
 - Mod log: `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\log.txt`. Attach it

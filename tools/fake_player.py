@@ -130,7 +130,7 @@ class Bot:
             print(f"<- cursor from {m.get('name')}: ({m.get('x')},{m.get('y')}) power={m.get('p')}")
 
     def run(self):
-        self.send({"t": "hello", "name": self.a.name, "version": 2, "color": self.a.color, "game": "bot"})
+        self.send({"t": "hello", "name": self.a.name, "version": 3, "color": self.a.color, "game": "bot"})
         start = time.time()
         next_av = next_cur = 0.0
         next_power = start + 6

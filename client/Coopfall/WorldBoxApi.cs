@@ -239,6 +239,15 @@ namespace Coopfall
             return dir;
         }
 
+        /// <summary>The backup folder holds a non-empty save (the game can fail without throwing).</summary>
+        public static bool BackupLooksComplete(string dir)
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return false;
+            foreach (string f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+                if (new FileInfo(f).Length > 0) return true;
+            return false;
+        }
+
         /// <summary>Small PNG thumbnail of the current map (for the in-game world browser).</summary>
         public static byte[] MakePreviewPng(int maxSize)
         {

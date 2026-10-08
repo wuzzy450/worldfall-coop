@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the built DLL, archive old logs, start host + guest in the "meet" scenario (restarts the relay).
+# Lobby test: world settings, password, mods check, approval, spectator, kick, diagnostics (restarts the relay).
 taskkill //IM worldbox.exe >/dev/null 2>&1; sleep 5; taskkill //F //IM worldbox.exe >/dev/null 2>&1; sleep 1
 S=$(cd "$(dirname "$0")/.." && pwd)
 W="/c/Program Files (x86)/Steam/steamapps/common/worldbox"
@@ -13,11 +13,12 @@ taskkill //F //IM Cuberite.exe >/dev/null 2>&1; sleep 1
 for i in $(seq 1 30); do grep -q "listening on port" $S/server/cuberite/console.log 2>/dev/null && break; sleep 1; done
 P2="$USERPROFILE\AppData\LocalLow\mkarpenko\WorldBox\coopfall\profiles"
 cd "$W"
-./worldbox.exe -coopfall-profile host -coopfall-scenario meet -coopfall-test-load 1 -logFile "$P2\host\unity.log" >/dev/null 2>&1 &
+./worldbox.exe -coopfall-profile host -coopfall-scenario lobby -coopfall-test-load 1 -logFile "$P2\host\unity.log" >/dev/null 2>&1 &
 sleep 40
-./worldbox.exe -coopfall-profile guest -coopfall-scenario meet $GUEST_ARGS -logFile "$P2\guest\unity.log" >/dev/null 2>&1 &
+./worldbox.exe -coopfall-profile guest -coopfall-scenario lobby -coopfall-fake-mod FakeTestMod $GUEST_ARGS -logFile "$P2\guest\unity.log" >/dev/null 2>&1 &
 sleep 2
-L="$P/host/log.txt"; n=0
-until grep -aq "TEST meet: done" "$L" 2>/dev/null || [ $(tasklist | grep -ci worldbox) -lt 2 ]; do sleep 3; n=$((n+1)); [ $n -gt 250 ] && echo TIMEOUT && break; done
+L="$P/guest/log.txt"; n=0
+until grep -aq "TEST lobby: done" "$L" 2>/dev/null || [ $(tasklist | grep -ci worldbox) -lt 2 ]; do sleep 3; n=$((n+1)); [ $n -gt 250 ] && echo TIMEOUT && break; done
 echo "games running: $(tasklist | grep -ci worldbox)"
-grep -a "DIAG #[0-9]* (" "$L" | cut -c22-240
+grep -ah "TEST lobby" "$P/host/log.txt" "$P/guest/log.txt" | cut -c1-400
+taskkill //IM worldbox.exe >/dev/null 2>&1

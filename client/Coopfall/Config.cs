@@ -88,7 +88,7 @@ namespace Coopfall
         public int serverPort = 25598;
         /// <summary>"shared" = everyone plays one world together; "own" = each player hosts their own world and visits others.</summary>
         public string mode = "shared";
-        public bool autoConnect = false;
+        public bool autoConnect = true;
         public bool showNameTags = true;
         public bool showCursors = true;
         public bool syncSpeed = true;
@@ -119,8 +119,14 @@ namespace Coopfall
         public string reportKey = "F9";
         /// <summary>Capture a sync report by itself when something looks off (at most once a minute).</summary>
         public bool autoDiag = true;
+        /// <summary>
+        /// Mods that only change your own screen (not the shared world): other players don't need
+        /// them. Names are DLL / folder names or mod.json GUIDs. A mod can also mark itself with a
+        /// coopfall.json {"clientOnly": true}.
+        /// </summary>
+        public string[] clientOnlyMods = { "Worldfall" };
         public int configVersion = 0;
-        private const int CurrentConfigVersion = 5;
+        private const int CurrentConfigVersion = 7;
 
         [NonSerialized] private static string _path;
 
@@ -159,6 +165,9 @@ namespace Coopfall
                 // v3 sent creature positions twice a second; five times keeps guests closer to the host
                 if (cfg.configVersion < 4 && cfg.liveSyncHz == 2f) cfg.liveSyncHz = 5f;
                 if (cfg.configVersion < 5 && cfg.liveSyncHz == 5f) cfg.liveSyncHz = 10f;
+                if (cfg.configVersion < 6 && cfg.clientOnlyMods == null) cfg.clientOnlyMods = new[] { "Worldfall" };
+                // v7: connect automatically by default
+                if (cfg.configVersion < 7) cfg.autoConnect = true;
                 cfg.configVersion = CurrentConfigVersion;
             }
             if (cfg.serverPort <= 0 || cfg.serverPort > 65535) cfg.serverPort = 25598;

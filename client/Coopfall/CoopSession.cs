@@ -13,16 +13,30 @@ namespace Coopfall
     public class PlayerInfo
     {
         public string id, name, color = "#ffffff", room = "", game = "";
-        public bool host, synced;
+        public bool host, synced, spectator;
+        public int ping = -1, mods;
     }
 
     public class RoomInfo
     {
         public string id, name, kind = "world", owner = "", host = "";
-        public int players, year, pop, w, h, version;
+        public int players, year, pop, w, h, version, spectating, mods;
         public long size;
         public List<string> names = new List<string>();
         public bool hasWorld;
+        // settings (the owner, or the shared world's host, changes them)
+        public bool hasPassword, locked, approval, spectatorsAllowed = true, guestSpeed = true, allowExtraMods, everyoneAdmin = true;
+        public int maxPlayers;
+        public string guestPowers = "all";
+        public HashSet<string> blocked = new HashSet<string>();
+    }
+
+    /// <summary>Somebody asks to join a world I run (approval is on).</summary>
+    public class JoinRequest
+    {
+        public string id, name, room;
+        public bool spectate;
+        public float time;
     }
 
     public class ChatLine
@@ -45,7 +59,7 @@ namespace Coopfall
     public class CoopSession
     {
         public const int ChunkBytes = 60 * 1024;
-        public const int ProtocolVersion = 2;
+        public const int ProtocolVersion = 3;
 
         public readonly NetClient Net = new NetClient();
         public readonly CoopConfig Cfg;
@@ -95,6 +109,19 @@ namespace Coopfall
         private int _reconnectTries;
         private string _resumeRoom, _resumeName;
         public bool Reconnecting { get { return _reconnecting; } }
+
+        // world settings / admission
+        public bool Spectating;
+        private bool _joinSpectate;
+        private float _nextPing;
+        private readonly Dictionary<string, string> _passwords = new Dictionary<string, string>();
+        private object[] _lastTravel;
+        /// <summary>The world I tried to enter wants a password (the UI asks for it).</summary>
+        public string PasswordRoom, PasswordPrompt;
+        /// <summary>The world I tried to enter needs other mods: missing / extra / different.</summary>
+        public JObject ModMismatch;
+        public string ModMismatchRoom;
+        public readonly List<JoinRequest> JoinRequests = new List<JoinRequest>();
 
         public CoopSession(CoopConfig cfg)
         {
@@ -162,12 +189,18 @@ namespace Coopfall
         }
 
         /// <summary>Go to another world. If I'm the last player in my current world, its latest state is uploaded first.</summary>
-        public void Travel(string roomId, string name = null, bool seed = false, bool preferLocal = false, bool resume = false)
+        public void Travel(string roomId, string name = null, bool seed = false, bool preferLocal = false, bool resume = false, bool spectate = false)
         {
             if (!Online || roomId == RoomId || Phase == Phase.Leaving || Phase == Phase.Loading || Phase == Phase.Downloading) return;
             var join = new JObject { ["room"] = roomId, ["seed"] = seed, ["preferLocal"] = preferLocal };
             if (resume) join["resume"] = true;
+            if (spectate) join["spectate"] = true;
             if (name != null) join["name"] = name;
+            if (_passwords.TryGetValue(roomId, out string pw)) join["password"] = pw;
+            _lastTravel = new object[] { roomId, name, seed, preferLocal, resume, spectate };
+            _joinSpectate = spectate;
+            PasswordRoom = null;
+            ModMismatch = null;
             _travelTarget = roomId;
             if (IsHost && InWorld && OthersInRoom() == 0 && WorldBoxApi.WorldReady)
             {
@@ -198,8 +231,9 @@ namespace Coopfall
                 if (cmd == "/sync") { Resync(); return; }
                 if (cmd == "/home") { GoHome(); return; }
                 if (cmd == "/shared") { Travel("shared", "Shared World", true, false); return; }
+                if (cmd == "/export") { ExportDiagnostics(); return; }
                 if (cmd.StartsWith("/report")) { CoopMod.Instance?.Diag.Request(text.Length > 7 ? "/report: " + text.Substring(7).Trim() : "/report"); AddChat(null, "Sync report captured in every game (coopfall/diag)", true); return; }
-                AddChat(null, "Commands: /sync /home /shared /report", true);
+                AddChat(null, "Commands: /sync /home /shared /report /export", true);
                 return;
             }
             if (!Online) { AddChat(null, "Not connected.", true); return; }
@@ -208,7 +242,90 @@ namespace Coopfall
             ChatFrom?.Invoke(MyId, text);
         }
 
+        /// <summary>Zips logs, settings, mods and sync reports for a bug report (coopfall/reports).</summary>
+        public string ExportDiagnostics()
+        {
+            try
+            {
+                string path = DiagExport.Create(this);
+                AddChat(null, "Diagnostics saved: coopfall/reports/" + Path.GetFileName(path), true);
+                Toast?.Invoke("Diagnostics saved - attach the zip to your bug report");
+                try { Application.OpenURL("file:///" + Path.GetDirectoryName(path).Replace('\\', '/')); } catch { }
+                return path;
+            }
+            catch (Exception e)
+            {
+                Log.Error("export diagnostics: " + e);
+                Toast?.Invoke("Could not export diagnostics: " + e.Message);
+                return null;
+            }
+        }
+
         public void DeleteRoom(string id) { if (Online) Net.Send("delete-room", new JObject { ["room"] = id }); }
+
+        /// <summary>Try the world that asked for a password again with this one.</summary>
+        public void JoinWithPassword(string password)
+        {
+            string room = PasswordRoom;
+            PasswordRoom = null;
+            if (room == null || _lastTravel == null || (string)_lastTravel[0] != room) return;
+            _passwords[room] = password ?? "";
+            Travel(room, (string)_lastTravel[1], (bool)_lastTravel[2], (bool)_lastTravel[3], (bool)_lastTravel[4], (bool)_lastTravel[5]);
+        }
+
+        public RoomInfo CurrentRoom { get { return RoomId != null && Rooms.TryGetValue(RoomId, out RoomInfo r) ? r : null; } }
+
+        /// <summary>I own this world, or (the shared world) I host it. Same rule as the relay.</summary>
+        public bool IsRealAdmin
+        {
+            get
+            {
+                RoomInfo r = CurrentRoom;
+                if (r == null || !InWorld) return false;
+                return string.IsNullOrEmpty(r.owner) ? IsHost : string.Equals(r.owner, MyName, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        /// <summary>I may change this world's settings and kick: the real admin, or anybody playing here while "everyone is an admin" is on (the default).</summary>
+        public bool IsAdmin { get { return IsRealAdmin || (InWorld && !Spectating && (CurrentRoom?.everyoneAdmin ?? false)); } }
+
+        /// <summary>This player is the world's owner (or the shared world's host): nobody can kick them.</summary>
+        public bool IsOwnerOf(PlayerInfo p)
+        {
+            RoomInfo r = CurrentRoom;
+            if (r == null || p == null) return false;
+            return string.IsNullOrEmpty(r.owner) ? p.host : string.Equals(r.owner, p.name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>The world's guest rules apply to me (I'm neither its host nor its admin, or I'm watching).</summary>
+        public bool Restricted { get { return InWorld && (Spectating || (!IsHost && !IsAdmin)); } }
+
+        public bool PowerAllowed(string powerId)
+        {
+            if (!Restricted) return true;
+            if (Spectating) return false;
+            RoomInfo r = CurrentRoom;
+            if (r == null) return true;
+            if (r.guestPowers == "none") return false;
+            return r.guestPowers != "safe" || !r.blocked.Contains(powerId ?? "");
+        }
+
+        public bool SpeedAllowed { get { return !Restricted || (!Spectating && (CurrentRoom?.guestSpeed ?? true)); } }
+
+        /// <summary>Admin: change this world's settings (only the given fields).</summary>
+        public void SendSettings(JObject changes)
+        {
+            if (!Online || !IsAdmin) return;
+            Net.Send("room-settings", changes);
+        }
+
+        public void Kick(string playerId) { if (Online && IsAdmin) Net.Send("kick", new JObject { ["id"] = playerId }); }
+
+        public void Answer(JoinRequest r, bool ok)
+        {
+            JoinRequests.Remove(r);
+            if (Online) Net.Send("approve", new JObject { ["id"] = r.id, ["ok"] = ok });
+        }
 
         public int OthersInRoom()
         {
@@ -263,6 +380,27 @@ namespace Coopfall
                 SendJoinPending();
             }
 
+            if (Online && now >= _nextPing)
+            {
+                // our own keep-alive, carrying our last round trip so others see everyone's ping
+                _nextPing = now + 5f;
+                Net.Send("ping", new JObject { ["ts"] = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond, ["rtt"] = PingMs });
+            }
+            if (Spectating && InWorld)
+            {
+                // spectators watch: they don't take over creatures (nobody else would see it anyway)
+                bool possessing = false;
+                try { possessing = ControllableUnit.isControllingUnit(); } catch { }
+                if (possessing)
+                {
+                    try { ControllableUnit.clear(false); } catch { }
+                    Log.Info("spectating: let go of the possessed creature");
+                    Toast?.Invoke("You're watching - you can't take over creatures");
+                }
+            }
+            for (int i = JoinRequests.Count - 1; i >= 0; i--)
+                if (now - JoinRequests[i].time > 60f) JoinRequests.RemoveAt(i);   // the relay has turned them down by now
+
             if (!Online || !InWorld || !WorldBoxApi.WorldReady) return;
 
             if (IsHost)
@@ -290,6 +428,7 @@ namespace Coopfall
                 ["version"] = ProtocolVersion,
                 ["color"] = Cfg.color,
                 ["game"] = Application.version,
+                ["mods"] = ModScan.ToJson(),
             });
         }
 
@@ -307,6 +446,8 @@ namespace Coopfall
             _pendingJoin = null;
             _dlBuf = null;
             Players.Clear();
+            JoinRequests.Clear();
+            Spectating = false;
             _deferredLoad = null;
             CoopMod.Instance?.Sync.Reset();
             Status = "Offline - " + reason;
@@ -339,7 +480,17 @@ namespace Coopfall
                 case "rooms": ParseRooms(p["rooms"] as JArray); break;
                 case "preview": OnPreview((string)p["room"], (string)p["png"]); break;
                 case "notice": Toast?.Invoke((string)p["text"]); break;
-                case "error": OnServerError((string)p["msg"]); break;
+                case "error": OnServerError((string)p["msg"], (string)p["code"], (string)p["room"], p["mods"] as JObject); break;
+                case "waiting":
+                    Status = "Waiting for " + (string)p["admin"] + " to let you in...";
+                    Toast?.Invoke("Asked " + (string)p["admin"] + " to let you in");
+                    break;
+                case "join-request":
+                    JoinRequests.RemoveAll(r => r.id == (string)p["id"]);
+                    JoinRequests.Add(new JoinRequest { id = (string)p["id"], name = (string)p["name"], room = (string)p["room"], spectate = (bool?)p["spectate"] ?? false, time = Time.unscaledTime });
+                    Toast?.Invoke((string)p["name"] + " wants to " + (((bool?)p["spectate"] ?? false) ? "watch" : "join") + " - answer in the box at the top");
+                    break;
+                case "kicked": OnKicked(p); break;
                 case "joined": OnJoined(p); break;
                 case "role":
                     if ((string)p["room"] == RoomId && (string)p["role"] == "host")
@@ -417,8 +568,29 @@ namespace Coopfall
             EnterModeWorld();
         }
 
-        private void OnServerError(string msg)
+        private void OnKicked(JObject p)
         {
+            if ((string)p["room"] != RoomId) return;
+            Log.Info("removed from " + RoomId + " by " + (string)p["by"]);
+            // The relay already took us out. Keep the map on screen as a private copy; nothing syncs any more.
+            RoomId = null;
+            RoomName = null;
+            IsHost = false;
+            Spectating = false;
+            _snapRequestPending = false;
+            _dlBuf = null;
+            CoopMod.Instance?.Sync.Reset();
+            CoopMod.Instance?.Avatars.ReleaseAll();
+            if (Phase != Phase.Loading) SetPhase(Phase.Lobby);
+            Status = "Online as " + MyName + " - not in a world";
+            Toast?.Invoke((string)p["by"] + " removed you from " + (string)p["name"] + ". Pick a world on the World Map.");
+            AddChat(null, "You were removed from " + (string)p["name"] + ". The map you see is now only your own copy.", true);
+        }
+
+        private void OnServerError(string msg, string code = null, string room = null, JObject mods = null)
+        {
+            if (code == "password") { PasswordRoom = room; PasswordPrompt = msg; }
+            else if (code == "mods") { ModMismatch = mods; ModMismatchRoom = room; }
             if (msg != null && msg.StartsWith("unknown message type 'w"))
             {
                 // Relay from before live sync: keep playing without it (re-syncs still work).
@@ -465,6 +637,9 @@ namespace Coopfall
             RoomId = room;
             RoomName = (string)p["name"] ?? room;
             IsHost = (string)p["role"] == "host";
+            Spectating = _joinSpectate;
+            PasswordRoom = null;
+            ModMismatch = null;
             _snapRequestPending = false;
             CoopMod.Instance?.Sync.Reset();
             Log.Info("joined " + room + " as " + (IsHost ? "host" : "guest") + (load ? ", waiting for world" : ""));
@@ -529,17 +704,38 @@ namespace Coopfall
         private void StartLoad(byte[] data)
         {
             bool sameWorld = _travelTarget == null; // resync of the world I'm already in
-            try
+            // The first world we load replaces the player's own (not co-op) world: copy it first, and
+            // don't load at all if that copy can't be made.
+            if (!_backedUp && WorldBoxApi.WorldReady)
             {
-                if (!_backedUp && WorldBoxApi.WorldReady)
+                string fail = null;
+                try
                 {
                     string dir = WorldBoxApi.BackupCurrentWorld("before-coop");
-                    _backedUp = true;
-                    Log.Info("your original world was backed up to " + dir);
-                    Toast?.Invoke("Your own world was backed up (coopfall/backups)");
+                    if (!WorldBoxApi.BackupLooksComplete(dir)) fail = "the backup folder is empty";
+                    else
+                    {
+                        _backedUp = true;
+                        Log.Info("your original world was backed up to " + DiagExport.Scrub(dir));
+                        Toast?.Invoke("Your own world was backed up (coopfall/backups)");
+                    }
+                }
+                catch (Exception e) { fail = e.Message; }
+                if (fail != null)
+                {
+                    Log.Error("backup failed, not loading the co-op world: " + fail);
+                    Toast?.Invoke("Couldn't back up your world (" + fail + ") - it was NOT replaced. Free some disk space and try again.");
+                    AddChat(null, "Your world couldn't be backed up, so the co-op world wasn't loaded. See coopfall/log.txt.", true);
+                    Net.Send("leave");
+                    RoomId = null;
+                    RoomName = null;
+                    IsHost = false;
+                    _travelTarget = null;
+                    SetPhase(Phase.Lobby);
+                    Status = "Online as " + MyName + " - backup failed";
+                    return;
                 }
             }
-            catch (Exception e) { Log.Warn("backup failed: " + e.Message); }
 
             Camera cam = WorldBoxApi.MapCamera;
             _restoreCamera = sameWorld && cam != null;
@@ -724,7 +920,8 @@ namespace Coopfall
                     {
                         id = (string)o["id"], name = (string)o["name"] ?? "?", color = (string)o["color"] ?? "#ffffff",
                         room = (string)o["room"] ?? "", host = (bool?)o["host"] ?? false, synced = (bool?)o["synced"] ?? false,
-                        game = (string)o["game"] ?? "",
+                        game = (string)o["game"] ?? "", spectator = (bool?)o["spectator"] ?? false,
+                        ping = (int?)o["ping"] ?? -1, mods = (int?)o["mods"] ?? 0,
                     });
                 }
             foreach (var pl in Players)
@@ -750,6 +947,22 @@ namespace Coopfall
                     hasWorld = (bool?)o["hasWorld"] ?? true,
                 };
                 if (o["names"] is JArray names) foreach (JToken n in names) r.names.Add((string)n);
+                r.spectating = (int?)o["spectating"] ?? 0;
+                r.mods = (int?)o["mods"] ?? 0;
+                if (o["settings"] is JObject st)
+                {
+                    r.hasPassword = (bool?)st["hasPassword"] ?? false;
+                    r.locked = (bool?)st["locked"] ?? false;
+                    r.approval = (bool?)st["approval"] ?? false;
+                    r.maxPlayers = (int?)st["maxPlayers"] ?? 0;
+                    r.spectatorsAllowed = (bool?)st["spectators"] ?? true;
+                    r.guestPowers = (string)st["guestPowers"] ?? "all";
+                    r.guestSpeed = (bool?)st["guestSpeed"] ?? true;
+                    r.allowExtraMods = (bool?)st["allowExtraMods"] ?? false;
+                    r.everyoneAdmin = (bool?)st["everyoneAdmin"] ?? true;
+                    // an empty Lua table may arrive as {} instead of []
+                    if (st["blocked"] is JArray bl) foreach (JToken b in bl) if (b.Type == JTokenType.String) r.blocked.Add((string)b);
+                }
                 if (r.id == null) continue;
                 Rooms[r.id] = r;
                 RoomOrder.Add(r.id);

@@ -20,7 +20,9 @@ namespace Coopfall
         private string _chatInput = "";
         private bool _focusChat;
         private string _nameEdit, _hostEdit, _portEdit, _newWorldName = "";
-        private Vector2 _mapScroll, _playersScroll;
+        private Vector2 _mapScroll, _playersScroll, _menuScroll, _modsScroll;
+        private string _pwEdit = "", _joinPw = "", _setPw = "";
+        private string _confirmKick;
         private string _confirmDelete;
         private readonly List<Rect> _blockRects = new List<Rect>();
 
@@ -93,6 +95,9 @@ namespace Coopfall
             DrawBusy();
             if (MenuOpen) DrawMenu();
             if (MapOpen) DrawMap();
+            DrawJoinRequests();
+            DrawPasswordPrompt();
+            DrawModMismatch();
 
             if (Event.current.type == EventType.Repaint)
             {
@@ -129,7 +134,7 @@ namespace Coopfall
                 case Phase.InWorld:
                     dot = "●"; c = new Color(0.35f, 0.95f, 0.45f);
                     int n = _s.OthersInRoom();
-                    text = _s.RoomName + (_s.IsHost ? "  ·  host" : "") + "  ·  " + (n == 0 ? "just you" : (n + 1) + " players") +
+                    text = _s.RoomName + (_s.IsHost ? "  ·  host" : "") + (_s.Spectating ? "  ·  watching" : "") + "  ·  " + (n == 0 ? "just you" : (n + 1) + " players") +
                            (_s.PingMs >= 0 ? "  ·  " + _s.PingMs + " ms" : "");
                     break;
                 default: dot = "●"; c = new Color(0.4f, 0.75f, 1f); text = _s.Status; break;
@@ -350,7 +355,7 @@ namespace Coopfall
 
         private void DrawMenu()
         {
-            Rect r = new Rect((W - 520) / 2f, 48f, 520, Mathf.Min(H - 90f, 600f));
+            Rect r = new Rect((W - 580) / 2f, 48f, 580, Mathf.Min(H - 90f, 680f));
             GUI.Box(r, GUIContent.none, _panel);
             Block(r);
             GUILayout.BeginArea(new Rect(r.x + 16, r.y + 12, r.width - 32, r.height - 24));
@@ -361,6 +366,7 @@ namespace Coopfall
             GUILayout.EndHorizontal();
             GUILayout.Label(Esc(_s.Status), _dim);
             GUILayout.Space(8);
+            _menuScroll = GUILayout.BeginScrollView(_menuScroll, GUIStyle.none, GUI.skin.verticalScrollbar);
 
             bool offline = !_s.Net.Connected && !_s.Net.Connecting;
             GUI.enabled = offline;
@@ -389,14 +395,14 @@ namespace Coopfall
             GUILayout.Space(6);
             GUILayout.Label("Mode", _label);
             GUILayout.BeginHorizontal();
-            if (GUILayout.Toggle(_cfg.mode == "shared", "  Shared world - everyone plays one world together", _label) && _cfg.mode != "shared")
+            if (Tog(_cfg.mode == "shared", "  Shared world - everyone plays one world together", _label) && _cfg.mode != "shared")
             {
                 _cfg.mode = "shared"; _cfg.Save();
                 if (_s.Online) _s.EnterModeWorld();
             }
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            if (GUILayout.Toggle(_cfg.mode == "own", "  Own worlds - you host yours, visit others from the World Map", _label) && _cfg.mode != "own")
+            if (Tog(_cfg.mode == "own", "  Own worlds - you host yours, visit others from the World Map", _label) && _cfg.mode != "own")
             {
                 _cfg.mode = "own"; _cfg.Save();
                 if (_s.Online) _s.EnterModeWorld();
@@ -418,23 +424,23 @@ namespace Coopfall
             else if (GUILayout.Button(_s.Net.Connecting ? "Cancel" : "Disconnect", _btn, GUILayout.Width(140), GUILayout.Height(28)))
                 _s.Disconnect();
             GUILayout.Space(8);
-            bool auto = GUILayout.Toggle(_cfg.autoConnect, " Connect automatically on start", _small);
+            bool auto = Tog(_cfg.autoConnect, " Connect automatically on start", _small);
             if (auto != _cfg.autoConnect) { _cfg.autoConnect = auto; _cfg.Save(); }
             GUILayout.EndHorizontal();
 
             GUILayout.Space(10);
             GUILayout.Label("Options", _label);
             GUILayout.BeginHorizontal();
-            bool tags = GUILayout.Toggle(_cfg.showNameTags, " Name tags", _small, GUILayout.Width(110));
-            bool curs = GUILayout.Toggle(_cfg.showCursors, " God cursors", _small, GUILayout.Width(120));
-            bool spd = GUILayout.Toggle(_cfg.syncSpeed, " Sync speed & pause", _small);
+            bool tags = Tog(_cfg.showNameTags, " Name tags", _small, GUILayout.Width(110));
+            bool curs = Tog(_cfg.showCursors, " God cursors", _small, GUILayout.Width(120));
+            bool spd = Tog(_cfg.syncSpeed, " Sync speed & pause", _small);
             GUILayout.EndHorizontal();
             if (tags != _cfg.showNameTags || curs != _cfg.showCursors || spd != _cfg.syncSpeed)
             {
                 _cfg.showNameTags = tags; _cfg.showCursors = curs; _cfg.syncSpeed = spd; _cfg.Save();
             }
             GUILayout.BeginHorizontal();
-            bool live = GUILayout.Toggle(_cfg.liveSync, " Live sync (creatures & buildings follow the host)", _small);
+            bool live = Tog(_cfg.liveSync, " Live sync (creatures & buildings follow the host)", _small);
             if (live != _cfg.liveSync) { _cfg.liveSync = live; _cfg.Save(); CoopMod.Instance?.Sync.Reset(); }
             GUILayout.EndHorizontal();
             WorldSync sync = CoopMod.Instance?.Sync;
@@ -446,7 +452,7 @@ namespace Coopfall
             GUILayout.BeginHorizontal();
             GUILayout.Label("Full re-sync with host:", _small, GUILayout.Width(160));
             foreach (int m in new[] { 0, 10, 30, 60 })
-                if (GUILayout.Toggle(_cfg.autoResyncMinutes == m, m == 0 ? " off" : " " + m + " min", _small, GUILayout.Width(66)) && _cfg.autoResyncMinutes != m)
+                if (Tog(_cfg.autoResyncMinutes == m, m == 0 ? " off" : " " + m + " min", _small, GUILayout.Width(66)) && _cfg.autoResyncMinutes != m)
                 { _cfg.autoResyncMinutes = m; _cfg.Save(); }
             GUILayout.EndHorizontal();
 
@@ -454,15 +460,25 @@ namespace Coopfall
             {
                 GUILayout.Space(10);
                 GUILayout.Label("Players online (" + _s.Players.Count + ")", _label);
-                _playersScroll = GUILayout.BeginScrollView(_playersScroll, GUILayout.Height(150));
+                _playersScroll = GUILayout.BeginScrollView(_playersScroll, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.Height(150));
                 foreach (PlayerInfo p in _s.Players)
                 {
                     GUILayout.BeginHorizontal();
                     string where = _s.Rooms.TryGetValue(p.room ?? "", out RoomInfo ri) ? ri.name : (string.IsNullOrEmpty(p.room) ? "(lobby)" : p.room);
                     GUILayout.Label("<color=" + p.color + ">●</color> <b>" + Esc(p.name) + "</b>" + (p.id == _s.MyId ? " (you)" : "") +
-                                    "  <color=#aab>in " + Esc(where) + (p.host ? " · host" : "") + "</color>", _small);
+                                    "  <color=#aab>in " + Esc(where) + (p.host ? " · host" : "") + (p.spectator ? " · watching" : "") +
+                                    (p.ping >= 0 ? " · " + PingText(p.ping) : "") + "</color>", _small);
                     GUILayout.FlexibleSpace();
-                    if (p.id != _s.MyId && p.room == _s.RoomId && _s.InWorld && GUILayout.Button("Find", _btn, GUILayout.Width(54))) FocusOn(p.id);
+                    bool sameWorld = p.id != _s.MyId && p.room == _s.RoomId && _s.InWorld;
+                    if (sameWorld && _s.IsAdmin && !_s.IsOwnerOf(p))
+                    {
+                        if (_confirmKick == p.id)
+                        {
+                            if (GUILayout.Button("Remove?", _btn, GUILayout.Width(70))) { _s.Kick(p.id); _confirmKick = null; }
+                        }
+                        else if (GUILayout.Button("Kick", _btn, GUILayout.Width(44))) _confirmKick = p.id;
+                    }
+                    if (sameWorld && GUILayout.Button("Find", _btn, GUILayout.Width(54))) FocusOn(p.id);
                     else if (p.id != _s.MyId && p.room != _s.RoomId && !string.IsNullOrEmpty(p.room) && GUILayout.Button("Join", _btn, GUILayout.Width(54)))
                     { _s.Travel(p.room); MenuOpen = false; }
                     GUILayout.EndHorizontal();
@@ -471,9 +487,172 @@ namespace Coopfall
                 }
                 GUILayout.EndScrollView();
             }
+            if (_s.IsAdmin) DrawWorldSettings();
+
+            GUILayout.Space(10);
+            GUILayout.Label("Tools", _label);
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Export diagnostics", _btn, GUILayout.Width(150))) _s.ExportDiagnostics();
+            GUI.enabled = WorldBoxApi.WorldReady;
+            if (GUILayout.Button("Back up this map now", _btn, GUILayout.Width(160)))
+            {
+                try { WorldBoxApi.BackupCurrentWorld("manual"); ShowToast("Map backed up (coopfall/backups)"); }
+                catch (System.Exception e) { ShowToast("Backup failed: " + e.Message); }
+            }
+            GUI.enabled = true;
+            GUILayout.EndHorizontal();
+            GUILayout.Label("<color=#aab>Diagnostics: a zip with logs, settings and mods for bug reports (your user name is removed). " +
+                            "Gameplay mods: " + ModScan.Mods.Count + (ModScan.ClientOnly.Count > 0 ? ", client-only: " + Esc(string.Join(", ", ModScan.ClientOnly.ToArray())) : "") + "</color>", _small);
+            GUILayout.EndScrollView();
             GUILayout.FlexibleSpace();
             GUILayout.Label("Keys: " + _cfg.mapKey + " world map · " + _cfg.menuKey + " this menu · " + _cfg.chatKey + " chat (/sync, /home)", _dim);
             GUILayout.EndArea();
+        }
+
+        /// <summary>A toggle that shows its state (the label styles have no check box).</summary>
+        private static bool Tog(bool value, string text, GUIStyle style, params GUILayoutOption[] options)
+        {
+            string mark = value ? "<color=#5fd16a>●</color>" : "<color=#667>○</color>";
+            return GUILayout.Toggle(value, mark + " " + (text ?? "").TrimStart(), style, options);
+        }
+
+        /// <summary>Scrolls the Co-op menu to the bottom (world settings / tools); used by the lobby test.</summary>
+        public void ScrollMenuToEnd() { _menuScroll.y = 100000f; }
+
+        private static string PingText(int ms)
+        {
+            string c = ms < 100 ? "#7f7" : (ms < 250 ? "#fd6" : "#f77");
+            return "<color=" + c + ">" + ms + " ms</color>";
+        }
+
+        /// <summary>Owner (or the shared world's host): who may come in and what guests may do.</summary>
+        private void DrawWorldSettings()
+        {
+            RoomInfo r = _s.CurrentRoom;
+            if (r == null) return;
+            GUILayout.Space(10);
+            GUILayout.Label("This world's settings <color=#aab>(" + (_s.IsRealAdmin ? "you run " + Esc(r.name) : "everyone here may change them") + ")</color>", _label);
+            if (_s.IsRealAdmin)
+            {
+                bool all = Tog(r.everyoneAdmin, " Everyone here is an admin (may change these settings and kick)", _small);
+                if (all != r.everyoneAdmin) _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["everyoneAdmin"] = all });
+            }
+            if (r.everyoneAdmin)
+                GUILayout.Label("<color=#aab>   While everyone is an admin, the guest limits below don't apply to players here.</color>", _small);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Password", _small, GUILayout.Width(70));
+            _setPw = GUILayout.TextField(_setPw ?? "", 32, _field, GUILayout.Width(130));
+            if (GUILayout.Button(_setPw.Length > 0 ? "Set" : "Remove", _btn, GUILayout.Width(70)))
+            {
+                _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["password"] = _setPw.Trim() });
+                ShowToast(_setPw.Trim().Length > 0 ? "Password set - tell your friends" : "Password removed");
+            }
+            GUILayout.Label(r.hasPassword ? "<color=#7f7>on</color>" : "<color=#aab>none</color>", _small);
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            bool locked = Tog(r.locked, " Locked (nobody new)", _small, GUILayout.Width(160));
+            bool approval = Tog(r.approval, " Ask me before people join", _small, GUILayout.Width(190));
+            bool spect = Tog(r.spectatorsAllowed, " Spectators", _small);
+            GUILayout.EndHorizontal();
+            if (locked != r.locked) _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["locked"] = locked });
+            if (approval != r.approval) _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["approval"] = approval });
+            if (spect != r.spectatorsAllowed) _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["spectators"] = spect });
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Max players", _small, GUILayout.Width(90));
+            foreach (int m in new[] { 0, 2, 4, 8, 16 })
+                if (Tog(r.maxPlayers == m, m == 0 ? " any" : " " + m, _small, GUILayout.Width(56)) && r.maxPlayers != m)
+                    _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["maxPlayers"] = m });
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Guest powers", _small, GUILayout.Width(90));
+            foreach (string[] o in new[] { new[] { "all", " all" }, new[] { "safe", " no destructive" }, new[] { "none", " none" } })
+                if (Tog(r.guestPowers == o[0], o[1], _small, GUILayout.Width(o[0] == "safe" ? 120 : 60)) && r.guestPowers != o[0])
+                {
+                    var msg = new Newtonsoft.Json.Linq.JObject { ["guestPowers"] = o[0] };
+                    if (o[0] == "safe") msg["blocked"] = new Newtonsoft.Json.Linq.JArray(PowerSync.DestructivePowers().ToArray());
+                    _s.SendSettings(msg);
+                }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            bool speed = Tog(r.guestSpeed, " Guests may change speed / pause", _small, GUILayout.Width(240));
+            bool extra = Tog(r.allowExtraMods, " Allow guests' extra mods", _small);
+            GUILayout.EndHorizontal();
+            if (speed != r.guestSpeed) _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["guestSpeed"] = speed });
+            if (extra != r.allowExtraMods) _s.SendSettings(new Newtonsoft.Json.Linq.JObject { ["allowExtraMods"] = extra });
+        }
+
+        // ---------------------------------------------------------------- popups
+
+        private void DrawJoinRequests()
+        {
+            if (_s.JoinRequests.Count == 0) return;
+            float y = (_fp ? _hudRect.yMax : 40f) + 6f;
+            foreach (JoinRequest jr in _s.JoinRequests.ToArray())
+            {
+                Rect r = new Rect((W - 420) / 2f, y, 420, 36);
+                GUI.Box(r, GUIContent.none, _panel);
+                Block(r);
+                GUI.Label(new Rect(r.x + 10, r.y + 8, 250, 22), "<b>" + Esc(jr.name) + "</b> wants to " + (jr.spectate ? "watch" : "join"), _small);
+                if (GUI.Button(new Rect(r.xMax - 150, r.y + 6, 70, 24), "Let in", _btnAccent)) _s.Answer(jr, true);
+                if (GUI.Button(new Rect(r.xMax - 74, r.y + 6, 64, 24), "No", _btn)) _s.Answer(jr, false);
+                y += 40f;
+            }
+        }
+
+        private void DrawPasswordPrompt()
+        {
+            if (_s.PasswordRoom == null) return;
+            Rect r = new Rect((W - 380) / 2f, H * 0.3f, 380, 120);
+            GUI.Box(r, GUIContent.none, _panel);
+            Block(r);
+            GUI.Label(new Rect(r.x + 16, r.y + 12, 350, 22), "<b>" + Esc(_s.PasswordPrompt) + "</b>", _label);
+            GUI.SetNextControlName("coopfall_pw");
+            _joinPw = GUI.PasswordField(new Rect(r.x + 16, r.y + 44, 348, 26), _joinPw ?? "", '•', 32, _field);
+            if (GUI.Button(new Rect(r.x + 16, r.y + 80, 120, 26), "Join", _btnAccent) ||
+                (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Return && GUI.GetNameOfFocusedControl() == "coopfall_pw"))
+            {
+                string pw = _joinPw;
+                _joinPw = "";
+                _s.JoinWithPassword(pw);
+            }
+            if (GUI.Button(new Rect(r.x + 144, r.y + 80, 90, 26), "Cancel", _btn)) { _s.PasswordRoom = null; _joinPw = ""; }
+        }
+
+        private void DrawModMismatch()
+        {
+            Newtonsoft.Json.Linq.JObject m = _s.ModMismatch;
+            if (m == null) return;
+            Rect r = new Rect((W - 480) / 2f, H * 0.22f, 480, 300);
+            GUI.Box(r, GUIContent.none, _panel);
+            Block(r);
+            GUILayout.BeginArea(new Rect(r.x + 16, r.y + 12, r.width - 32, r.height - 24));
+            string name = _s.Rooms.TryGetValue(_s.ModMismatchRoom ?? "", out RoomInfo ri) ? ri.name : _s.ModMismatchRoom;
+            GUILayout.Label("<b>Your mods don't match " + Esc(name) + "</b>", _label);
+            GUILayout.Label("<color=#aab>Different gameplay mods make the worlds drift apart, so you can't enter yet. Chat still works. " +
+                            "Install / remove these, restart WorldBox and try again.</color>", _small);
+            _modsScroll = GUILayout.BeginScrollView(_modsScroll, GUILayout.Height(150));
+            ModList(m, "missing", "Missing (install these)", "#f77");
+            ModList(m, "different", "Different version", "#fd6");
+            ModList(m, "extra", "Only you have these (remove, or ask the owner to allow extra mods)", "#7cf");
+            GUILayout.EndScrollView();
+            GUILayout.FlexibleSpace();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("OK", _btnAccent, GUILayout.Width(90))) _s.ModMismatch = null;
+            GUILayout.Label("<color=#aab>  A mod that only changes your screen can be added to clientOnlyMods in config.json.</color>", _small);
+            GUILayout.EndHorizontal();
+            GUILayout.EndArea();
+        }
+
+        private void ModList(Newtonsoft.Json.Linq.JObject m, string key, string title, string color)
+        {
+            if (!(m[key] is Newtonsoft.Json.Linq.JArray arr) || arr.Count == 0) return;
+            GUILayout.Label("<color=" + color + "><b>" + title + "</b></color>", _small);
+            foreach (Newtonsoft.Json.Linq.JToken t in arr) GUILayout.Label("   • " + Esc((string)t), _small);
         }
 
         private void ApplyConnectionFields()
@@ -580,11 +759,13 @@ namespace Coopfall
                 GUI.color = Color.white;
             }
 
-            GUILayout.Label("<b>" + Esc(room.name) + "</b>", _cardTitle);
+            GUILayout.Label((room.hasPassword || room.locked ? "🔒 " : "") + "<b>" + Esc(room.name) + "</b>", _cardTitle);
             string kind = room.kind == "shared" ? "Shared world" : (room.kind == "home" ? Esc(room.owner) + "'s own world" : "by " + Esc(room.owner));
             GUILayout.Label("<color=#aab>" + kind + (room.year > 0 ? "  ·  year " + room.year : "") + (room.pop > 0 ? "  ·  " + room.pop + " units" : "") + "</color>", _small);
             if (room.players > 0)
-                GUILayout.Label("👥 " + Esc(string.Join(", ", room.names.ToArray())) + (string.IsNullOrEmpty(room.host) ? "" : "  <color=#aab>(host: " + Esc(room.host) + ")</color>"), _small);
+                GUILayout.Label("👥 " + Esc(string.Join(", ", room.names.ToArray())) + (string.IsNullOrEmpty(room.host) ? "" : "  <color=#aab>(host: " + Esc(room.host) + ")</color>") +
+                                (room.spectating > 0 ? "  <color=#aab>· " + room.spectating + " watching</color>" : "") +
+                                (room.maxPlayers > 0 ? "  <color=#aab>· max " + room.maxPlayers + "</color>" : ""), _small);
             else
                 GUILayout.Label("<color=#aab>nobody here · " + (room.size > 0 ? (room.size / 1024) + " KB saved" : "empty") + "</color>", _small);
             GUILayout.FlexibleSpace();
@@ -595,6 +776,8 @@ namespace Coopfall
             {
                 GUI.enabled = !_s.Busy;
                 if (GUILayout.Button("Travel ➜", _btnAccent, GUILayout.Height(26))) { _s.Travel(room.id); MapOpen = false; }
+                if (room.spectatorsAllowed && !string.IsNullOrEmpty(room.host) && GUILayout.Button("Watch", _btn, GUILayout.Width(56), GUILayout.Height(26)))
+                { _s.Travel(room.id, null, false, false, false, true); MapOpen = false; }
                 GUI.enabled = true;
             }
             bool mine = !string.IsNullOrEmpty(room.owner) && room.owner == _s.MyName;
