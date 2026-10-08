@@ -1143,7 +1143,7 @@ end
 
 --- Live world sync. Lines start with {"t":"<type>" so they are recognized without parsing.
 --- true = only the room's host may send it.
-local LIVE_SYNC = { wu = true, wb = true, wdata = true, wm = true, wa = true, ww = true, wt = true, wneed = false, wask = false }
+local LIVE_SYNC = { wu = true, wb = true, wdata = true, wm = true, wa = true, ww = true, wt = true, wc = true, wneed = false, wask = false }
 
 local function RelayRawToRoom(a_Client, a_Type, a_Line)
 	local room = a_Client.Room

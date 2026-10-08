@@ -72,6 +72,65 @@ namespace Coopfall
             }
         }
 
+        // Worldfall's wind gusts (SceneCollector.Gusts): their whole state, so a guest's gusts follow the host's.
+        private static readonly string[] GustFields = { "Strength", "DirX", "DirY", "_wait", "_len", "_t", "_peak", "_angle", "_veer", "_clock" };
+        private static FieldInfo[] _gustFields;
+        private static FieldInfo _fiGusts, _fiGustCount;
+
+        private static object Gusts()
+        {
+            object inst = Instance;
+            if (inst == null) return null;
+            LookupView();
+            if (_fiScene == null) return null;
+            object scene = _fiScene.GetValue(inst);
+            if (scene == null) return null;
+            if (_fiGusts == null) _fiGusts = scene.GetType().GetField("Gusts", Any);
+            object g = _fiGusts?.GetValue(scene);
+            if (g != null && _gustFields == null)
+            {
+                var list = new FieldInfo[GustFields.Length];
+                for (int i = 0; i < list.Length; i++)
+                {
+                    list[i] = g.GetType().GetField(GustFields[i], Any);
+                    if (list[i] == null || list[i].FieldType != typeof(float)) { Log.Warn("Worldfall gusts: no " + GustFields[i] + " - wind not synced"); _fiGusts = null; return null; }
+                }
+                _gustFields = list;
+                _fiGustCount = g.GetType().GetField("Count", Any);
+                Log.Info("Worldfall gusts: synced");
+            }
+            return _gustFields == null ? null : g;
+        }
+
+        /// <summary>The host's gust state (10 numbers), or null without Worldfall.</summary>
+        public static float[] GustState()
+        {
+            try
+            {
+                object g = Gusts();
+                if (g == null) return null;
+                var v = new float[_gustFields.Length];
+                for (int i = 0; i < v.Length; i++) v[i] = (float)_gustFields[i].GetValue(g);
+                return v;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Guest: take over the host's gusts (their timing, strength and direction).</summary>
+        public static bool SetGustState(float[] v)
+        {
+            try
+            {
+                object g = Gusts();
+                if (g == null || v == null || v.Length != _gustFields.Length) return false;
+                float wasLen = (float)_gustFields[4].GetValue(g);
+                for (int i = 0; i < v.Length; i++) _gustFields[i].SetValue(g, v[i]);
+                if (wasLen <= 0f && v[4] > 0f && _fiGustCount != null) _fiGustCount.SetValue(g, (int)_fiGustCount.GetValue(g) + 1);   // a new gust here too
+                return true;
+            }
+            catch { return false; }
+        }
+
         private static bool GetBool(PropertyInfo pi)
         {
             object inst = Instance;

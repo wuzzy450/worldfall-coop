@@ -25,6 +25,7 @@ namespace Coopfall
         public WorldSync Sync;
         public MetaSync Meta;
         public TileSync Tiles;
+        public WeatherSync Weather;
         public CombatSync Combat;
         public TestDriver Test;
         public DiagSync Diag;
@@ -48,6 +49,7 @@ namespace Coopfall
             Sync = new WorldSync(Session);
             Meta = new MetaSync(Session);
             Tiles = new TileSync(Session);
+            Weather = new WeatherSync(Session);
             Combat = new CombatSync(Session);
             Diag = new DiagSync(Session);
             UI = new CoopUI(Session, Avatars);
@@ -76,6 +78,7 @@ namespace Coopfall
                 Prof.Run("sync", Sync.Tick);
                 Prof.Run("meta", Meta.Tick);
                 Prof.Run("tiles", Tiles.Tick);
+                Prof.Run("weather", Weather.Tick);
                 if (Test != null) Prof.Run("test", Test.Tick);
                 Prof.Run("diag", Diag.Tick);
 

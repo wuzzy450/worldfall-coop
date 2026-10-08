@@ -534,6 +534,9 @@ namespace Coopfall
                 case "wm": case "wa": case "ww": case "wask":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Meta.OnPacket(t, p);
                     break;
+                case "wc":
+                    if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Weather.OnPacket(p);
+                    break;
                 case "wt":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Tiles.OnPacket(p);
                     break;

@@ -74,7 +74,7 @@ namespace Coopfall
         /// <summary>Forget everything (world loaded, role changed, room changed).</summary>
         public void Reset()
         {
-            _sentUnits.Clear(); _sentBuild.Clear(); _bornU.Clear(); _bornB.Clear(); _bornUSet.Clear(); _bornBSet.Clear();
+            _sentUnits.Clear(); _sentBuild.Clear(); _buildChangedAt.Clear(); _bornU.Clear(); _bornB.Clear(); _bornUSet.Clear(); _bornBSet.Clear();
             _primed = false; _nextUnitTick = _nextUnitFull = _nextBuildTick = _nextBuildFull = 0f;
             ReleaseDriven();
             _tracks.Clear(); _missingU.Clear(); _missingB.Clear(); _hostB.Clear(); _attempts.Clear();
@@ -83,6 +83,7 @@ namespace Coopfall
             _driftSince = -1f;
             CoopMod.Instance?.Meta?.Reset();
             CoopMod.Instance?.Tiles?.Reset();
+            CoopMod.Instance?.Weather?.Reset();
         }
 
         /// <summary>Someone joined: send complete lists soon (their snapshot may be a few seconds old).</summary>
@@ -205,6 +206,20 @@ namespace Coopfall
         private readonly Dictionary<long, Actor> _sentRefs = new Dictionary<long, Actor>();
         private readonly List<string> _deaths = new List<string>();   // "id,attackType,killer" since the last send
         private readonly Dictionary<long, string> _sentBuild = new Dictionary<long, string>();
+        private readonly Dictionary<long, float> _buildChangedAt = new Dictionary<long, float>();
+
+        /// <summary>
+        /// Host, for sync reports: this building is new or changed and may still be on its way to
+        /// the guests (not sent yet, or sent less than 1.5 s ago).
+        /// </summary>
+        public bool BuildingInFlight(Building b)
+        {
+            BuildingData bd = b == null ? null : BData(b);
+            if (bd == null) return false;
+            int st = bd.state == BuildingState.Ruins ? 2 : (b.isUnderConstruction() ? 1 : 0);
+            if (!_sentBuild.TryGetValue(b.getID(), out string key) || key != bd.asset_id + "|" + st) return true;
+            return _buildChangedAt.TryGetValue(b.getID(), out float at) && Time.unscaledTime - at < 1.5f;
+        }
         private readonly Queue<long> _bornU = new Queue<long>(), _bornB = new Queue<long>();
         private readonly HashSet<long> _bornUSet = new HashSet<long>(), _bornBSet = new HashSet<long>();
         private bool _primed;
@@ -418,6 +433,7 @@ namespace Coopfall
                 string key = bd.asset_id + "|" + st;
                 if (!_sentBuild.TryGetValue(id, out string old)) fresh.Add(id);
                 else if (!full && old == key) continue;
+                if (old != key) _buildChangedAt[id] = Time.unscaledTime;
                 _sentBuild[id] = key;
                 rows.Add(new BuildRow { id = id, asset = bd.asset_id, st = st });
             }

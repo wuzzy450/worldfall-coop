@@ -1,7 +1,7 @@
 # Coopfall: online co-op for WorldBox (with Worldfall's 3D first person)
 
 > **Status: work in progress.** Coopfall has been tested by two players on **two different
-> PCs** (with Defect), but both PCs were on the **same network** (LAN). It has **not yet been
+> PCs**, but both PCs were on the **same network** (LAN). It has **not yet been
 > confirmed to work over the internet via a public IP** (port forwarding). If you try that,
 > please report how it went. An official GitHub **release** will follow once it has been
 > confirmed to work.

@@ -310,7 +310,7 @@ namespace Coopfall
             new[] { "host", "dwarf", "3" }, new[] { "guest", "orc", "4" }, new[] { "host", "elf", "3" }, new[] { "guest", "skeleton", "4" },
             new[] { "host", "zombie", "4" }, new[] { "guest", "cat", "3" }, new[] { "host", "crab", "5" }, new[] { "guest", "snake", "4" },
             new[] { "host", "blessing", "3" }, new[] { "guest", "curse", "3" }, new[] { "host", "madness", "4" }, new[] { "guest", "tile_sand", "6" },
-            new[] { "host", "meteorite", "10" }, new[] { "guest", "fertilizer_trees", "7" }, new[] { "host", "bomb", "9" }, new[] { "guest", "demon", "6" },
+            new[] { "host", "meteorite", "10" }, new[] { "guest", "fertilizer_trees", "7" }, new[] { "host", "bomb", "9" }, new[] { "guest", "demon", "6" }, new[] { "host", "cloud_rain", "6" },
         };
 
         private int _meetPhase, _meetAction;
@@ -413,7 +413,10 @@ namespace Coopfall
                     Vector2 at = _spot + new Vector2(1.5f, 0f) + new Vector2(Mathf.Cos(ang), Mathf.Sin(ang)) * r;
                     if (act[0] == "host")
                     {
-                        bool ok = CoopMod.Instance.Powers.UseLocal(act[1], World.world.GetTile((int)at.x, (int)at.y));
+                        // "cloud_*": a weather cloud the host's world rolls by itself (checks the weather sync)
+                        bool ok = act[1].StartsWith("cloud_")
+                            ? EffectsLibrary.spawn("fx_cloud", World.world.GetTile((int)at.x - 12, (int)at.y), act[1]) != null
+                            : CoopMod.Instance.Powers.UseLocal(act[1], World.world.GetTile((int)at.x, (int)at.y));
                         Log.Info("TEST meet: host uses " + act[1] + " at " + (int)at.x + "," + (int)at.y + (ok ? "" : " (not available)"));
                     }
                     else

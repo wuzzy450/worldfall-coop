@@ -220,12 +220,14 @@ namespace Coopfall
                 if (a != null && a.isAlive() && Vector2.Distance(a.current_position, at) <= Radius) units.Add(Unit(a));
             st["units"] = units;
             var builds = new JArray();
+            var fresh = new JArray();      // host: changes still on their way to the guests
             foreach (Building b in World.world.buildings.getSimpleList())
             {
                 if (b == null || !b.isAlive() || b.isOnRemove() || b.current_tile == null) continue;
                 if (Vector2.Distance(b.current_tile.posV3, at) > Radius) continue;
                 var bd = (BuildingData)b.getData();
                 builds.Add(new JArray(b.getID(), bd.asset_id, bd.state.ToString(), b.current_tile.pos.x, b.current_tile.pos.y));
+                if (_s.IsHost && CoopMod.Instance.Sync.BuildingInFlight(b)) fresh.Add(b.getID());
             }
             st["buildings"] = builds;
             var tiles = new JObject();
@@ -233,9 +235,13 @@ namespace Coopfall
                 for (int dx = -16; dx <= 16; dx++)
                 {
                     WorldTile t = World.world.GetTile((int)at.x + dx, (int)at.y + dy);
-                    if (t != null) tiles[t.pos.x + "," + t.pos.y] = (t.main_type?.id ?? "") + "/" + (t.top_type?.id ?? "") + (t.isOnFire() ? "!" : "");
+                    if (t == null) continue;
+                    tiles[t.pos.x + "," + t.pos.y] = (t.main_type?.id ?? "") + "/" + (t.top_type?.id ?? "") + (t.isOnFire() ? "!" : "");
+                    if (_s.IsHost && CoopMod.Instance.Tiles.TileInFlight(t)) fresh.Add(t.pos.x + "," + t.pos.y);
                 }
             st["tiles"] = tiles;
+            if (fresh.Count > 0) st["fresh"] = fresh;
+            try { st["weather"] = WeatherSync.DiagState(); } catch { }
             return st;
         }
 
@@ -290,6 +296,7 @@ namespace Coopfall
                 ComparePlayers(host, g, who, sb, summary);
                 CompareTiles(host, g, who, sb, summary);
                 CompareBuildings(host, g, who, sb, summary);
+                CompareWeather(host, g, who, sb, summary);
                 long dt = Math.Abs(((long?)host["utc"] ?? 0) - ((long?)g["utc"] ?? 0));
                 if (dt > 80) sb.AppendLine("  (snapshots " + dt + " ms apart)");
             }
@@ -310,7 +317,8 @@ namespace Coopfall
         private static void CompareTiles(JObject host, JObject g, string who, StringBuilder sb, List<string> summary)
         {
             if (!(host["tiles"] is JObject a) || !(g["tiles"] is JObject b)) return;
-            int common = 0, diff = 0;
+            HashSet<string> fresh = Fresh(host);
+            int common = 0, diff = 0, flight = 0;
             var ex = new List<string>();
             foreach (var kv in a)
             {
@@ -318,12 +326,45 @@ namespace Coopfall
                 if (o == null) continue;
                 common++;
                 if ((string)o == (string)kv.Value) continue;
+                if (fresh.Contains(kv.Key)) { flight++; continue; }
                 diff++;
                 if (ex.Count < 8) ex.Add(kv.Key + " " + (string)kv.Value + " vs " + (string)o);
             }
+            if (flight > 0) sb.AppendLine("  terrain on " + who + ": " + flight + " tile(s) the host changed under 1.5 s ago still on their way");
             if (diff == 0) return;
             summary.Add(diff + " of " + common + " tiles differ on " + who);
             sb.AppendLine("  terrain on " + who + ": " + string.Join("; ", ex.ToArray()));
+        }
+
+        /// <summary>Same clouds (type, place within 3 tiles: they drift between the two snapshots) and the same gust.</summary>
+        private static void CompareWeather(JObject host, JObject g, string who, StringBuilder sb, List<string> summary)
+        {
+            if (!(host["weather"] is JObject hw) || !(g["weather"] is JObject gw)) return;
+            var hc = hw["clouds"] as JArray ?? new JArray();
+            var gc = new List<JArray>();
+            foreach (JToken t in gw["clouds"] as JArray ?? new JArray()) if (t is JArray x) gc.Add(x);
+            var problems = new List<string>();
+            int matched = 0;
+            foreach (JToken t in hc)
+            {
+                if (!(t is JArray x)) continue;
+                int best = -1;
+                for (int i = 0; i < gc.Count; i++)
+                    if ((string)gc[i][0] == (string)x[0] && Math.Abs((float)gc[i][1] - (float)x[1]) < 3f && Math.Abs((float)gc[i][2] - (float)x[2]) < 3f) { best = i; break; }
+                if (best >= 0) { gc.RemoveAt(best); matched++; }
+                else if (problems.Count < 4) problems.Add("missing " + x[0] + " at " + x[1] + "," + x[2]);
+            }
+            foreach (JArray x in gc) if (problems.Count < 8) problems.Add("only on " + who + ": " + x[0] + " at " + x[1] + "," + x[2]);
+            string gust = "";
+            if (hw["gust"] is JArray hg && gw["gust"] is JArray gg)
+            {
+                bool hb = (float)hg[3] > 0f, gb = (float)gg[3] > 0f;
+                float ds = Math.Abs((float)hg[0] - (float)gg[0]);
+                gust = ", gust " + (hb ? "blowing" : "calm") + " strength " + ((float)hg[0]).ToString("0.00") + " vs " + ((float)gg[0]).ToString("0.00");
+                if (hb != gb || ds > 0.15f) problems.Add("gust " + (hb ? "blowing" : "calm") + " vs " + (gb ? "blowing" : "calm") + ", strength " + ((float)hg[0]).ToString("0.00") + " vs " + ((float)gg[0]).ToString("0.00"));
+            }
+            sb.AppendLine("  weather on " + who + ": " + matched + " of " + hc.Count + " clouds match" + gust + (problems.Count > 0 ? " - " + string.Join("; ", problems.ToArray()) : ""));
+            if (problems.Count > 0) summary.Add("weather differs on " + who);
         }
 
         private static void CompareBuildings(JObject host, JObject g, string who, StringBuilder sb, List<string> summary)
@@ -333,11 +374,13 @@ namespace Coopfall
             if (g["buildings"] is JArray ga) foreach (JToken t in ga) if (t is JArray x) b[(long)x[0]] = x;
             var hr = host["ref"] as JArray; var gr = g["ref"] as JArray;
             Vector2 href = new Vector2((float)hr[0], (float)hr[1]), gref = new Vector2((float)gr[0], (float)gr[1]);
-            int missing = 0, extra = 0, state = 0;
+            int missing = 0, extra = 0, state = 0, flight = 0;
             var ex = new List<string>();
+            HashSet<string> fresh = Fresh(host);
             foreach (var kv in a)
             {
                 Vector2 p = new Vector2((float)kv.Value[3], (float)kv.Value[4]);
+                if (fresh.Contains(kv.Key.ToString()) && (!b.TryGetValue(kv.Key, out JArray f) || (string)f[1] != (string)kv.Value[1] || (string)f[2] != (string)kv.Value[2])) { flight++; continue; }
                 if (!b.TryGetValue(kv.Key, out JArray o)) { if (Vector2.Distance(p, gref) < Radius - 3f) { missing++; if (ex.Count < 8) ex.Add("missing " + kv.Value.ToString(Formatting.None)); } continue; }
                 if ((string)o[1] != (string)kv.Value[1] || (string)o[2] != (string)kv.Value[2]) { state++; if (ex.Count < 8) ex.Add(kv.Value.ToString(Formatting.None) + " vs " + o.ToString(Formatting.None)); }
             }
@@ -346,9 +389,18 @@ namespace Coopfall
                 Vector2 p = new Vector2((float)kv.Value[3], (float)kv.Value[4]);
                 if (!a.ContainsKey(kv.Key) && Vector2.Distance(p, href) < Radius - 3f) { extra++; if (ex.Count < 8) ex.Add("only on " + who + " " + kv.Value.ToString(Formatting.None)); }
             }
+ if (flight > 0) sb.AppendLine("  buildings on " + who + ": " + flight + " the host changed under 1.5 s ago still on their way");
             if (missing + extra + state == 0) return;
             summary.Add("buildings on " + who + ": " + missing + " missing, " + extra + " extra, " + state + " different");
             sb.AppendLine("  buildings on " + who + ": " + string.Join("; ", ex.ToArray()));
+        }
+
+        /// <summary>Tiles ("x,y") and building ids the host changed so recently that they may still be on their way.</summary>
+        private static HashSet<string> Fresh(JObject host)
+        {
+            var set = new HashSet<string>();
+            if (host["fresh"] is JArray f) foreach (JToken t in f) set.Add(t.ToString());
+            return set;
         }
 
         private static bool Near(JObject a, JObject b, float d)

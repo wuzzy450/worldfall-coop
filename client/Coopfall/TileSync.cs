@@ -38,9 +38,25 @@ namespace Coopfall
         {
             _sent = null; _primed = false; _next = _nextFull = 0f; _ordered = null;
             _forced.Clear(); _askedAt.Clear(); _hostHash = null;
+            _hostFire = null;
         }
 
         public void ForceFull() { _nextFull = Mathf.Min(_nextFull, Time.unscaledTime + 2f); }
+
+        private readonly Dictionary<TileZone, float> _zoneChangedAt = new Dictionary<TileZone, float>();
+
+        /// <summary>
+        /// Host, for sync reports: this tile's zone changed and may still be on its way to the
+        /// guests (not sent yet, or sent less than 1.5 s ago).
+        /// </summary>
+        public bool TileInFlight(WorldTile t)
+        {
+            if (t?.zone == null || _sent == null) return false;
+            if (_zoneChangedAt.TryGetValue(t.zone, out float at) && Time.unscaledTime - at < 1.5f) return true;
+            List<TileZone> zones = Zones();
+            int i = zones == null ? -1 : zones.IndexOf(t.zone);
+            return i >= 0 && i < _sent.Length && ZoneHash(t.zone) != _sent[i];
+        }
 
         private List<TileZone> _zonesSrc;
         private int _zonesCount;
@@ -96,6 +112,7 @@ namespace Coopfall
             if (Ready && !_s.IsHost)
             {
                 HoldTornadoes();
+                OnlyHostFires();
                 GuestTick();
                 return;
             }
@@ -121,6 +138,7 @@ namespace Coopfall
             }
             _forced.Clear();
             _primed = true;
+            foreach (int i in changed) _zoneChangedAt[zones[i]] = now;
             for (int i = 0; i < changed.Count; i += ZonesPerMessage)
                 SendZones(zones, changed.GetRange(i, Mathf.Min(ZonesPerMessage, changed.Count - i)));
             if (hashes != null)
@@ -260,6 +278,47 @@ namespace Coopfall
             return batches.Count;
         }
 
+        // Fire: heat, explosions, lava and burning creatures light tiles by their own dice, so a guest's
+        // fire spreads to tiles the host's never reached. On guests only the host's fires burn: the
+        // tiles it reports burning (and those burning in the world it sent) are kept, others go out
+        // at once. The host's fires arrive through the tile stream.
+        private HashSet<int> _hostFire;
+        private static System.Reflection.FieldInfo _fireTiles;
+        private readonly List<WorldTile> _fireScratch = new List<WorldTile>();
+        public int FiresStopped;
+
+        private static IEnumerable<WorldTile> LocalFires()
+        {
+            if (_fireTiles == null)
+                _fireTiles = typeof(WorldBehaviourActionFire).GetField("_tiles", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            return _fireTiles?.GetValue(null) as IEnumerable<WorldTile>;
+        }
+
+        private void OnlyHostFires()
+        {
+            if (Prof.Off("tile-fire")) return;
+            try
+            {
+                IEnumerable<WorldTile> fires = LocalFires();
+                if (fires == null) return;
+                if (_hostFire == null)
+                {
+                    // just loaded the host's world: what burns now burns at the host too
+                    _hostFire = new HashSet<int>();
+                    foreach (WorldTile t in fires) _hostFire.Add(t.data.tile_id);
+                    return;
+                }
+                _fireScratch.Clear();
+                foreach (WorldTile t in fires) if (!_hostFire.Contains(t.data.tile_id)) _fireScratch.Add(t);
+                foreach (WorldTile t in _fireScratch)
+                {
+                    R.Call0(t, "stopFire");
+                    if (FiresStopped++ < 10) Log.Info("tile sync: fire at " + t.pos.x + "," + t.pos.y + " isn't burning at the host - put out");
+                }
+            }
+            catch (Exception e) { if (_fireTiles != null) { Log.Warn("tile sync: fires: " + e.Message); _fireTiles = null; } }
+        }
+
         // Tornadoes (the guest's replay of the power) wander by their own dice and strip tiles as they go:
         // on guests their terraform timer never runs out, the host's tiles come through the tile stream.
         private static System.Reflection.FieldInfo _tornadoTiles, _tornadoTimer;
@@ -366,6 +425,7 @@ namespace Coopfall
                     string[] k = parsed[(int)za[i + 1]];
                     if (t == null || k.Length < 4) continue;
                     if (ApplyTile(t, k, _logged < 30)) { tiles++; _logged++; }
+                    if (_hostFire != null) { if (k[2] == "1") _hostFire.Add(t.data.tile_id); else _hostFire.Remove(t.data.tile_id); }
                 }
                 if (_hostHash != null && id < _hostHash.Length) _hostHash[id] = ZoneHash(zones[id]);
                 ZonesApplied++;
@@ -382,18 +442,20 @@ namespace Coopfall
                 if (mine != host) Log.Info("tile " + t.pos.x + "," + t.pos.y + ": " + mine + " -> " + host);
             }
             bool changed = false;
-            TileType main = string.IsNullOrEmpty(k[0]) ? null : AssetManager.tiles.get(k[0]);
-            TopTileType top = string.IsNullOrEmpty(k[1]) ? null : AssetManager.top_tiles.get(k[1]);
-            if (main != null && (t.main_type != main || t.top_type != top) && !Prof.Off("tile-type"))
-            {
-                t.setTileTypes(main, top, true);
-                changed = true;
-            }
+            // fire first: lighting a tile burns it a little (grass can burn away), and the host's
+            // tile type below is what counts
             bool fire = k[2] == "1";
             if (fire != t.isOnFire() && !Prof.Off("tile-fire"))
             {
                 if (fire) R.Call(t, "startFire", new[] { typeof(bool) }, true);
                 else R.Call0(t, "stopFire");
+                changed = true;
+            }
+            TileType main = string.IsNullOrEmpty(k[0]) ? null : AssetManager.tiles.get(k[0]);
+            TopTileType top = string.IsNullOrEmpty(k[1]) ? null : AssetManager.top_tiles.get(k[1]);
+            if (main != null && (t.main_type != main || t.top_type != top) && !Prof.Off("tile-type"))
+            {
+                t.setTileTypes(main, top, true);
                 changed = true;
             }
             int burned = int.Parse(k[3], CultureInfo.InvariantCulture);

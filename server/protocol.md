@@ -30,6 +30,7 @@ TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"`
 | `wa` | `room, r[[id, name, city, kingdom, clan, family, culture, religion, language, subspecies, army, plot, lover, profession, level, experience, kills, renown, "traits", "items"], ...]` | host only: creatures' details (changed ones every 2 s, all every 20 s). `kingdom` is a civ id or `w:<asset>` for wild kingdoms |
 | `wt` | `room, k?[tile keys], z?[[zone, key index x64], ...], n?, zh?[fingerprints]` | host only: terrain. Zones are WorldBox's 8x8-tile zones sorted by (y, x); a tile key is `main|top|fire|burned`. `zh` = every zone's fingerprint (every 10 s) |
 | `ww` | `room, time, age, slot, prog, dur, apause, amul, slots, stats{}, laws?[[name, bool, int, string], ...], pop{village: living members}, pl?{village: [creature ids]}` | host only: world time, age/era, statistics and (when changed) world laws, every 2 s. `pl` answers a guest's `pc` |
+| `wc` | `room, c[[id, cloud asset, x, y, speed, sprite index, flip, age, lifespan], ...], g?[10 numbers]` | host only, about once a second: every cloud on the map (guests spawn no clouds of their own and keep copies of these) and Worldfall's wind gust state (`Strength, DirX, DirY, wait, len, t, peak, angle, veer, clock`) |
 | `wask` | `room, m?{kind: [ids]}, a?[creature ids], z?[zones], pc?[village ids]` | guest asks the host for meta objects, creature details or zones that are missing or differ, and (`pc`) member lists of villages whose population is off |
 | `chat` | `text` | server-wide chat |
 | `rename-room` / `delete-room` | `room, name?` | owner only |
@@ -43,9 +44,9 @@ TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"`
 sender's room, with `id, name, color, room` added by the server (ids can't be spoofed, and any
 `id` field the sender put in is replaced).
 
-Live sync lines (`wu, wb, wdata, wm, wa, wt, ww, wneed, wask`) must start with `{"t":"<type>"`:
+Live sync lines (`wu, wb, wdata, wm, wa, wt, ww, wc, wneed, wask`) must start with `{"t":"<type>"`:
 the server recognizes them by that prefix and relays them verbatim without decoding (they are
-large and frequent). `wu, wb, wdata, wm, wa, wt, ww` are dropped unless the sender is the room's
+large and frequent). `wu, wb, wdata, wm, wa, wt, ww, wc` are dropped unless the sender is the room's
 host. Guests number objects their
 own simulation creates from `idu`/`idb` + 50,000,000, so they never reuse one of the host's ids.
 
