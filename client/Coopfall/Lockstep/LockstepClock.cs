@@ -273,6 +273,10 @@ namespace Coopfall.Lockstep
             // cached "is kingdom A an enemy of B", keyed by hash codes, which restart every load
             Kingdom.cache_enemy_check.clear();
             ResetManagerTimers(w);
+            // effect cooldowns (session-time stamps per effect type) carry over too
+            FieldInfo fxCooldown = AccessTools.Field(typeof(EffectAsset), "_cooldown");
+            if (fxCooldown != null) foreach (EffectAsset fx in AssetManager.effects_library.list) fxCooldown.SetValue(fx, 0.0);
+            else Log.Error("lockstep: EffectAsset._cooldown not found (game changed?)");
             // the tile runners' shuffled order and position; rebuilt on first use
             SetStatic("WorldBehaviourTilesRunner", "_tiles_to_check", null);
             SetStatic("WorldBehaviourTilesRunner", "_tile_next_check", 0);
@@ -575,6 +579,28 @@ namespace Coopfall.Lockstep
             Randy.resetSeed(TickSeed(Seed ^ 0x5A0E5EED ^ (int)h, seen));
         }
 
+        private static List<Action> _flushers;
+
+        /// <summary>
+        /// Managers add new objects to their main set lazily, and the renderer flushes that every
+        /// frame, so code in the next tick would see new creatures or not depending on whether a
+        /// frame passed. Flush at the end of every tick, so the renderer never has anything to add.
+        /// </summary>
+        private static void FlushContainers(MapBox map)
+        {
+            if (_flushers == null)
+            {
+                _flushers = new List<Action>();
+                foreach (BaseSystemManager m in map.list_all_sim_managers)
+                {
+                    MethodInfo check = m == null ? null : AccessTools.Method(m.GetType(), "checkContainer");
+                    if (check != null && check.GetParameters().Length == 0) _flushers.Add((Action)Delegate.CreateDelegate(typeof(Action), m, check));
+                }
+                if (_flushers.Count == 0) Log.Error("lockstep: no object containers to flush (game changed?)");
+            }
+            foreach (Action f in _flushers) f();
+        }
+
         private static void RunTicks(MapBox map)
         {
             ParallelOptions po = _parallel(map);
@@ -605,6 +631,7 @@ namespace Coopfall.Lockstep
                     try { map.delayed_actions_manager.update(StepElapsed, DefaultStep); }
                     finally { _inTick = false; }
                     _updateFinish(map);
+                    FlushContainers(map);
                     _inTickAll = false;
                     Tick++;
                     n++;

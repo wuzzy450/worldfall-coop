@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 
@@ -18,9 +19,7 @@ namespace Coopfall.Lockstep
         /// <summary>Visual-only methods ("Type.method", every overload; "Type.prefix*" for all starting so).</summary>
         private static readonly string[] Isolated =
         {
-            "EffectsLibrary.spawn", "EffectsLibrary.spawnAt", "EffectsLibrary.spawnAtTile", "EffectsLibrary.spawnSlash",
-            "EffectsLibrary.spawnAtTileRandomScale", "EffectsLibrary.spawnExplosionWave",
-            "BaseEffectController.update",
+            "EffectsLibrary.spawnSlash", "EffectsLibrary.spawnExplosionWave",
             "GlowParticles.spawn",
             "Actor.spawnParticle", "Actor.spawnSlash", "Actor.doCastAnimation", "Actor.startColorEffect",
             "ActionLibrary.flamingWeapon",
@@ -65,6 +64,20 @@ namespace Coopfall.Lockstep
                 if (found == 0) Log.Error("lockstep: " + item + " not found (game changed?): its dice may follow the camera");
                 n += found;
             }
+            // effects: isolated unless they change the world (clouds, meteorites, tornadoes, ...)
+            var effPre = new HarmonyMethod(typeof(VisualIsolation), nameof(EffectSpawnPrefix));
+            foreach (MethodInfo m in typeof(EffectsLibrary).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                if ((m.Name == "spawn" || m.Name == "spawnAt" || m.Name == "spawnAtTile" || m.Name == "spawnAtTileRandomScale")
+                    && m.GetParameters().Length > 0 && m.GetParameters()[0].ParameterType == typeof(string))
+                { h.Patch(m, prefix: effPre, postfix: post); n++; }
+            MethodInfo ctrlUpdate = AccessTools.Method(typeof(BaseEffectController), "update");
+            if (ctrlUpdate != null) { h.Patch(ctrlUpdate, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(EffectUpdatePrefix)), postfix: post); n++; }
+            MethodInfo check = AccessTools.Method(typeof(EffectsLibrary), "check");
+            if (check != null) h.Patch(check, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(EffectCheckPrefix)));
+            else Log.Error("lockstep: EffectsLibrary.check not found: zoomed-out players may miss world-changing effects");
+            MethodInfo flash = AccessTools.Method(typeof(PixelFlashEffects), "flashPixel");
+            if (flash != null) h.Patch(flash, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(FlashPrefix)));
+            else Log.Error("lockstep: PixelFlashEffects.flashPixel not found: visual effects may change lava");
             // freezing/unfreezing a tile flashes it only when its zone is on screen, and lava reads
             // the flash state: in a tick, flash regardless
             foreach (string m in new[] { "freeze", "unfreeze" })
@@ -86,15 +99,89 @@ namespace Coopfall.Lockstep
             Log.Info("lockstep: " + n + " visual methods keep their dice to themselves");
         }
 
+        /// <summary>How deep we are in visual-only code (inside a tick).</summary>
+        private static int _depth;
+
         private static void SaveDice(out Dice.Snapshot __state)
         {
             __state = LockstepClock.InTick ? Dice.Isolate() : default;
+            if (__state.rnd != null) _depth++;
         }
 
         private static void RestoreDice(Dice.Snapshot __state)
         {
-            if (__state.rnd != null) Dice.Restore(__state);
+            if (__state.rnd == null) return;
+            Dice.Restore(__state);
+            _depth--;
         }
+
+        /// <summary>Effects whose code changes the world; everything else is decoration.</summary>
+        private static readonly HashSet<string> GameplayEffectTypes = new HashSet<string>
+        {
+            "AntimatterBombEffect", "Boulder", "Cloud", "EffectInfinityCoin", "Meteorite", "NapalmFlash",
+            "NukeFlash", "Santa", "SpawnEffect", "Spores", "TornadoEffect",
+        };
+        private static readonly Dictionary<string, bool> _gameplayById = new Dictionary<string, bool>();
+        private static readonly Dictionary<BaseEffectController, bool> _gameplayByCtrl = new Dictionary<BaseEffectController, bool>();
+        private static MethodInfo _stackGet;
+
+        private static bool IsGameplay(BaseEffectController c)
+        {
+            if (c == null) return false;
+            if (_gameplayByCtrl.TryGetValue(c, out bool g)) return g;
+            BaseEffect fx = c.prefab == null ? null : c.prefab.GetComponent<BaseEffect>();
+            for (Type t = fx?.GetType(); t != null && !g; t = t.BaseType) g = GameplayEffectTypes.Contains(t.Name);
+            _gameplayByCtrl[c] = g;
+            return g;
+        }
+
+        private static bool IsGameplay(string id)
+        {
+            if (id == null) return false;
+            if (_gameplayById.TryGetValue(id, out bool g)) return g;
+            if (_stackGet == null) _stackGet = AccessTools.Method(typeof(StackEffects), "get");
+            object stack = AccessTools.Field(typeof(MapBox), "stack_effects")?.GetValue(World.world);
+            BaseEffectController c = null;
+            try { c = _stackGet?.Invoke(stack, new object[] { id }) as BaseEffectController; } catch { }
+            g = IsGameplay(c);
+            _gameplayById[id] = g;
+            return g;
+        }
+
+        private static void EffectSpawnPrefix(string __0, out Dice.Snapshot __state)
+        {
+            __state = default;
+            if (!LockstepClock.InTick || IsGameplay(__0)) return;
+            __state = Dice.Isolate();
+            _depth++;
+        }
+
+        private static void EffectUpdatePrefix(BaseEffectController __instance, out Dice.Snapshot __state)
+        {
+            __state = default;
+            if (!LockstepClock.InTick || IsGameplay(__instance)) return;
+            __state = Dice.Isolate();
+            _depth++;
+        }
+
+        /// <summary>World-changing effects spawn even for a player zoomed out to the minimap.</summary>
+        private static bool EffectCheckPrefix(string pID, ref BaseEffect __result)
+        {
+            if (!LockstepClock.InTick || !IsGameplay(pID)) return true;
+            EffectAsset a = AssetManager.effects_library.get(pID);
+            if (a == null) { __result = null; return false; }
+            if (a.cooldown_interval > 0.0 && a.checkIsUnderCooldown()) { __result = null; return false; }
+            object stack = AccessTools.Field(typeof(MapBox), "stack_effects")?.GetValue(World.world);
+            var c = _stackGet?.Invoke(stack, new object[] { pID }) as BaseEffectController;
+            __result = c?.spawnNew();
+            return false;
+        }
+
+        /// <summary>
+        /// Tile flashes are read by lava; a flash asked for by visual-only code (picking its tile
+        /// with the scratch dice) must not land in the shared world.
+        /// </summary>
+        private static bool FlashPrefix() => _depth == 0 || !LockstepClock.InTick;
 
         private static void ZoneVisiblePrefix(WorldTile __instance, out bool __state)
         {

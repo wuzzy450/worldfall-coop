@@ -21,7 +21,7 @@ namespace Coopfall.Lockstep
         private readonly int _slot, _ticks, _runs, _seed;
         private readonly bool _quit;
         private long _dumpTick = -1, _dumpTo = -1;
-        private bool _dumpAll, _dumpBuildings;
+        private bool _dumpAll, _dumpBuildings, _dumpTiles;
         private readonly HashSet<long> _dumpIds = new HashSet<long>();
         /// <summary>Per run, per dumped tick.</summary>
         private readonly List<List<Dictionary<string, string>>> _dumps = new List<List<Dictionary<string, string>>>();
@@ -53,6 +53,7 @@ namespace Coopfall.Lockstep
                 else if (s == "-coopfall-determinism-seed" && i + 1 < a.Length) int.TryParse(a[i + 1], out seed);
                 else if (s == "-coopfall-determinism-quit") quit = true;
                 else if (s == "-coopfall-determinism-trace" && i + 1 < a.Length) _traceExtra = a[i + 1];
+                else if (s == "-coopfall-determinism-stack" && i + 2 < a.Length) { int.TryParse(a[i + 1], out SectionTrace.StackTile); int.TryParse(a[i + 2], out SectionTrace.StackTile2); }
                 else if (s == "-coopfall-determinism-tiles" && i + 1 < a.Length) int.TryParse(a[i + 1], out StateHash.TileEvery);
             }
             if (slot < 0) return null;
@@ -68,6 +69,7 @@ namespace Coopfall.Lockstep
                     if (range.Length > 1) long.TryParse(range[1], out p._dumpTo);
                     if (a[i + 2] == "all") p._dumpAll = true;
                     else if (a[i + 2] == "buildings") p._dumpBuildings = true;
+                    else if (a[i + 2] == "tiles") p._dumpTiles = true;
                     else foreach (string id in a[i + 2].Split(',')) if (long.TryParse(id, out long v)) { p._dumpIds.Add(v); SectionTrace.Watch.Add(v); }
                 }
             return p;
@@ -155,6 +157,13 @@ namespace Coopfall.Lockstep
         private Dictionary<string, string> DumpFields()
         {
             var d = new Dictionary<string, string>();
+            if (_dumpTiles)
+            {
+                var flash = HarmonyLib.AccessTools.Field(typeof(WorldTile), "flash_state");
+                foreach (WorldTile t in (WorldTile[])HarmonyLib.AccessTools.Field(typeof(MapBox), "tiles_list").GetValue(World.world))
+                    d["tile " + t.tile_id] = t.Type?.id + "/" + t.main_type?.id + " hp " + t.health + " burned " + t.burned_stages + " fire " + World.world.tile_manager.fires[t.tile_id]
+                        + " flash " + flash.GetValue(t) + " changed " + t.timestamp_type_changed.ToString("R") + " frozen " + t.data.frozen;
+            }
             if (_dumpBuildings)
                 foreach (Building b in World.world.buildings)
                     if (b != null)

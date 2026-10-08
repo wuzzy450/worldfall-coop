@@ -22,6 +22,9 @@ namespace Coopfall.Lockstep
         private static readonly List<Actor> _watched = new List<Actor>();
 
         private static FieldInfo _rand;
+        private static int _betweenLogged, _stackLogged;
+        /// <summary>Log the call stack when a traced method touches these tiles.</summary>
+        public static int StackTile = -1, StackTile2 = -1;
         private static readonly AccessTools.FieldRef<Actor, float> _timerAction = AccessTools.FieldRefAccess<Actor, float>("timer_action");
         private static bool _installed;
 
@@ -89,10 +92,20 @@ namespace Coopfall.Lockstep
             if (!Enabled || !LockstepClock.Active || LockstepClock.Tick >= MaxTick) return;
             string arg = LockstepClock.InTick ? "" : "BETWEEN TICKS ";
             if (__instance is BaseSimObject self) arg = "[" + self.getID() + "]";
+            if (!LockstepClock.InTick && _betweenLogged < 10)
+            {
+                _betweenLogged++;
+                Log.Info("lockstep trace: " + __originalMethod.DeclaringType.Name + "." + __originalMethod.Name + " called between ticks (after tick " + LockstepClock.Tick + ") from: " + Environment.StackTrace);
+            }
             if (__args != null && __args.Length > 0)
             {
                 object a = __args[0];
-                if (a is WorldTile wt) arg += "(tile " + wt.tile_id + ")";
+                if (a is WorldTile wt)
+                {
+                    arg += "(tile " + wt.tile_id + ")";
+                    if ((wt.tile_id == StackTile || wt.tile_id == StackTile2) && _stackLogged++ < 6)
+                        Log.Info("lockstep trace: " + __originalMethod.Name + " on tile " + wt.tile_id + " at tick " + (LockstepClock.Tick + 1) + " from: " + Environment.StackTrace);
+                }
                 else if (a is BaseSimObject so) arg += "(" + so.GetType().Name + " " + so.getID() + ")";
             }
             Current.Add(new Entry { tick = LockstepClock.Tick + 1, section = arg.StartsWith("BETWEEN") ? arg + __originalMethod.DeclaringType.Name + "." + __originalMethod.Name : __originalMethod.DeclaringType.Name + "." + __originalMethod.Name + arg, state = State() });
