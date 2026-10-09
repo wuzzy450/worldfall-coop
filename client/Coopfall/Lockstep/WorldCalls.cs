@@ -261,6 +261,28 @@ namespace Coopfall.Lockstep
             return sb.ToString();
         }
 
+        /// <summary>Types written as one value (world objects by ID): StateJson uses these.</summary>
+        public static bool IsWorldLeaf(Type t) =>
+            t == typeof(bool) || t == typeof(int) || t == typeof(long) || t == typeof(float) || t == typeof(double) || t == typeof(string)
+            || t == typeof(Vector2) || t == typeof(Vector3) || t == typeof(WorldTile) || t == typeof(TileZone) || t == typeof(List<Actor>)
+            || typeof(Actor).IsAssignableFrom(t) || typeof(Building).IsAssignableFrom(t) || typeof(Item).IsAssignableFrom(t)
+            || (typeof(Asset).IsAssignableFrom(t) && Library(t) != null) || (!t.IsValueType && Manager(t) != null);
+
+        /// <summary>One value as relayed calls write it (null: can't be written).</summary>
+        public static string Leaf(object v)
+        {
+            var sb = new StringBuilder();
+            try { return Value(sb, v) ? sb.ToString(1, sb.Length - 1) : null; }
+            catch { return null; }
+        }
+
+        /// <summary>False: the value is gone (a creature that died, ...).</summary>
+        public static bool ReadLeaf(string s, Type want, out object v)
+        {
+            try { return Read(s, want, out v); }
+            catch { v = null; return false; }
+        }
+
         private static bool Value(StringBuilder sb, object v)
         {
             sb.Append('|');

@@ -109,10 +109,16 @@ namespace Coopfall
                         if (victim != null) wf.GetType("FirstPerson.Law", false)?.GetMethod("OnHit", Any)?.Invoke(null, new object[] { victim });
                     }
                 }
-                if ((_lsCampStep == 4 && t > 230f) || (_lsCampStep == 5 && t > 260f))
+                if ((_lsCampStep == 4 && t > 200f) || (_lsCampStep == 6 && t > 215f))
                 {
                     _lsCampStep++;
                     Log.Info("TEST lockstep: campaign state at " + (int)t + " s: " + Lockstep.PlayerScope.Describe());
+                }
+                if (_lsCampStep == 5 && t > 202f)
+                {
+                    // a resync must not lose anyone's campaign (the 215 s line has to match the 200 s one)
+                    _lsCampStep = 6;
+                    if (_s.IsHost) { Log.Info("TEST lockstep: campaign: forcing a resync"); _s.Lockstep.StartEpoch("test carry"); }
                 }
             }
             catch (Exception e) { Log.Error("TEST lockstep: campaign: " + (e.InnerException ?? e)); _lsCampStep = 99; }

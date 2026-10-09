@@ -135,6 +135,12 @@ namespace Coopfall.Lockstep
             var wle = new JObject { ["e"] = _epoch, ["seed"] = _seed, ["sha"] = _sha, ["mods"] = ModFingerprint(), ["reason"] = reason };
             JObject wfs = WorldfallSettings.Capture();
             if (wfs != null) wle["wfs"] = wfs;
+            // every player's Worldfall campaign (armies, flags, bounties, ...) goes on into the new epoch;
+            // the host rebuilds it from the same JSON the guests get
+            JObject wps = _epoch > 1 && LockstepControl.Running ? PlayerScope.Save() : null;
+            if (wps != null && wps.ToString(Newtonsoft.Json.Formatting.None).Length > 512 * 1024) { Log.Warn("lockstep: Worldfall state too big to carry; players start fresh"); wps = null; }
+            if (wps != null) wle["wps"] = wps;
+            PlayerScope.Carry(wps == null ? null : JObject.Parse(wps.ToString(Newtonsoft.Json.Formatting.None)));
             Send("wle", wle);
             _s.UploadSnapshotData(data, "lockstep");
             BeginEpochLoad(data);
@@ -152,6 +158,8 @@ namespace Coopfall.Lockstep
         {
             _loaded = false;
             LockstepControl.Running = false;
+            _myKeyFor = _s.MyId;
+            MyPlayer = PlayerKey(_s.MyId);
             _ready.Clear();
             _playerTick.Clear();
             _myHashes.Clear();
@@ -220,6 +228,7 @@ namespace Coopfall.Lockstep
         {
             if (_epoch == 0 && !LockstepClock.Active) return;
             Log.Info("lockstep: stopped (" + why + ")");
+            PlayerScope.Carry(null);
             _epoch = 0;
             _loaded = false;
             LockstepControl.Running = false;
@@ -235,6 +244,8 @@ namespace Coopfall.Lockstep
 
         // ============================================================== frame
 
+        private const float GuestLoadTimeout = 45f;
+        private float _loadAskedAt;
         private long _watchGrant = -1;
         private float _watchSince;
 
@@ -260,6 +271,13 @@ namespace Coopfall.Lockstep
             {
                 // a guest whose host doesn't run lockstep simply plays on live sync
                 if (Active) KeepSpeedUp();
+                // an epoch that never finishes loading (a lost download, a load that broke): fetch it again
+                if (_epoch > 0 && !_loaded && !_s.Downloading && Time.unscaledTime - _loadAskedAt > GuestLoadTimeout)
+                {
+                    Log.Warn("lockstep: epoch " + _epoch + " still not loaded after " + (int)GuestLoadTimeout + " s; asking for its save again");
+                    _loadAskedAt = Time.unscaledTime;
+                    RequestEpochSave();
+                }
                 return;
             }
             if (!Wanted || !_s.InWorld || !WorldBoxApi.WorldReady) return;
@@ -591,6 +609,8 @@ namespace Coopfall.Lockstep
                     Epochs++;
                     Log.Info("lockstep: host started epoch " + e + " (" + (string)p["reason"] + ")");
                     WorldfallSettings.Apply(p["wfs"] as JObject);
+                    PlayerScope.Carry(p["wps"] as JObject);
+                    _loadAskedAt = Time.unscaledTime;
                     BeginEpochLoad(null);
                     // a new arrival gets this before the save itself; everyone else fetches the save
                     if (!_s.Downloading) RequestEpochSave();

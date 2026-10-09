@@ -40,7 +40,19 @@ namespace Coopfall
                 try { if (File.Exists(shared)) File.Copy(shared, mine, true); else if (File.Exists(mine)) File.Delete(mine); }
                 catch (Exception e) { Log.Warn("profile db: copy failed, starting empty: " + e.Message); try { File.Delete(mine); } catch { } }
                 _path.SetValue(null, mine);
-                if (open) db.DBManager.openDB();
+                if (open)
+                {
+                    // the copy can catch the other game mid-write ("database disk image is malformed"):
+                    // then start empty rather than leave the game without its database (a load hung on that)
+                    try { db.DBManager.openDB(); }
+                    catch (Exception e)
+                    {
+                        Log.Warn("profile db: copied database unreadable (" + e.Message + "), starting empty");
+                        try { db.DBManager.closeDB(); } catch { }
+                        try { File.Delete(mine); } catch { }
+                        db.DBManager.openDB();
+                    }
+                }
                 Log.Info("profile db: history database moved to " + mine);
             }
             catch (Exception e) { _failed = true; Log.Warn("profile db: " + e); }

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace Coopfall.Lockstep
@@ -688,6 +689,107 @@ namespace Coopfall.Lockstep
             if (_wmCurrent != null && Mod() != null) _wmCurrent.SetValue(null, _warMap.GetValue(Mod()));
             _postsPending = 0;
             _numbersPending.Clear();
+            ApplyCarried();
+        }
+
+        // ------------------------------------------------------------------ across epochs
+
+        /// <summary>Every player's state as the host's last tick left it (sent with the epoch).</summary>
+        private static JObject _carried;
+
+        /// <summary>
+        /// Host, as it saves the world for a new epoch: every player's campaign state (between
+        /// ticks: what the last tick left) as JSON, world objects by ID. Null: nothing to carry.
+        /// </summary>
+        public static JObject Save(bool quiet = false)
+        {
+            object mod = Mod();
+            if (_parts.Count == 0 || mod == null || _stack.Count > 0 || _live != 0) return null;
+            RestoreShared();
+            var all = new JObject();
+            int skipped = 0;
+            var players = new SortedDictionary<int, object[]>();
+            players[LockstepSession.MyPlayer] = Capture(mod);
+            foreach (KeyValuePair<int, object[]> kv in _store) if (kv.Key != 0 && kv.Value != null) players[kv.Key] = kv.Value;
+            foreach (KeyValuePair<int, object[]> kv in players)
+            {
+                var w = new StateJson(_mod);
+                var o = new JObject();
+                for (int i = 0; i < _parts.Count; i++)
+                {
+                    Part p = _parts[i];
+                    if (p.ui) continue;
+                    try { o[PartKey(p)] = w.Write(kv.Value[i]); }
+                    catch (Exception e) { if (_failed.Add("save " + p.f.Name)) Log.Warn("lockstep: can't carry " + PartKey(p) + " to the next epoch: " + e.Message); }
+                }
+                skipped += w.Skipped;
+                all[kv.Key.ToString(System.Globalization.CultureInfo.InvariantCulture)] = o;
+            }
+            if (!quiet) Log.Info("lockstep: carrying " + players.Count + " players' Worldfall state to the next epoch (" + all.ToString(Newtonsoft.Json.Formatting.None).Length / 1024 + " KB, " + skipped + " values left out)");
+            return all;
+        }
+
+        /// <summary>The state to start the next epoch from (null: fresh). Kept for reloads of the same epoch.</summary>
+        public static void Carry(JObject all) => _carried = all;
+
+        private static string PartKey(Part p) => p.f.DeclaringType.Name + "." + p.f.Name;
+
+        private static void ApplyCarried()
+        {
+            object mod = Mod();
+            if (_carried == null || mod == null) return;
+            var fresh = Capture(mod);
+            var keys = new SortedSet<int>();
+            foreach (KeyValuePair<string, JToken> kv in _carried)
+                if (int.TryParse(kv.Key, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int k)) keys.Add(k);
+            int n = 0;
+            foreach (int player in keys)
+            {
+                var o = _carried[player.ToString(System.Globalization.CultureInfo.InvariantCulture)] as JObject;
+                if (o == null) continue;
+                var r = new StateJson(_mod);
+                var s = new object[_parts.Count];
+                for (int i = 0; i < _parts.Count; i++)
+                {
+                    Part p = _parts[i];
+                    s[i] = p.fresh ? null : p.content ? Clone(fresh[i]) : fresh[i];
+                    if (!p.ui && r.Read(o[PartKey(p)], p.f.FieldType, out object v)) s[i] = v;
+                    if (p.fresh && s[i] == null) s[i] = Fresh(p.f.FieldType);
+                }
+                if (player == LockstepSession.MyPlayer) Apply(mod, s);
+                else _store[player] = s;
+                _seen.Add(player);
+                RenumberPosts(s);
+                n++;
+            }
+            if (_wmCurrent != null) _wmCurrent.SetValue(null, _warMap.GetValue(mod));
+            // the rebuilt state written again must be what was carried (else something didn't round-trip)
+            string want = _carried.ToString(Newtonsoft.Json.Formatting.None).Replace("{\"$skip\":1}", "null"), got = (Save(true)?.ToString(Newtonsoft.Json.Formatting.None) ?? "").Replace("{\"$skip\":1}", "null");
+            Log.Info("lockstep: Worldfall state of " + n + " players carried into this epoch (" + want.Length / 1024 + " KB, " + (want == got ? "verified" : "DIFFERS after rebuild: " + FirstDiff(want, got)) + ")");
+        }
+
+        private static string FirstDiff(string a, string b)
+        {
+            int i = 0;
+            while (i < a.Length && i < b.Length && a[i] == b[i]) i++;
+            int from = Math.Max(0, i - 80);
+            return "at " + i + ": carried ..." + a.Substring(from, Math.Min(160, a.Length - from)) + " / rebuilt ..." + b.Substring(from, Math.Min(160, b.Length - from));
+        }
+
+        /// <summary>Quick orders are found by serial (FlagId): number a rebuilt war map's posts again, in order.</summary>
+        private static void RenumberPosts(object[] s)
+        {
+            if (_posts == null || _warMap == null) return;
+            int idx = _parts.FindIndex(p => p.f == _warMap);
+            object map = idx < 0 ? null : s[idx];
+            if (map == null) return;
+            Serial c = _postsMade.GetOrCreateValue(map);
+            c.n = 0;
+            foreach (object f in (IList)_posts.GetValue(map))
+            {
+                _serialOf.Remove(f);
+                _serialOf.Add(f, new Serial { n = ++c.n });
+            }
         }
 
         // ------------------------------------------------------------------ patches

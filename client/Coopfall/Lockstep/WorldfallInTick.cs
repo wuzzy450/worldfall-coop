@@ -40,6 +40,7 @@ namespace Coopfall.Lockstep
             if (_guards != null) { n += SwapClock(h, guards); Remember(guards, "_timer", "_round", "LastRallied", "Kings", "Stale", "Candidates"); }
             if (_creatures != null) { n += SwapClock(h, abilities); Remember(abilities, "PendingRush", "_npcTimer", "NpcReadyAt", "CreatureUses", "CreatureUsed"); }
             InstallPlayerAbility(h, wf, abilities);
+            HideCollidersInTicks(wf);
             InstallBodyClear(h, wf);
             try { PlayerScope.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall per player not available: " + e); }
@@ -182,6 +183,37 @@ namespace Coopfall.Lockstep
             try { ok = (bool)effect.DynamicInvoke(use); }
             catch (Exception e) { Log.Error("lockstep: X ability failed: " + (e.InnerException ?? e).Message); }
             if (!ok) _refund.Invoke(null, new object[] { self, ab });
+        }
+
+        private static IList _near;
+        private static readonly List<object> _nearHeld = new List<object>();
+
+        /// <summary>
+        /// Worldfall's solid shapes near you (Colliders.Near) are built while drawing this PC's view,
+        /// so they differ between PCs. Abilities (Charge's run), boarding and pushes read them; in a
+        /// tick that list is empty on every PC (only the world's tiles stop a creature there).
+        /// </summary>
+        private static void HideCollidersInTicks(Assembly wf)
+        {
+            Type colliders = wf.GetType("FirstPerson.Colliders", false);
+            _near = colliders == null ? null : AccessTools.Field(colliders, "Near")?.GetValue(null) as IList;
+            if (_near == null) { Log.Warn("lockstep: Worldfall's Colliders.Near not found: abilities and boats near buildings may differ between PCs"); return; }
+            LockstepClock.BeforeTick += t =>
+            {
+                if (_nearHeld.Count > 0 || _near.Count == 0) return;
+                foreach (object c in _near) _nearHeld.Add(c);
+                _near.Clear();
+            };
+            LockstepClock.AfterTick += t => PutCollidersBack();
+        }
+
+        /// <summary>After ticks (also called when a frame's ticks stop early): the drawn view's shapes again.</summary>
+        public static void PutCollidersBack()
+        {
+            if (_near == null || _nearHeld.Count == 0) return;
+            _near.Clear();
+            foreach (object c in _nearHeld) _near.Add(c);
+            _nearHeld.Clear();
         }
 
         public static void Reset()

@@ -816,7 +816,7 @@ namespace Coopfall.Lockstep
                     AfterTick?.Invoke(Tick);
                 }
             }
-            finally { LockstepControl.TickEnd(); Config.time_scale_asset = speed; if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
+            finally { LockstepControl.TickEnd(); WorldfallInTick.PutCollidersBack(); Config.time_scale_asset = speed; if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
         }
 
         private static List<object> _batchLists;
