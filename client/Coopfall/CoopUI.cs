@@ -444,7 +444,7 @@ namespace Coopfall
             if (live != _cfg.liveSync) { _cfg.liveSync = live; _cfg.Save(); CoopMod.Instance?.Sync.Reset(); }
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            bool ls = Tog(_cfg.lockstep, " Lockstep (experimental: every game simulates, only powers travel; same mods needed, no possessing)", _small);
+            bool ls = Tog(_cfg.lockstep, " Lockstep (experimental: every game simulates, only powers travel; same mods needed)", _small);
             if (ls != _cfg.lockstep) { _cfg.lockstep = ls; _cfg.Save(); }
             GUILayout.EndHorizontal();
             if (_cfg.lockstep && _s.Lockstep != null && _s.InWorld)

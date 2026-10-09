@@ -13,7 +13,7 @@ namespace Coopfall.Lockstep
     /// </summary>
     public static class LockstepInput
     {
-        public enum Kind { Power = 1, War = 2 }
+        public enum Kind { Power = 1, War = 2, Possess = 3, Release = 4, Control = 5 }
 
         public struct Input
         {
@@ -22,9 +22,9 @@ namespace Coopfall.Lockstep
             /// <summary>Order among one player's inputs for the same tick.</summary>
             public int seq;
             public Kind kind;
-            /// <summary>Power id (Power), war type id (War).</summary>
+            /// <summary>Power id (Power), war type id (War), encoded controls (Possess, Control).</summary>
             public string id;
-            /// <summary>Tile (Power), attacker and defender kingdom IDs (War).</summary>
+            /// <summary>Tile (Power), attacker and defender kingdom IDs (War), creature ID (Possess, Release, Control).</summary>
             public long a, b;
             public string brush;
 
@@ -101,6 +101,9 @@ namespace Coopfall.Lockstep
             {
                 case Kind.Power: ApplyPower(i); break;
                 case Kind.War: ApplyWar(i); break;
+                case Kind.Possess: LockstepControl.ApplyPossess(i); break;
+                case Kind.Release: LockstepControl.ApplyRelease(i); break;
+                case Kind.Control: LockstepControl.ApplyControl(i); break;
                 default: Log.Error("lockstep: unknown input " + i); break;
             }
         }

@@ -16,13 +16,14 @@ namespace Coopfall.Lockstep
         public ulong cool;       // decision cooldowns
         public int task;         // AI job + task + step
         public int path;         // current path, target tile, moving
+        public int gear;         // equipped item IDs
 
         public ulong Hash()
         {
             ulong h = StateHash.Mix((ulong)id);
             h = StateHash.Mix(h ^ (uint)px); h = StateHash.Mix(h ^ (uint)py);
             h = StateHash.Mix(h ^ (uint)hp); h = StateHash.Mix(h ^ (uint)tile);
-            h = StateHash.Mix(h ^ (uint)asset); h = StateHash.Mix(h ^ (uint)timer); h = StateHash.Mix(h ^ cool); h = StateHash.Mix(h ^ (uint)task); h = StateHash.Mix(h ^ (uint)path);
+            h = StateHash.Mix(h ^ (uint)asset); h = StateHash.Mix(h ^ (uint)timer); h = StateHash.Mix(h ^ cool); h = StateHash.Mix(h ^ (uint)task); h = StateHash.Mix(h ^ (uint)path); h = StateHash.Mix(h ^ (uint)gear);
             return h;
         }
 
@@ -37,6 +38,7 @@ namespace Coopfall.Lockstep
             if (cool != o.cool) s.Add("decision cooldowns");
             if (task != o.task) s.Add("AI task");
             if (path != o.path) s.Add("path/target");
+            if (gear != o.gear) s.Add("equipment");
             return string.Join(", ", s);
         }
 
@@ -119,6 +121,7 @@ namespace Coopfall.Lockstep
                 cool = Cooldowns(a),
                 task = Task(a),
                 path = Path(a),
+                gear = Gear(a),
             };
         }
 
@@ -129,6 +132,20 @@ namespace Coopfall.Lockstep
             int h = Str(ai.job?.id);
             h = h * 31 + Str((_aiTask?.GetValue(ai) as Asset)?.id);
             h = h * 31 + (int)(_aiTaskIndex?.GetValue(ai) ?? 0);
+            return h;
+        }
+
+        private static readonly bool NoItemHash = Array.Exists(Environment.GetCommandLineArgs(), x => x == "-coopfall-lockstep-noitemhash");
+
+        public static int Gear(Actor a)
+        {
+            int h = 0;
+            if (a.equipment == null) return 0;
+            foreach (ActorEquipmentSlot sl in a.equipment)
+            {
+                Item it = sl?.getItem();
+                h = h * 31 + (it == null ? 0 : (int)it.getID() + 1);
+            }
             return h;
         }
 
@@ -179,6 +196,16 @@ namespace Coopfall.Lockstep
             ulong m = Mix((ulong)BitConverter.DoubleToInt64Bits(_mapStats(w).world_time));
             m = Mix(m ^ (ulong)w.kingdoms.Count);
             m = Mix(m ^ (ulong)w.cities.Count);
+            // items: who holds them decides what a new skeleton picks up
+            ulong items = 0;
+            if (!NoItemHash) foreach (Item it in w.items)
+            {
+                if (it == null) continue;
+                ulong ih = Mix((ulong)it.getID());
+                ih = Mix(ih ^ (it.hasActor() ? 1UL : 0UL) ^ (it.hasCity() ? 2UL : 0UL) ^ (it.isDestroyable() ? 4UL : 0UL));
+                items += ih;
+            }
+            m = Mix(m ^ items);
             t.meta = m;
 
             // Randy's generator state after the tick: catches a different number of dice rolls

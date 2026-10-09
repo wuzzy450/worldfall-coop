@@ -110,7 +110,29 @@ namespace Coopfall.Lockstep
             MethodInfo rendered = AccessTools.Method(typeof(Actor), "isRendered");   // hatching eggs spawn a gameplay effect
             if (rendered != null) h.Patch(rendered, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(RenderedPrefix)));
             else Log.Error("lockstep: Actor.isRendered not found: hatching may follow the camera");
+            // a new skeleton takes the first ownerless item in the item list, whose order can differ
+            // between PCs: in a tick, take the one with the lowest id
+            MethodInfo spawnWeapons = AccessTools.Method(typeof(Actor), "generateDefaultSpawnWeapons");
+            if (Array.Exists(Environment.GetCommandLineArgs(), x => x == "-coopfall-lockstep-noweaponfix")) Log.Warn("lockstep: skeleton weapon fix off (test switch)");
+            else if (spawnWeapons != null) h.Patch(spawnWeapons, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(SpawnWeaponsPrefix)));
+            else Log.Error("lockstep: Actor.generateDefaultSpawnWeapons not found: skeletons may pick different weapons");
             Log.Info("lockstep: " + n + " visual methods keep their dice to themselves");
+        }
+
+        private static int _weaponLog;
+
+        private static bool SpawnWeaponsPrefix(Actor __instance, ref bool pUseOwnerless)
+        {
+            if (!LockstepClock.InTick || !pUseOwnerless) return true;
+            pUseOwnerless = false;
+            if (!__instance.canUseItems()) return true;
+            Item best = null;
+            foreach (Item item in World.world.items)
+                if (item != null && !item.isDestroyable() && !item.hasCity() && !item.hasActor() && (best == null || item.getID() < best.getID())) best = item;
+            if (_weaponLog++ < 200) Log.Info("lockstep: t" + LockstepClock.Tick + " creature " + __instance.getID() + " (" + __instance.asset?.id + ") takes " + (best == null ? "its default weapon" : "item " + best.getID() + " " + best.getAsset()?.id));
+            if (best == null) return true;   // falls through to the default weapon
+            __instance.equipment.setItem(best, __instance);
+            return false;
         }
 
         /// <summary>How deep we are in visual-only code (inside a tick).</summary>
@@ -135,6 +157,11 @@ namespace Coopfall.Lockstep
             "AntimatterBombEffect", "Boulder", "Cloud", "EffectInfinityCoin", "Meteorite", "NapalmFlash",
             "NukeFlash", "Santa", "SpawnEffect", "Spores", "TornadoEffect",
         };
+        /// <summary>
+        /// Plain effects whose animation creates something at a frame (setCallback): the necromancer's
+        /// skeleton is made by fx_create_skeleton's frame 19, weapon dice and all.
+        /// </summary>
+        private static readonly HashSet<string> GameplayEffectIds = new HashSet<string> { "fx_create_skeleton" };
         private static readonly Dictionary<string, bool> _gameplayById = new Dictionary<string, bool>();
         private static readonly Dictionary<BaseEffectController, bool> _gameplayByCtrl = new Dictionary<BaseEffectController, bool>();
         private static MethodInfo _stackGet;
@@ -143,6 +170,7 @@ namespace Coopfall.Lockstep
         {
             if (c == null) return false;
             if (_gameplayByCtrl.TryGetValue(c, out bool g)) return g;
+            g = c.asset != null && GameplayEffectIds.Contains(c.asset.id);
             BaseEffect fx = c.prefab == null ? null : c.prefab.GetComponent<BaseEffect>();
             for (Type t = fx?.GetType(); t != null && !g; t = t.BaseType) g = GameplayEffectTypes.Contains(t.Name);
             _gameplayByCtrl[c] = g;
@@ -153,6 +181,7 @@ namespace Coopfall.Lockstep
         {
             if (id == null) return false;
             if (_gameplayById.TryGetValue(id, out bool g)) return g;
+            if (GameplayEffectIds.Contains(id)) return _gameplayById[id] = true;
             if (_stackGet == null) _stackGet = AccessTools.Method(typeof(StackEffects), "get");
             object stack = AccessTools.Field(typeof(MapBox), "stack_effects")?.GetValue(World.world);
             BaseEffectController c = null;

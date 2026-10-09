@@ -26,6 +26,8 @@ namespace Coopfall
         private static FieldInfo _fiConvClosed, _fiViewEnabled, _fiWidth, _fiHeight;
 
         public static bool Present { get { Lookup(); return _type != null; } }
+        /// <summary>Worldfall's assembly (null without Worldfall).</summary>
+        public static System.Reflection.Assembly Assembly => Present ? _type.Assembly : null;
 
         private static void Lookup()
         {

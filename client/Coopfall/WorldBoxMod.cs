@@ -99,7 +99,6 @@ namespace Coopfall
                     Prof.Run("tiles", Tiles.Tick);
                     Prof.Run("weather", Weather.Tick);
                 }
-                else NoPossessing();
                 if (Test != null) Prof.Run("test", Test.Tick);
                 if (Probe != null) Prof.Run("determinism", Probe.Tick);
                 Prof.Run("diag", Diag.Tick);
@@ -120,19 +119,6 @@ namespace Coopfall
                 ConsoleOnError();
             }
             catch (Exception e) { Log.Error("Update: " + e); }
-        }
-
-        /// <summary>
-        /// Possessed creatures follow one player's keys every frame, which lockstep doesn't carry yet:
-        /// let go while it runs.
-        /// </summary>
-        private void NoPossessing()
-        {
-            bool possessing = false;
-            try { possessing = ControllableUnit.isControllingUnit(); } catch { }
-            if (!possessing) return;
-            try { ControllableUnit.clear(false); } catch { }
-            UI.ShowToast("Lockstep is on: taking over creatures isn't available yet");
         }
 
         private bool _consoleMuted, _consoleWas;
@@ -157,7 +143,13 @@ namespace Coopfall
             if (!Config.game_loaded) return;
             try
             {
-                if (Session.Lockstep.Active || Session.Lockstep.Starting) { Prof.Run("diag-late", Diag.LateTick); return; }
+                if (Session.Lockstep.Active || Session.Lockstep.Starting)
+                {
+                    // possession: this player's controls become lockstep inputs
+                    Lockstep.LockstepControl.Sample(Session.Lockstep);
+                    Prof.Run("diag-late", Diag.LateTick);
+                    return;
+                }
                 Prof.Run("avatars-captureactions", Avatars.CaptureActions);
                 Prof.Run("avatars-late", Avatars.LateTick);
                 Prof.Run("sync-late", Sync.LateTick);

@@ -96,6 +96,16 @@ namespace Coopfall.Lockstep
                 _gameStatsData = AccessTools.FieldRefAccess<GameStats, GameStatsData>("data");
                 _staminaStamp = AccessTools.FieldRefAccess<Actor, double>("_last_stamina_reduce_timestamp");
                 h.Patch(main, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(MainPrefix)));
+                FastLoad.Install(h);
+                // parallel batch jobs run with whatever step the batch last saw (0 when new)
+                try
+                {
+                    MethodInfo par = AccessTools.DeclaredMethod(typeof(BatchActors).BaseType, "updateJobsParallel");
+                    if (par != null) h.Patch(par, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(ParallelJobsPrefix)));
+                    else Log.Error("lockstep: Batch.updateJobsParallel not found: new creature batches may skip a tick");
+                }
+                catch (Exception e) { Log.Error("lockstep: couldn't hook parallel batch jobs (new batches may skip a tick): " + e.Message); }
+                LockstepControl.Install(h);
                 h.Patch(delayed, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(DelayedPrefix)));
                 if (cooldowns != null) h.Patch(cooldowns, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(CooldownsPrefix)));
                 else Log.Error("lockstep: Actor.setupRandomDecisionCooldowns not found: loading will roll different timers on each PC");
@@ -720,7 +730,9 @@ namespace Coopfall.Lockstep
                     // target while drawing, i.e. for creatures on screen: copy it for all
                     foreach (Actor a in map.units) if (a != null) { a.updatePos(); a.updateRotation(); }
                     EffectState.RestoreAnimations();
+                    LockstepControl.TickStart();
                     LockstepInput.ApplyFor(Tick);
+                    LockstepControl.AfterInputs();
                     _updateSimulation(map, StepElapsed);
                     FrameUpdates.AfterSimulation();
                     _inTick = true;
@@ -729,17 +741,19 @@ namespace Coopfall.Lockstep
                     _updateFinish(map);
                     FlushContainers(map);
                     EffectState.SaveAnimations(map);
+                    LockstepControl.TickEnd();
                     _inTickAll = false;
                     Tick++;
                     n++;
                     AfterTick?.Invoke(Tick);
                 }
             }
-            finally { Config.time_scale_asset = speed; if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
+            finally { LockstepControl.TickEnd(); Config.time_scale_asset = speed; if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
         }
 
         private static List<object> _batchLists;
         private static FieldInfo _actorBatchRnd, _buildingBatchRnd;
+        private static readonly Dictionary<Type, FieldInfo> _batchElapsed = new Dictionary<Type, FieldInfo>();
 
         /// <summary>
         /// Creature and building batches each keep their own random generator (shaking, a few
@@ -768,7 +782,18 @@ namespace Coopfall.Lockstep
                     FieldInfo f = b is BatchActors ? _actorBatchRnd : b is BatchBuildings ? _buildingBatchRnd : null;
                     uint s = (uint)TickSeed(Seed ^ 0x0BA7C4, Tick * 4099 + k++);
                     f?.SetValue(b, new Unity.Mathematics.Random(s == 0 ? 1u : s));
+                    // parallel jobs (creature timers, ...) read the batch's step but nothing sets it
+                    // for them: a new or recycled batch would run them with 0 or an old step
+                    if (!_batchElapsed.TryGetValue(b.GetType(), out FieldInfo el)) _batchElapsed[b.GetType()] = el = AccessTools.Field(b.GetType(), "_elapsed");
+                    el?.SetValue(b, StepElapsed);
                 }
+        }
+
+        private static void ParallelJobsPrefix(object __instance)
+        {
+            if (!_inTickAll || __instance == null) return;
+            if (!_batchElapsed.TryGetValue(__instance.GetType(), out FieldInfo el)) _batchElapsed[__instance.GetType()] = el = AccessTools.Field(__instance.GetType(), "_elapsed");
+            el?.SetValue(__instance, StepElapsed);
         }
 
         public static int TickSeed(int seed, long tick)

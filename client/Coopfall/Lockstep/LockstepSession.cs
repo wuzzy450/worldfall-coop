@@ -30,17 +30,20 @@ namespace Coopfall.Lockstep
     /// </summary>
     public class LockstepSession
     {
-        public const int HashEvery = 50;
+        /// <summary>Ticks between checksum checks (a drift is caught within 0.2 s at x1).</summary>
+        public const int HashEvery = 10;
         /// <summary>Ticks per second at x1 (LockstepClock.DefaultStep is 0.02 s).</summary>
         public const float TicksPerSecond = 1f / LockstepClock.DefaultStep;
         /// <summary>Seconds of simulation the host may be ahead of the slowest player.</summary>
         public const float MaxLeadSeconds = 1f;
-        private const float ReadyTimeout = 90f, MinSecondsBetweenEpochs = 20f;
+        private const float ReadyTimeout = 90f, MinSecondsBetweenEpochs = 5f;
 
         private readonly CoopSession _s;
 
         /// <summary>Lockstep is running in this world (inputs, grants and checks are live).</summary>
         public bool Active => _epoch > 0 && _loaded && LockstepClock.Active;
+        /// <summary>Inputs sent now reach the world (not while the host waits for everyone to load).</summary>
+        public bool CanSubmit => Active && !(_s.IsHost && _waitingReady);
         /// <summary>Waiting for (or loading) the save of a new epoch.</summary>
         public bool Starting => _epoch > 0 && !_loaded;
         public int Epoch => _epoch;
@@ -75,6 +78,7 @@ namespace Coopfall.Lockstep
             _s = s;
             LockstepClock.AfterTick += OnTick;
             LockstepInput.Applied += i => { if (TraceTicks) Log.Info("lockstep: applied " + i + " (epoch " + _epoch + ")"); };
+            if (TraceTicks) LockstepClock.BeforeTick += t => { if (Active) UnitRing.BeforeTick(t); };
         }
 
         private bool Wanted => _s.Cfg.lockstep && _s.Online && _s.RoomId != null;
@@ -118,6 +122,7 @@ namespace Coopfall.Lockstep
         private void BeginEpochLoad(byte[] data)
         {
             _loaded = false;
+            LockstepControl.Running = false;
             _ready.Clear();
             _playerTick.Clear();
             _myHashes.Clear();
@@ -125,10 +130,14 @@ namespace Coopfall.Lockstep
             _sentGrant = -1;
             _grantAcc = 0;
             _lastHashTick = -1;
+            UnitRing.Clear();
+            _owners.Clear();
+            LockstepControl.Reset();
             // freeze the world and seed loading before anything is loaded
             if (!LockstepClock.Install()) { Log.Error("lockstep: can't hook the game loop"); _epoch = 0; return; }
             LockstepClock.Start(_seed);
             Randy.resetSeed(_seed);
+            FastLoad.On = true;
             if (data != null) _s.LoadOwnSnapshot(data);
         }
 
@@ -144,8 +153,10 @@ namespace Coopfall.Lockstep
                 RequestEpochSave();
                 return;
             }
+            FastLoad.On = false;
             LockstepClock.NormalizeAfterLoad();
             _loaded = true;
+            LockstepControl.Running = true;
             // the world right after loading: a guest whose load went wrong is told to load again
             string h0 = StateHash.Compute(0, false).Line();
             Log.Info("lockstep: epoch " + _epoch + " ready at tick 0");
@@ -172,10 +183,14 @@ namespace Coopfall.Lockstep
             Log.Info("lockstep: stopped (" + why + ")");
             _epoch = 0;
             _loaded = false;
+            LockstepControl.Running = false;
             _epochData = null;
             _waitingReady = false;
+            FastLoad.On = false;
             LockstepClock.Stop();
             LockstepInput.Clear();
+            LockstepControl.Reset();
+            _owners.Clear();
         }
 
         // ============================================================== frame
@@ -202,6 +217,7 @@ namespace Coopfall.Lockstep
                 _sentGrant = 0;
             }
             Grant();
+            ReleaseLeavers();
             CompareHashes();
         }
 
@@ -216,6 +232,17 @@ namespace Coopfall.Lockstep
         {
             if (Config.paused || Config.time_scale_asset == null) return 0f;
             return TicksPerSecond * Config.time_scale_asset.multiplier * Math.Max(1, Config.time_scale_asset.ticks);
+        }
+
+        /// <summary>Host: creatures of players who left are let go.</summary>
+        private void ReleaseLeavers()
+        {
+            if (_owners.Count == 0) return;
+            var here = new HashSet<string>();
+            foreach (PlayerInfo p in RoomPlayers()) here.Add(p.id);
+            here.Add(_s.MyId);
+            foreach (KeyValuePair<long, string> kv in new List<KeyValuePair<long, string>>(_owners))
+                if (!here.Contains(kv.Value)) { _owners.Remove(kv.Key); Assign(kv.Value, LockstepInput.Kind.Release, null, kv.Key, -1, null); }
         }
 
         /// <summary>Host: let the world run on, at the room's speed, not too far ahead of anyone.</summary>
@@ -268,6 +295,45 @@ namespace Coopfall.Lockstep
             return true;
         }
 
+        /// <summary>Host: who controls which creature (one player per creature).</summary>
+        private readonly Dictionary<long, string> _owners = new Dictionary<long, string>();
+
+        /// <summary>This player takes over, lets go of, or steers a creature (LockstepControl).</summary>
+        public void SubmitControl(LockstepInput.Kind kind, long unit, string ctl)
+        {
+            if (!Active) return;
+            if (_s.IsHost) { if (!_waitingReady) AcceptControl(_s.MyId, kind, unit, ctl); }
+            else Send("wlr", new JObject { ["e"] = _epoch, ["from"] = _s.MyId, ["k"] = (int)kind, ["id"] = ctl, ["a"] = unit, ["b"] = -1, ["s"] = _localSeq++ });
+        }
+
+        private void AcceptControl(string from, LockstepInput.Kind kind, long unit, string ctl)
+        {
+            _owners.TryGetValue(unit, out string owner);
+            switch (kind)
+            {
+                case LockstepInput.Kind.Possess:
+                    if (owner != null && owner != from)
+                    {
+                        if (from == _s.MyId) CoopMod.Instance?.UI.ShowToast("Someone else controls that creature");
+                        return;
+                    }
+                    // one creature per player
+                    foreach (KeyValuePair<long, string> kv in new List<KeyValuePair<long, string>>(_owners))
+                        if (kv.Value == from && kv.Key != unit) { _owners.Remove(kv.Key); Assign(from, LockstepInput.Kind.Release, null, kv.Key, -1, null); }
+                    _owners[unit] = from;
+                    break;
+                case LockstepInput.Kind.Release:
+                    if (owner != from) return;
+                    _owners.Remove(unit);
+                    break;
+                case LockstepInput.Kind.Control:
+                    if (owner != from) return;
+                    break;
+                default: return;
+            }
+            Assign(from, kind, ctl, unit, -1, null);
+        }
+
         /// <summary>Host: the next tick nobody may have run yet, sent to everyone before its grant.</summary>
         private void Assign(string from, LockstepInput.Kind kind, string id, long a, long b, string brush)
         {
@@ -304,7 +370,8 @@ namespace Coopfall.Lockstep
                 _trace.WriteLine("# epoch " + _epoch + " seed " + _seed + " " + (_s.IsHost ? "host" : "guest"));
                 _trace.WriteLine(TickHash.Header);
             }
-            TickHash th = StateHash.Compute(tick, tick % HashEvery == 0);
+            UnitRing.AfterTick(tick);
+            TickHash th = StateHash.Compute(tick, tick % 50 == 0);
             _trace.WriteLine(th.Line());
             if (th.detail != null)
             {
@@ -330,6 +397,7 @@ namespace Coopfall.Lockstep
                 SectionTrace.Install();
                 SectionTrace.Enabled = true;
                 SectionTrace.WatchSpecial = true;
+                SectionTrace.WatchAllUntil = 400;   // early drifts: every creature's behaviour steps
                 SectionTrace.MaxTick = long.MaxValue;
             }
             if (_sectionsEpoch != _epoch || _sections == null)
@@ -395,7 +463,7 @@ namespace Coopfall.Lockstep
                 long tick = (long?)p["tick"] ?? -1;
                 if (!_myHashes.TryGetValue(tick, out string mine))
                 {
-                    if (tick < LockstepClock.Tick - HashEvery * 4) _theirHashes.RemoveAt(i);   // too old to compare
+                    if (tick < LockstepClock.Tick - 200) _theirHashes.RemoveAt(i);   // too old to compare
                     continue;
                 }
                 _theirHashes.RemoveAt(i);
@@ -405,6 +473,7 @@ namespace Coopfall.Lockstep
                 LastDesync = (_s.Player(who)?.name ?? who) + " at tick " + tick;
                 Log.Warn("lockstep: " + LastDesync + " differs: " + Describe(mine, theirs));
                 _s.AddChat(null, "Lockstep: " + (_s.Player(who)?.name ?? "a player") + "'s world drifted at tick " + tick + " - re-syncing everyone", true);
+                if (TraceTicks) UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
                 StartEpoch("desync");
                 return;
             }
@@ -412,7 +481,7 @@ namespace Coopfall.Lockstep
             if (_myHashes.Count > 64)
             {
                 var old = new List<long>();
-                foreach (long t in _myHashes.Keys) if (t < LockstepClock.Tick - HashEvery * 40) old.Add(t);
+                foreach (long t in _myHashes.Keys) if (t < LockstepClock.Tick - 400) old.Add(t);
                 foreach (long t in old) _myHashes.Remove(t);
             }
         }
@@ -447,6 +516,7 @@ namespace Coopfall.Lockstep
                         return;
                     }
                     if (e == _epoch && (string)p["sha"] == _sha) return;   // the relay repeats it ahead of the save it serves
+                    if (TraceTicks && (string)p["reason"] == "desync" && _epoch > 0) UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
                     _epoch = e;
                     _seed = (int?)p["seed"] ?? 1;
                     _sha = (string)p["sha"];
@@ -469,8 +539,16 @@ namespace Coopfall.Lockstep
                     string from = (string)p["from"];
                     string id = (string)p["id"];
                     PlayerInfo pl = _s.Player(from);
-                    if (pl == null || pl.room != _s.RoomId || pl.spectator || !_s.PowerAllowedFor(pl, id)) return;
-                    Assign(from, (LockstepInput.Kind)((int?)p["k"] ?? 1), id, (long?)p["a"] ?? -1, (long?)p["b"] ?? -1, (string)p["brush"]);
+                    if (pl == null || pl.room != _s.RoomId || pl.spectator) return;
+                    var kind = (LockstepInput.Kind)((int?)p["k"] ?? 1);
+                    if (kind == LockstepInput.Kind.Possess || kind == LockstepInput.Kind.Release || kind == LockstepInput.Kind.Control)
+                    {
+                        if (kind == LockstepInput.Kind.Possess && !_s.PowerAllowedFor(pl, "possess")) return;
+                        AcceptControl(from, kind, (long?)p["a"] ?? -1, id);
+                        return;
+                    }
+                    if (!_s.PowerAllowedFor(pl, id)) return;
+                    Assign(from, kind, id, (long?)p["a"] ?? -1, (long?)p["b"] ?? -1, (string)p["brush"]);
                     break;
                 case "wlready":
                     if (e != _epoch || !_s.IsHost) return;
@@ -487,6 +565,8 @@ namespace Coopfall.Lockstep
                     if (e != _epoch || _s.IsHost || (string)p["to"] != _s.MyId) return;
                     Log.Warn("lockstep: the host says this world didn't load right; loading it again");
                     _loaded = false;
+                    FastLoad.On = true;
+                    LockstepControl.Running = false;
                     LockstepClock.Start(_seed);
                     Randy.resetSeed(_seed);
                     RequestEpochSave();
@@ -517,6 +597,8 @@ namespace Coopfall.Lockstep
             if (_modPrint == null) _modPrint = CoopSession.Sha256(System.Text.Encoding.UTF8.GetBytes(ModScan.ToJson().ToString(Newtonsoft.Json.Formatting.None)));
             return _modPrint;
         }
+
+        private static string TracePath(string name) => System.IO.Path.Combine(Log.Dir ?? Application.persistentDataPath, name);
 
         private static string Short(string sha) => sha == null ? "?" : sha.Substring(0, Math.Min(8, sha.Length));
 
