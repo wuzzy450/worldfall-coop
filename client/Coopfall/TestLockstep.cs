@@ -21,7 +21,8 @@ namespace Coopfall
         private float _lsPossessAt = -1f, _lsSteerAt;
         private Vector2 _lsMove;
         private bool _lsAttack, _lsJump;
-        private int _lsPossessions;
+        private int _lsPossessions, _lsNudged;
+        private static readonly bool ForceDesync = System.Array.Exists(System.Environment.GetCommandLineArgs(), x => x == "-coopfall-test-desync");
         private static readonly bool NoPossess = System.Array.Exists(System.Environment.GetCommandLineArgs(), x => x == "-coopfall-test-nopossess");
 
         /// <summary>
@@ -77,6 +78,12 @@ namespace Coopfall
                 return;
             }
             LockstepPossessTick(now);
+            // "-coopfall-test-desync": the guest nudges one creature after 60 s and again after 150 s (times resyncs)
+            if (ForceDesync && !_s.IsHost && (_lsNudged == 0 && now - _lsStart > 60f || _lsNudged == 1 && now - _lsStart > 150f))
+            {
+                var all = World.world.units.getSimpleList();
+                if (all.Count > 0) { all[0].current_position += new Vector2(0.25f, 0f); _lsNudged++; Log.Info("TEST lockstep: nudged creature #" + all[0].getID() + " to force a resync"); }
+            }
             if (now < _lsNextPower) return;
             _lsNextPower = now + 3f;
             // a creature's tile picked with the local dice (each player clicks somewhere different)

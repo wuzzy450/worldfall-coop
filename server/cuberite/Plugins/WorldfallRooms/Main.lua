@@ -884,6 +884,23 @@ function Handlers.resync(a_Client, a_Msg)
 		SendSnapshot(a_Client, room)
 		return
 	end
+	if (type(a_Msg.sha) == "string") and room.pending and (room.pending.sha == a_Msg.sha) then
+		-- the epoch's save is still coming in: stream it (chunks so far now, the rest as they arrive)
+		local p = room.pending
+		local rid = JStr(room.id)
+		if room.wle and (room.wleSha == p.sha) then
+			SendLine(a_Client, room.wle)
+		end
+		SendLine(a_Client, '{"t":"snap-begin","room":' .. rid .. ',"size":' .. string.format("%d", p.size) ..
+			',"sha":' .. JStr(p.sha) .. ',"total":' .. p.total .. '}')
+		for i, chunk in ipairs(p.chunks) do
+			SendLine(a_Client, '{"t":"snap-chunk","room":' .. rid .. ',"seq":' .. (i - 1) .. ',"data":"' .. chunk .. '"}')
+		end
+		p.followers = p.followers or {}
+		p.followers[a_Client] = true
+		a_Client.WaitingSnap = false
+		return
+	end
 	if (type(a_Msg.sha) == "string") and room.pending then
 		return  -- served when the upload ends
 	end
@@ -934,6 +951,12 @@ Handlers["snap-chunk"] = function(a_Client, a_Msg)
 		return SendError(a_Client, "snapshot exceeds the size limit")
 	end
 	table.insert(p.chunks, a_Msg.data)
+	if p.followers then
+		local line = '{"t":"snap-chunk","room":' .. JStr(room.id) .. ',"seq":' .. (#p.chunks - 1) .. ',"data":"' .. a_Msg.data .. '"}'
+		for c in pairs(p.followers) do
+			SendLine(c, line)
+		end
+	end
 end
 
 Handlers["snap-end"] = function(a_Client, a_Msg)
@@ -944,6 +967,17 @@ Handlers["snap-end"] = function(a_Client, a_Msg)
 	end
 	room.pending = nil
 	room.snapRequestedAt = nil
+	-- guests who got this save streamed: finish it (an incomplete one makes them ask again)
+	if p.followers then
+		for c in pairs(p.followers) do
+			if #p.chunks == p.total then
+				SendLine(c, '{"t":"snap-end","room":' .. JStr(room.id) .. '}')
+				c.Synced = true
+			else
+				c.WaitingSnap = true
+			end
+		end
+	end
 	if #p.chunks ~= p.total then
 		return SendError(a_Client, "snapshot incomplete (" .. #p.chunks .. "/" .. p.total .. " chunks)")
 	end
