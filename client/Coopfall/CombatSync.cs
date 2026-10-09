@@ -56,6 +56,7 @@ namespace Coopfall
         {
             Actor victim = self as Actor;
             if (_applying || !_s.Online || !_s.InWorld || victim == null) return;
+            if (_s.Lockstep.Active || _s.Lockstep.Starting) return;   // every game simulates the hit itself
             Actor mine = Mine();
             bool fromMe = mine != null && by != null && (by as Actor) == mine && victim != mine;
             WorldBoxMod mod = CoopMod.Instance;

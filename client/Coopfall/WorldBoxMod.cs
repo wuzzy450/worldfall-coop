@@ -147,6 +147,7 @@ namespace Coopfall
                 {
                     // possession: this player's controls become lockstep inputs
                     Lockstep.LockstepControl.Sample(Session.Lockstep);
+                    if (Session.Lockstep.Active) Prof.Run("avatars-lockstep", Avatars.LockstepTick);
                     Prof.Run("diag-late", Diag.LateTick);
                     return;
                 }

@@ -13,7 +13,7 @@ namespace Coopfall.Lockstep
     /// </summary>
     public static class LockstepInput
     {
-        public enum Kind { Power = 1, War = 2, Possess = 3, Release = 4, Control = 5 }
+        public enum Kind { Power = 1, War = 2, Possess = 3, Release = 4, Control = 5, Call = 6 }
 
         public struct Input
         {
@@ -104,6 +104,7 @@ namespace Coopfall.Lockstep
                 case Kind.Possess: LockstepControl.ApplyPossess(i); break;
                 case Kind.Release: LockstepControl.ApplyRelease(i); break;
                 case Kind.Control: LockstepControl.ApplyControl(i); break;
+                case Kind.Call: WorldCalls.Apply(i.id); break;
                 default: Log.Error("lockstep: unknown input " + i); break;
             }
         }

@@ -104,7 +104,7 @@ namespace Coopfall
             Actor me = Mine();
             foreach (AvatarManager.Remote r in CoopMod.Instance.Avatars.Remotes.Values)
             {
-                if (!r.on || r.actor == null || !r.actor.isAlive()) continue;
+                if (!r.on || r.ls || r.actor == null || !r.actor.isAlive()) continue;   // lockstep labels have no position of their own
                 string issue = null;
                 float off = Vector2.Distance(r.actor.current_position, r.target);
                 if (off > 2.5f) issue = r.name + "'s creature is " + off.ToString("0.0", CultureInfo.InvariantCulture) + " tiles from where they are";

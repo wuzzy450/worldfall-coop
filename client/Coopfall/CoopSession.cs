@@ -388,7 +388,7 @@ namespace Coopfall
                     BeginLoad(data);
                 }
             }
-            else if (Phase == Phase.Loading && WorldBoxApi.WorldReady && now - _phaseSince > 0.5f)
+            else if (Phase == Phase.Loading && WorldBoxApi.WorldReady && now - _phaseSince > (Coopfall.Lockstep.FastLoad.On && Coopfall.Lockstep.FastLoad.Bigger ? 0.05f : 0.5f))
                 OnWorldLoaded();
 
             if (Phase == Phase.Leaving && now - _leavingSince > 60f)
@@ -498,7 +498,8 @@ namespace Coopfall
         private void HandlePacket(JObject p)
         {
             string t = (string)p["t"];
-            if ((Lockstep.Active || Lockstep.Starting) && LiveOnly.Contains(t)) return;
+            // lockstep: only the labels of possessed creatures travel as "avatar" (ls)
+            if ((Lockstep.Active || Lockstep.Starting) && LiveOnly.Contains(t) && !(t == "avatar" && ((bool?)p["ls"] ?? false))) return;
             switch (t)
             {
                 case "welcome": OnWelcome(p); break;

@@ -148,6 +148,7 @@ namespace Coopfall.Lockstep
                 FrameClock.Install(h);
                 FrameUpdates.Install(h);
                 EffectState.Install(h);
+                SharedWeather.Install(h);
                 InputPointer.Install(h);
                 Installed = true;
                 Log.Info("lockstep: installed (Harmony " + typeof(Harmony).Assembly.GetName().Version + ")");
@@ -232,6 +233,7 @@ namespace Coopfall.Lockstep
             ResetSpecialAnimations();
             RebuildBatches(World.world.units);
             RebuildBatches(World.world.buildings);
+            Log.Info("lockstep: job lists after load: " + ListSignature());
             ResetJobSkips(World.world.units);
             ResetJobSkips(World.world.buildings);
             ResetStatics();
@@ -462,11 +464,65 @@ namespace Coopfall.Lockstep
             var objs = new List<T>();
             foreach (T o in manager) if (o != null) objs.Add(o);
             objs.Sort((x, y) => x.getID().CompareTo(y.getID()));
+            // which job lists each object is in (tile effects, building components, plant spread,
+            // ...): those are only joined when an object is made or changes state, so dropping
+            // the batches would silently stop those jobs for everything that existed before
+            FieldInfo lists = AccessTools.Field(typeof(Batch<T>), "containers");
+            FieldInfo batchOf = AccessTools.Field(typeof(T), "batch");
+            var member = new Dictionary<T, List<int>>();
+            if (lists != null && batchOf != null)
+                foreach (T o in objs)
+                {
+                    if (!(batchOf.GetValue(o) is Batch<T> b) || !(lists.GetValue(b) is List<ObjectContainer<T>> cs)) continue;
+                    var idx = new List<int>();
+                    for (int i = 0; i < cs.Count; i++) if (cs[i].Contains(o)) idx.Add(i);
+                    member[o] = idx;
+                }
+            else Log.Error("lockstep: batch job lists not found: rebuilt batches may skip jobs");
             clear.Invoke(jobs, null);
             AccessTools.Method(active.GetType(), "Clear").Invoke(active, null);
             AccessTools.Method(free.GetType(), "Clear").Invoke(free, null);
             var args = new object[1];
-            foreach (T o in objs) { args[0] = o; add.Invoke(jobs, args); }
+            int rejoined = 0;
+            foreach (T o in objs)
+            {
+                args[0] = o;
+                add.Invoke(jobs, args);
+                if (!member.TryGetValue(o, out List<int> idx) || !(batchOf.GetValue(o) is Batch<T> b) || !(lists.GetValue(b) is List<ObjectContainer<T>> cs)) continue;
+                foreach (int i in idx) if (i < cs.Count && !cs[i].Contains(o)) { cs[i].Add(o); rejoined++; }
+            }
+            // apply the adds now, in ID order, so every PC's lists start out the same
+            foreach (object b in (System.Collections.IEnumerable)active)
+                if (lists?.GetValue(b) is List<ObjectContainer<T>> cs) foreach (ObjectContainer<T> c in cs) c.checkAddRemove();
+            Log.Info("lockstep: rebuilt " + typeof(T).Name + " batches, " + objs.Count + " objects, " + rejoined + " job-list entries kept");
+        }
+
+        /// <summary>Tests: every batch job list's members (count and IDs), to compare between PCs.</summary>
+        public static string ListSignature()
+        {
+            return ListSignature(World.world.units) + " | " + ListSignature(World.world.buildings);
+        }
+
+        private static string ListSignature<T>(System.Collections.Generic.IEnumerable<T> manager) where T : BaseSimObject
+        {
+            object jobs = AccessTools.Field(manager.GetType(), "_job_manager")?.GetValue(manager);
+            object active = jobs == null ? null : AccessTools.Field(jobs.GetType(), "_batches_active")?.GetValue(jobs);
+            FieldInfo lists = AccessTools.Field(typeof(Batch<T>), "containers");
+            if (active == null || lists == null) return "?";
+            var sb = new System.Text.StringBuilder(typeof(T).Name);
+            int bi = 0;
+            foreach (object b in (System.Collections.IEnumerable)active)
+            {
+                var cs = (List<ObjectContainer<T>>)lists.GetValue(b);
+                sb.Append(" b").Append(bi++).Append(':');
+                for (int i = 0; i < cs.Count; i++)
+                {
+                    ulong h = 0; int n = 0;
+                    foreach (T o in cs[i]) { h += StateHash.Mix((ulong)o.getID()); n++; }
+                    sb.Append(n).Append('/').Append((h & 0xffff).ToString("x")).Append(i < cs.Count - 1 ? "," : "");
+                }
+            }
+            return sb.ToString();
         }
 
         /// <summary>

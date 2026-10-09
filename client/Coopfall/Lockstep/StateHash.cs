@@ -125,7 +125,7 @@ namespace Coopfall.Lockstep
             };
         }
 
-        private static int Task(Actor a)
+        internal static int Task(Actor a)
         {
             AiSystemActor ai = _ai(a);
             if (ai == null) return 0;
@@ -149,7 +149,7 @@ namespace Coopfall.Lockstep
             return h;
         }
 
-        private static int Path(Actor a)
+        internal static int Path(Actor a)
         {
             int h = a.current_path_index;
             foreach (WorldTile t in a.current_path) h = h * 31 + t.tile_id;
@@ -158,7 +158,7 @@ namespace Coopfall.Lockstep
             return h * 2 + (a.is_moving ? 1 : 0);
         }
 
-        private static ulong Cooldowns(Actor a)
+        internal static ulong Cooldowns(Actor a)
         {
             double[] c = _cooldowns(a);
             if (c == null) return 0;

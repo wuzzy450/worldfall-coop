@@ -43,6 +43,7 @@ namespace Coopfall
             public float lastAvatar;
             public Actor actor;
             public bool standin;
+            public bool ls;       // lockstep: every PC simulates their creature; this only labels it
             public float nextStatus, nextResolve;
             public Vector2 velocity;
             public bool walking;
@@ -118,7 +119,7 @@ namespace Coopfall
         public bool IsPuppet(Actor a)
         {
             if (a == null) return false;
-            foreach (Remote r in Remotes.Values) if (r.on && r.actor == a) return true;
+            foreach (Remote r in Remotes.Values) if (r.on && !r.ls && r.actor == a) return true;   // lockstep labels aren't puppets
             return false;
         }
 
@@ -126,7 +127,7 @@ namespace Coopfall
         public Remote PuppetOwner(Actor a)
         {
             if (a == null) return null;
-            foreach (Remote r in Remotes.Values) if (r.on && r.actor == a) return r;
+            foreach (Remote r in Remotes.Values) if (r.on && !r.ls && r.actor == a) return r;
             return null;
         }
 
@@ -152,6 +153,11 @@ namespace Coopfall
             string color = (string)p["color"];
             if (color != null && color != r.color) { r.color = color; r.col = CoopConfig.ParseColor(color); }
 
+            if (t == "avatar" && ((bool?)p["ls"] ?? false))
+            {
+                OnLockstepAvatar(r, p);
+                return;
+            }
             if (t == "avatar")
             {
                 bool on = (bool?)p["on"] ?? false;
@@ -289,6 +295,7 @@ namespace Coopfall
             Actor a = r.actor;
             if (a != null && WorldfallBridge.Present) WorldfallBridge.RemoveFromRoom(a);
             r.actor = null;
+            if (r.ls) { r.ls = false; return; }   // the shared world's creature: nothing of ours to undo
             bool wasWalking = r.walking;
             r.walking = false;
             r.velocity = Vector2.zero;
@@ -462,6 +469,86 @@ namespace Coopfall
             return s;
         }
 
+        // ================================================================ lockstep
+
+        /// <summary>
+        /// Lockstep: their creature is simulated here like everywhere, from their controls. What
+        /// travels is only what labels it: which creature, where their view looks, and the house
+        /// and spot they stand in inside Worldfall's room view (name tags, room company).
+        /// </summary>
+        private void OnLockstepAvatar(Remote r, JObject p)
+        {
+            if (!_s.Lockstep.Active) return;
+            bool on = (bool?)p["on"] ?? false;
+            long aid = 0;
+            long.TryParse((string)p["aid"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out aid);
+            if (!on || aid != r.aid) { if (r.actor != null) Release(r); }
+            r.on = on;
+            r.ls = true;
+            r.hasCursor = false;
+            r.lastAvatar = Time.unscaledTime;
+            if (!on) return;
+            r.aid = aid;
+            r.yaw = p["yaw"] != null ? (float)p["yaw"] : float.NaN;
+            r.roomPos = p["rx"] != null ? new Vector2(F(p["rx"]), F(p["ry"])) : (Vector2?)null;
+            long.TryParse((string)p["bld"] ?? "0", NumberStyles.Integer, CultureInfo.InvariantCulture, out r.bld);
+        }
+
+        /// <summary>Lockstep, every frame: labels for the others' creatures, and mine for them.</summary>
+        public void LockstepTick()
+        {
+            if (!_s.InWorld || !WorldBoxApi.WorldReady) return;
+            float now = Time.unscaledTime;
+            SendLockstep(now);
+            Building myHouse = WorldfallBridge.Present ? WorldfallBridge.InsideHouse : null;
+            foreach (Remote r in Remotes.Values)
+            {
+                if (r.hasCursor) r.cursorShown = Vector2.Lerp(r.cursorShown, r.cursor, 1f - Mathf.Exp(-14f * Time.unscaledDeltaTime));
+                if (r.hasCursor && now - r.lastCursor > 10f) r.hasCursor = false;
+                if (!r.on) continue;
+                if (!r.ls || now - r.lastAvatar > 4f) { r.on = false; Release(r); continue; }
+                Actor a = World.world.units.get(r.aid);
+                if (a == null || !a.isAlive() || !Coopfall.Lockstep.LockstepControl.IsControlled(r.aid))
+                {
+                    if (r.actor != null) Release(r);
+                    r.ls = true;
+                    continue;
+                }
+                if (r.actor != a) { if (r.actor != null) Release(r); r.actor = a; r.ls = true; }
+                r.hp = a.getHealth();
+                r.mhp = a.getMaxHealth();
+                if (myHouse == null) continue;
+                // the same house as me in Worldfall's room view: stand where they stand in theirs
+                if (r.bld != 0 && myHouse.getID() == r.bld && r.roomPos.HasValue) WorldfallBridge.ShowInRoom(a, r.roomPos.Value, r.yaw);
+                else WorldfallBridge.RemoveFromRoom(a);
+            }
+        }
+
+        private bool _lsOn;
+
+        private void SendLockstep(float now)
+        {
+            if (!_s.Online) return;
+            Actor me = ControllableUnit.getControllableUnit();
+            bool on = me != null && me.isAlive();
+            if (on)
+            {
+                if (now < _nextSend) return;
+                _nextSend = now + 1f / Mathf.Clamp(_s.Cfg.avatarSendHz, 2f, 30f);
+                var msg = new JObject { ["ls"] = true, ["on"] = true, ["aid"] = me.getID().ToString(CultureInfo.InvariantCulture) };
+                float yaw = WorldfallBridge.FirstPerson ? WorldfallBridge.ViewYaw : float.NaN;
+                if (!float.IsNaN(yaw)) msg["yaw"] = Math.Round(yaw, 3);
+                Building house = WorldfallBridge.Present ? WorldfallBridge.InsideHouse : null;
+                if (house != null) msg["bld"] = house.getID().ToString(CultureInfo.InvariantCulture);
+                if (house != null && WorldfallBridge.RoomEye(out Vector2 eye)) { msg["rx"] = Math.Round(eye.x, 3); msg["ry"] = Math.Round(eye.y, 3); }
+                _s.Net.Send("avatar", msg);
+                _lsOn = true;
+                return;
+            }
+            if (_lsOn) { _lsOn = false; _s.Net.Send("avatar", new JObject { ["ls"] = true, ["on"] = false }); }
+            SendCursor(now);
+        }
+
         // ================================================================ outgoing
 
         /// <summary>Called from LateUpdate after the game processed possession input this frame.</summary>
@@ -534,6 +621,11 @@ namespace Coopfall
                 _mine = null;
             }
 
+            SendCursor(now);
+        }
+
+        private void SendCursor(float now)
+        {
             if (now >= _nextCursor && _s.Cfg.showCursors)
             {
                 _nextCursor = now + 0.1f;

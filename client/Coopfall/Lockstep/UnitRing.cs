@@ -96,16 +96,22 @@ namespace Coopfall.Lockstep
 
         private static ulong[] Values(Actor a)
         {
-            var v = new ulong[_actorFields.Length + _aiFields.Length + 1];
-            v[v.Length - 1] = (uint)StateHash.Gear(a);
+            var v = new ulong[_actorFields.Length + _aiFields.Length + 5];
+            int x = _actorFields.Length + _aiFields.Length;
+            v[x] = (uint)StateHash.Gear(a);
+            v[x + 1] = (uint)a.getHealth();
+            v[x + 2] = StateHash.Cooldowns(a);
+            v[x + 3] = (uint)StateHash.Path(a);
+            v[x + 4] = (uint)StateHash.Task(a);
             for (int i = 0; i < _actorFields.Length; i++) v[i] = Bits(_actorFields[i], a);
             object ai = _ai?.GetValue(a);
             if (ai != null) for (int i = 0; i < _aiFields.Length; i++) v[_actorFields.Length + i] = Bits(_aiFields[i], ai);
             return v;
         }
 
-        private static string Name(int i) => i < _actorFields.Length ? _actorFields[i].name : i - _actorFields.Length < _aiFields.Length ? _aiFields[i - _actorFields.Length].name : "equipment";
-        private static Fld Field(int i) => i < _actorFields.Length ? _actorFields[i] : i - _actorFields.Length < _aiFields.Length ? _aiFields[i - _actorFields.Length] : new Fld { name = "equipment", kind = KInt };
+        private static readonly string[] Extra = { "equipment", "health", "decision cooldowns (hash)", "path (hash)", "task (hash)" };
+        private static string Name(int i) => i < _actorFields.Length ? _actorFields[i].name : i - _actorFields.Length < _aiFields.Length ? _aiFields[i - _actorFields.Length].name : Extra[i - _actorFields.Length - _aiFields.Length];
+        private static Fld Field(int i) => i < _actorFields.Length ? _actorFields[i] : i - _actorFields.Length < _aiFields.Length ? _aiFields[i - _actorFields.Length] : new Fld { name = Name(i), kind = KLong };
 
         /// <summary>Right before a tick runs: what changed since the previous tick ended.</summary>
         public static void BeforeTick(long tick)

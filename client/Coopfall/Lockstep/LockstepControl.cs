@@ -32,6 +32,7 @@ namespace Coopfall.Lockstep
             public byte held;     // HeldLeft, HeldRight
             public ushort pulse;  // one tick: just pressed, actions, mouse up
             public uint[] wf;     // Worldfall's PossessionHooks values, in WfFields order
+            public long house;    // the building Worldfall's house/mine view has them inside (0: outside)
 
             public const byte HeldLeft = 1, HeldRight = 2;
             public const ushort JustLeft = 1, JustRight = 2, Jump = 4, Talk = 8, Dash = 16, Backstep = 32, Steal = 64, Swear = 128, MouseUp = 256;
@@ -44,12 +45,21 @@ namespace Coopfall.Lockstep
                 sb.Append(H(move.x)).Append(',').Append(H(move.y)).Append(',').Append(H(click.x)).Append(',').Append(H(click.y)).Append(',')
                   .Append(held.ToString("x")).Append(',').Append(pulse.ToString("x"));
                 if (wf != null) foreach (uint v in wf) sb.Append(',').Append(v.ToString("x"));
+                if (house != 0) sb.Append(';').Append(house.ToString("x"));
                 return sb.ToString();
             }
 
             public static Ctl Decode(string s)
             {
-                string[] p = (s ?? "").Split(',');
+                s = s ?? "";
+                long house = 0;
+                int semi = s.IndexOf(';');
+                if (semi >= 0)
+                {
+                    long.TryParse(s.Substring(semi + 1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out house);
+                    s = s.Substring(0, semi);
+                }
+                string[] p = s.Split(',');
                 if (p.Length < 6) return null;
                 var c = new Ctl
                 {
@@ -57,12 +67,13 @@ namespace Coopfall.Lockstep
                     click = new Vector2(F(p[2]), F(p[3])),
                     held = (byte)U(p[4]),
                     pulse = (ushort)U(p[5]),
+                    house = house,
                 };
                 if (p.Length > 6) { c.wf = new uint[p.Length - 6]; for (int i = 6; i < p.Length; i++) c.wf[i - 6] = U(p[i]); }
                 return c;
             }
 
-            public bool SameHeld(Ctl o) => o != null && move == o.move && click == o.click && held == o.held && SameWf(wf, o.wf);
+            public bool SameHeld(Ctl o) => o != null && move == o.move && click == o.click && held == o.held && house == o.house && SameWf(wf, o.wf);
 
             private static bool SameWf(uint[] a, uint[] b)
             {
@@ -84,7 +95,7 @@ namespace Coopfall.Lockstep
         public static bool IsControlled(long id) => _table.ContainsKey(id);
 
         /// <summary>A new epoch: nobody controls anything until they ask again.</summary>
-        public static void Reset() { _table.Clear(); _sentPossess = 0; _lastSent = null; _pulses = 0; }
+        public static void Reset() { _table.Clear(); _sentPossess = 0; _lastSent = null; _pulses = 0; _indoors.Clear(); _wantHouse = 0; }
 
         // ------------------------------------------------------------------ statics
 
@@ -186,7 +197,7 @@ namespace Coopfall.Lockstep
                 Gate(h, AccessTools.Method(typeof(Actor), "resetAttackTimeout"));
                 h.Patch(AccessTools.Method(cu, "clear"), prefix: new HarmonyMethod(typeof(LockstepControl), nameof(ClearPrefix)));
                 InstallWorldfall(h);
-                InstallCoreGate(h);
+                WorldCalls.Install(h);   // (was the core gate: those calls now travel as inputs)
                 _ready = true;
                 Log.Info("lockstep: possession controls ready" + (_wfFields != null ? " (with Worldfall, " + _wfFields.Length + " first-person values)" : ""));
             }
@@ -311,6 +322,18 @@ namespace Coopfall.Lockstep
             if (inFp != null) h.Patch(inFp, prefix: new HarmonyMethod(typeof(LockstepControl), nameof(InFirstPersonPrefix)));
             else Log.Warn("lockstep: Worldfall's InFirstPerson not found: first-person attacks may aim differently on each PC");
             _wfShake = combat == null ? null : AccessTools.Method(combat, "ShakeOffStuns");
+            // Worldfall's house and mine rooms put your creature inside the building every frame
+            // (and let it out when you leave): that is part of your controls, done in ticks
+            Type rooms = wf.GetType("FirstPerson.HouseInterior", false);
+            MethodInfo hold = rooms == null ? null : AccessTools.Method(rooms, "HoldIndoors");
+            MethodInfo letOut = rooms == null ? null : AccessTools.Method(rooms, "LetOut");
+            _wfShelter = rooms == null ? null : AccessTools.Field(rooms, "Shelter");
+            if (hold != null && letOut != null)
+            {
+                h.Patch(hold, prefix: new HarmonyMethod(typeof(LockstepControl), nameof(HoldIndoorsPrefix)));
+                h.Patch(letOut, prefix: new HarmonyMethod(typeof(LockstepControl), nameof(LetOutPrefix)));
+            }
+            else Log.Warn("lockstep: Worldfall's HouseInterior.HoldIndoors/LetOut not found: going inside houses may change one PC's world only");
             // per-frame world changes
             string[] gated =
             {
@@ -322,7 +345,7 @@ namespace Coopfall.Lockstep
                 // them out of your body
                 "Steering.Steer", "WorldBoxMod.KeepBodyClear",
                 // creatures winding up an attack in first person get their attack timer set
-                "WindUps.Update", "SwingState.KeepBodyClear", "Wind.Look", "StormRun.Board", "StormRun.Hold", "StormRun.March",
+                "Law.SendGuards", "Law.Update", "WindUps.Update", "SwingState.KeepBodyClear", "Wind.Look", "StormRun.Board", "StormRun.Hold", "StormRun.March",
             };
             foreach (string g in gated)
             {
@@ -392,6 +415,54 @@ namespace Coopfall.Lockstep
             return false;
         }
 
+        // ------------------------------------------------------------------ indoors (Worldfall's rooms)
+
+        private static FieldInfo _wfShelter;
+        private static long _wantHouse;
+        /// <summary>Controlled creature -> the building its controls keep it in (same on every PC).</summary>
+        private static readonly SortedDictionary<long, long> _indoors = new SortedDictionary<long, long>();
+
+        private static bool HoldIndoorsPrefix(Actor body, Building b)
+        {
+            if (!LockstepClock.Active || LockstepClock.InTick) return true;
+            bool shelter = _wfShelter == null || (bool)_wfShelter.GetValue(null);
+            if (shelter && body != null && b != null && body == _main()) _wantHouse = b.getID();
+            return false;
+        }
+
+        private static bool LetOutPrefix(Actor body, Building b)
+        {
+            if (!LockstepClock.Active || LockstepClock.InTick) return true;
+            if (body != null && body == _main() && (b == null || _wantHouse == b.getID())) _wantHouse = 0;
+            return false;
+        }
+
+        /// <summary>In a tick: what HoldIndoors/LetOut would do, from the controls.</summary>
+        private static void KeepIndoors(long id, Actor a, long house)
+        {
+            _indoors.TryGetValue(id, out long had);
+            if (house != 0)
+            {
+                Building b = World.world.buildings.get(house);
+                if (b == null || !b.isAlive()) return;
+                if (WorldBoxApi.InsideBuilding(a) != b)
+                {
+                    R.CallN(a, "stayInBuilding", 1, b);
+                    R.CallN(a, "stopMovement", 0);
+                    if (had != house) Log.Info("lockstep: #" + id + " went into building #" + house + " (tick " + LockstepClock.Tick + ")");
+                }
+                // in, not standing by the door: the body is where the house is (like villagers at
+                // home: out of reach of attacks, hidden, under the house's roof)
+                if ((a.current_position - b.current_position).sqrMagnitude > 0.0001f) WorldBoxApi.SetPosition(a, b.current_position);
+                _indoors[id] = house;
+            }
+            else if (had != 0)
+            {
+                _indoors.Remove(id);
+                if (WorldBoxApi.InsideBuilding(a)?.getID() == had) R.CallN(a, "exitBuilding", 0);
+            }
+        }
+
         // ------------------------------------------------------------------ in a tick
 
         private static Saved _real;
@@ -440,6 +511,7 @@ namespace Coopfall.Lockstep
                         R.Set(a, "next_step_position", R.Get(a, "next_step_position_possession"));
                     }
                     if (fp) _wfShake?.Invoke(null, new object[] { a });
+                    KeepIndoors(kv.Key, a, c.house);
                 }
                 catch (Exception e) { Log.Warn("lockstep: controls of #" + kv.Key + ": " + e.Message); }
                 finally { Leave(); }
@@ -456,7 +528,7 @@ namespace Coopfall.Lockstep
                 Actor a = World.world.units.get(id);
                 if (a == null || !a.isAlive() || (_tickUnits != null && !_tickUnits.Contains(a))) gone.Add(id);
             }
-            foreach (long id in gone) _table.Remove(id);
+            foreach (long id in gone) { _table.Remove(id); _indoors.Remove(id); }
             foreach (Ctl c in _table.Values) c.pulse = 0;
             while (_ctx.Count > 0) Restore(_ctx.Pop());
             Restore(_real);
@@ -564,8 +636,10 @@ namespace Coopfall.Lockstep
                 }
                 finally { Leave(); }
                 _tickUnits?.Remove(a);
+                if (_indoors.TryGetValue(i.a, out long had) && WorldBoxApi.InsideBuilding(a)?.getID() == had) R.CallN(a, "exitBuilding", 0);
             }
             _table.Remove(i.a);
+            _indoors.Remove(i.a);
         }
 
         internal static void ApplyControl(LockstepInput.Input i)
@@ -619,6 +693,7 @@ namespace Coopfall.Lockstep
                 _lastSent = null;
                 _pulses = 0;
                 _wfPulses = null;
+                _wantHouse = 0;
                 if (id != 0) { _lastSent = Current(); ls.SubmitControl(LockstepInput.Kind.Possess, id, _lastSent.Encode()); _lastSendAt = _possessSentAt = Time.unscaledTime; }
                 return;
             }
@@ -649,6 +724,7 @@ namespace Coopfall.Lockstep
             bool changed = !now.SameHeld(_lastSent) || _pulses != 0 || (_wfPulses != null && Array.Exists(_wfPulses, v => v != 0));
             if (!changed || Time.unscaledTime - _lastSendAt < 0.04f) return;
             now.pulse = _pulses;
+            if (now.house != 0) now.pulse = 0;   // no swings or jumps from inside a house
             if (_wfPulses != null) for (int i = 0; i < _wfPulses.Length; i++) if (WfPulse(i)) now.wf[i] = _wfPulses[i];
             ls.SubmitControl(LockstepInput.Kind.Control, id, now.Encode());
             _lastSent = now;
@@ -666,7 +742,10 @@ namespace Coopfall.Lockstep
                 move = _moveV(),
                 click = new Vector2(Mathf.Round(click.x * 16f) / 16f, Mathf.Round(click.y * 16f) / 16f),
                 held = (byte)((_aL() ? Ctl.HeldLeft : 0) | (_aR() ? Ctl.HeldRight : 0)),
+                house = _wantHouse,
             };
+            // walking around a room isn't walking around the world: the body stays inside
+            if (c.house != 0) { c.move = Vector2.zero; c.held = 0; }
             if (_wfFields != null)
             {
                 c.wf = new uint[_wfFields.Length];

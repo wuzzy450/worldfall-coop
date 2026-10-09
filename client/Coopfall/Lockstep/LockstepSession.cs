@@ -77,6 +77,7 @@ namespace Coopfall.Lockstep
         {
             _s = s;
             LockstepClock.AfterTick += OnTick;
+            WorldCalls.Submit = SubmitCall;
             LockstepInput.Applied += i => { if (TraceTicks) Log.Info("lockstep: applied " + i + " (epoch " + _epoch + ")"); };
             if (TraceTicks) LockstepClock.BeforeTick += t => { if (Active) UnitRing.BeforeTick(t); };
         }
@@ -106,7 +107,10 @@ namespace Coopfall.Lockstep
             _epochAt = Time.unscaledTime;
             Epochs++;
             Log.Info("lockstep: epoch " + _epoch + " (" + reason + "), seed " + _seed + ", " + (data.Length / 1024) + " KB");
-            Send("wle", new JObject { ["e"] = _epoch, ["seed"] = _seed, ["sha"] = _sha, ["mods"] = ModFingerprint(), ["reason"] = reason });
+            var wle = new JObject { ["e"] = _epoch, ["seed"] = _seed, ["sha"] = _sha, ["mods"] = ModFingerprint(), ["reason"] = reason };
+            JObject wfs = WorldfallSettings.Capture();
+            if (wfs != null) wle["wfs"] = wfs;
+            Send("wle", wle);
             _s.UploadSnapshotData(data, "lockstep");
             BeginEpochLoad(data);
         }
@@ -137,6 +141,7 @@ namespace Coopfall.Lockstep
             if (!LockstepClock.Install()) { Log.Error("lockstep: can't hook the game loop"); _epoch = 0; return; }
             LockstepClock.Start(_seed);
             Randy.resetSeed(_seed);
+            SharedWeather.Reset(_seed);
             FastLoad.On = true;
             if (data != null) _s.LoadOwnSnapshot(data);
         }
@@ -188,6 +193,7 @@ namespace Coopfall.Lockstep
             _waitingReady = false;
             FastLoad.On = false;
             LockstepClock.Stop();
+            WorldfallSettings.Restore();
             LockstepInput.Clear();
             LockstepControl.Reset();
             _owners.Clear();
@@ -292,6 +298,15 @@ namespace Coopfall.Lockstep
             if (_s.IsHost && _waitingReady) { CoopMod.Instance?.UI.ShowToast("Everyone is still loading the world"); return true; }
             if (_s.IsHost) Assign(_s.MyId, LockstepInput.Kind.Power, powerId, tile.x, tile.y, brush);
             else Send("wlr", new JObject { ["e"] = _epoch, ["from"] = _s.MyId, ["k"] = (int)LockstepInput.Kind.Power, ["id"] = powerId, ["a"] = tile.x, ["b"] = tile.y, ["brush"] = brush, ["s"] = _localSeq++ });
+            return true;
+        }
+
+        /// <summary>A game call Worldfall (or anything else) made outside a tick (WorldCalls).</summary>
+        private bool SubmitCall(string enc)
+        {
+            if (!Active) return false;
+            if (_s.IsHost) { if (_waitingReady) return false; Assign(_s.MyId, LockstepInput.Kind.Call, enc, -1, -1, null); }
+            else Send("wlr", new JObject { ["e"] = _epoch, ["from"] = _s.MyId, ["k"] = (int)LockstepInput.Kind.Call, ["id"] = enc, ["a"] = -1, ["b"] = -1, ["s"] = _localSeq++ });
             return true;
         }
 
@@ -446,6 +461,7 @@ namespace Coopfall.Lockstep
         private void OnTick(long tick)
         {
             if (TraceTicks && Active) TraceTick(tick);
+            if (TraceTicks && Active && tick % 100 == 0) Log.Info("lockstep: job lists at tick " + tick + ": " + LockstepClock.ListSignature());
             if (Active && DumpAt > 0 && (tick == 1 || (tick % DumpAt == 0 && tick <= 2000))) DumpMeta(tick);
             if (!Active || tick % HashEvery != 0 || tick == _lastHashTick) return;
             _lastHashTick = tick;
@@ -522,6 +538,7 @@ namespace Coopfall.Lockstep
                     _sha = (string)p["sha"];
                     Epochs++;
                     Log.Info("lockstep: host started epoch " + e + " (" + (string)p["reason"] + ")");
+                    WorldfallSettings.Apply(p["wfs"] as JObject);
                     BeginEpochLoad(null);
                     // a new arrival gets this before the save itself; everyone else fetches the save
                     if (!_s.Downloading) RequestEpochSave();
@@ -547,6 +564,7 @@ namespace Coopfall.Lockstep
                         AcceptControl(from, kind, (long?)p["a"] ?? -1, id);
                         return;
                     }
+                    if (kind == LockstepInput.Kind.Call) { if (id != null) Assign(from, kind, id, -1, -1, null); return; }
                     if (!_s.PowerAllowedFor(pl, id)) return;
                     Assign(from, kind, id, (long?)p["a"] ?? -1, (long?)p["b"] ?? -1, (string)p["brush"]);
                     break;
@@ -569,6 +587,7 @@ namespace Coopfall.Lockstep
                     LockstepControl.Running = false;
                     LockstepClock.Start(_seed);
                     Randy.resetSeed(_seed);
+                    SharedWeather.Reset(_seed);
                     RequestEpochSave();
                     break;
                 case "wlh":

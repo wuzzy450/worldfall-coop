@@ -68,6 +68,9 @@ namespace Coopfall
             catch (Exception e) { Log.Warn("Worldfall lookup: " + e.Message); }
         }
 
+        /// <summary>Worldfall's mod object (its settings live there), or null.</summary>
+        public static object Mod => Instance;
+
         private static object Instance
         {
             get
