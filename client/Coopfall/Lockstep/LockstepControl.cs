@@ -96,7 +96,33 @@ namespace Coopfall.Lockstep
         public static IEnumerable<long> ControlledIds() => _table.Keys;
 
         /// <summary>A new epoch: nobody controls anything until they ask again.</summary>
-        public static void Reset() { _table.Clear(); _sentPossess = 0; _lastSent = null; _pulses = 0; _indoors.Clear(); _wantHouse = 0; }
+        /// <summary>Who controls each creature in the table (LockstepSession.PlayerKey; same on every PC).</summary>
+        private static readonly Dictionary<long, int> _ownerOf = new Dictionary<long, int>();
+
+        /// <summary>The creature this player controls, or null.</summary>
+        public static Actor BodyOf(int player)
+        {
+            if (player == 0) return null;
+            foreach (KeyValuePair<long, int> kv in _ownerOf)
+                if (kv.Value == player) { Actor a = World.world.units.get(kv.Key); return a != null && a.isAlive() ? a : null; }
+            return null;
+        }
+
+        public static int OwnerOf(long id) => _ownerOf.TryGetValue(id, out int p) ? p : 0;
+
+        /// <summary>Players controlling something, in number order.</summary>
+        public static List<int> Players()
+        {
+            var l = new List<int>(new HashSet<int>(_ownerOf.Values));
+            l.Sort();
+            return l;
+        }
+
+        /// <summary>A controlled creature's controls in the statics (like a possession method in a tick).</summary>
+        public static void EnterBody(Actor a) => Enter(a);
+        public static void LeaveBody() => Leave();
+
+        public static void Reset() { _ownerOf.Clear(); _table.Clear(); _sentPossess = 0; _lastSent = null; _pulses = 0; _indoors.Clear(); _wantHouse = 0; }
 
         // ------------------------------------------------------------------ statics
 
@@ -344,7 +370,7 @@ namespace Coopfall.Lockstep
                 "Butchery.Cut",
                 // drawing first person moves the creatures around you: crowd steering, and pushing
                 // them out of your body
-                "Steering.Steer", "WorldBoxMod.KeepBodyClear",
+                "Steering.Steer",
                 // creatures winding up an attack in first person get their attack timer set
                 "Law.SendGuards", "Law.Update", "WindUps.Update", "SwingState.KeepBodyClear", "Wind.Look", "StormRun.Board", "StormRun.Hold", "StormRun.March",
             };
@@ -539,7 +565,7 @@ namespace Coopfall.Lockstep
                 Actor a = World.world.units.get(id);
                 if (a == null || !a.isAlive() || (_tickUnits != null && !_tickUnits.Contains(a))) gone.Add(id);
             }
-            foreach (long id in gone) { _table.Remove(id); _indoors.Remove(id); }
+            foreach (long id in gone) { _table.Remove(id); _ownerOf.Remove(id); _indoors.Remove(id); }
             foreach (Ctl c in _table.Values) c.pulse = 0;
             while (_ctx.Count > 0) Restore(_ctx.Pop());
             Restore(_real);
@@ -622,6 +648,7 @@ namespace Coopfall.Lockstep
             Actor a = World.world.units.get(i.a);
             if (a == null || !a.isAlive() || !a.canBePossessed() || _table.ContainsKey(i.a)) return;
             _table[i.a] = Ctl.Decode(i.id) ?? new Ctl();
+            if (i.player != 0) _ownerOf[i.a] = i.player;
             if (_tickUnits != null) _tickUnits.Add(a);
             Enter(a);
             try { _addStatus?.Invoke(null, new object[] { a }); }
@@ -650,6 +677,7 @@ namespace Coopfall.Lockstep
                 if (_indoors.TryGetValue(i.a, out long had) && WorldBoxApi.InsideBuilding(a)?.getID() == had) R.CallN(a, "exitBuilding", 0);
             }
             _table.Remove(i.a);
+            _ownerOf.Remove(i.a);
             _indoors.Remove(i.a);
         }
 

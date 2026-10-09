@@ -80,11 +80,29 @@ namespace Coopfall.Lockstep
         private int _localSeq;
         private long _lastHashTick = -1;
 
+        /// <summary>
+        /// A player's number in inputs: a hash of their room ID, so every PC can tell whose input
+        /// it is (and which one is its own) without a shared list. Never 0 (0 = nobody).
+        /// </summary>
+        public static int PlayerKey(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return 0;
+            uint h = 2166136261;
+            foreach (char c in id) { h ^= c; h *= 16777619; }
+            int k = (int)(h & 0x7fffffff);
+            return k == 0 ? 1 : k;
+        }
+
+        /// <summary>This PC's player number (PlayerKey of its room ID).</summary>
+        public static int MyPlayer;
+        private string _myKeyFor;
+
         public LockstepSession(CoopSession s)
         {
             _s = s;
             LockstepClock.AfterTick += OnTick;
             WorldCalls.Submit = SubmitCall;
+            LockstepClock.BeforeTick += t => { if (_myKeyFor != _s.MyId) { _myKeyFor = _s.MyId; MyPlayer = PlayerKey(_s.MyId); } };
             LockstepInput.Applied += i => { if (TraceTicks) Log.Info("lockstep: applied " + i + " (epoch " + _epoch + ")"); };
             if (TraceTicks) LockstepClock.BeforeTick += t => { if (Active) UnitRing.BeforeTick(t); };
         }
@@ -389,7 +407,7 @@ namespace Coopfall.Lockstep
             var i = new LockstepInput.Input
             {
                 tick = Math.Max(LockstepClock.Tick + 1, _sentGrant + 1),
-                player = 0,
+                player = PlayerKey(from),
                 seq = _seq++,
                 kind = kind,
                 id = id,

@@ -40,6 +40,9 @@ namespace Coopfall.Lockstep
             if (_guards != null) { n += SwapClock(h, guards); Remember(guards, "_timer", "_round", "LastRallied", "Kings", "Stale", "Candidates"); }
             if (_creatures != null) { n += SwapClock(h, abilities); Remember(abilities, "PendingRush", "_npcTimer", "NpcReadyAt", "CreatureUses", "CreatureUsed"); }
             InstallPlayerAbility(h, wf, abilities);
+            InstallBodyClear(h, wf);
+            try { PlayerScope.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall per player not available: " + e); }
             Log.Info("lockstep: Worldfall's " + (_guards != null ? "guards " : "") + (_creatures != null ? "creature abilities " : "") + "run in ticks (" + n + " methods on the tick clock)");
         }
 
@@ -79,6 +82,60 @@ namespace Coopfall.Lockstep
             // paid for in the tick, on every PC
             h.Patch(_pay, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(OnlyInTicks)));
             h.Patch(_refund, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(OnlyInTicks)));
+        }
+
+        private static FieldInfo _eyeOffset;
+        private static readonly AccessTools.FieldRef<Actor, bool> _dirtyTile = AccessTools.FieldRefAccess<Actor, bool>("dirty_current_tile");
+        private static float _nudgeAt;
+
+        /// <summary>
+        /// Worldfall pushes your own body out of walls and furniture every frame, using the
+        /// colliders it built around your camera (other PCs don't have them). In lockstep that push
+        /// is worked out on your PC only and sent as a relayed Nudge (at most 10 a second).
+        /// </summary>
+        private static void InstallBodyClear(Harmony h, Assembly wf)
+        {
+            Type mod = wf.GetType("FirstPerson.WorldBoxMod", false);
+            MethodInfo keep = mod == null ? null : AccessTools.Method(mod, "KeepBodyClear", new[] { typeof(Actor) });
+            _eyeOffset = mod == null ? null : AccessTools.Field(mod, "_eyeOffset");
+            if (keep == null || _eyeOffset == null || !WorldCalls.Register(h, AccessTools.Method(typeof(WorldfallInTick), nameof(Nudge))))
+            {
+                Log.Warn("lockstep: Worldfall's KeepBodyClear not hooked: your body isn't pushed out of walls in lockstep");
+                return;
+            }
+            h.Patch(keep, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(BodyClearPrefix)), postfix: new HarmonyMethod(typeof(WorldfallInTick), nameof(BodyClearPostfix)));
+        }
+
+        private struct BodyWas { public bool on; public Vector2 pos, eye; public bool dirty; }
+
+        private static void BodyClearPrefix(object __instance, Actor host, out BodyWas __state)
+        {
+            __state = default;
+            if (!LockstepClock.Active || LockstepClock.InTick || host == null || !LockstepControl.Running) return;
+            __state = new BodyWas { on = true, pos = host.current_position, eye = (Vector2)_eyeOffset.GetValue(__instance), dirty = _dirtyTile(host) };
+        }
+
+        private static void BodyClearPostfix(object __instance, Actor host, BodyWas __state)
+        {
+            if (!__state.on) return;
+            Vector2 to = host.current_position;
+            if (to == __state.pos) return;
+            // undo it here; the same push reaches every PC as an input
+            host.current_position = __state.pos;
+            _dirtyTile(host) = __state.dirty;
+            _eyeOffset.SetValue(__instance, __state.eye);
+            if ((to - __state.pos).sqrMagnitude < 0.0004f || Time.unscaledTime - _nudgeAt < 0.1f) return;
+            _nudgeAt = Time.unscaledTime;
+            Nudge(host, to);   // caught by WorldCalls and sent
+        }
+
+        /// <summary>Relayed (WorldCalls): a controlled creature pushed out of a wall, in a tick on every PC.</summary>
+        public static void Nudge(Actor a, Vector2 to)
+        {
+            if (!LockstepClock.InTick || a == null || !a.isAlive() || !LockstepControl.IsControlled(a.getID())) return;
+            if ((to - a.current_position).sqrMagnitude > 4f) return;   // it moved on since: stale
+            a.current_position = to;
+            _dirtyTile(a) = true;
         }
 
         private static bool OnlyInTicks() => !LockstepClock.Active || LockstepClock.InTick;
@@ -130,6 +187,7 @@ namespace Coopfall.Lockstep
         public static void Reset()
         {
             _abilityTimer = 0f;
+            PlayerScope.Reset();
             foreach (KeyValuePair<FieldInfo, object> kv in _statics)
             {
                 object v = kv.Key.GetValue(null);
@@ -142,6 +200,7 @@ namespace Coopfall.Lockstep
         /// <summary>Called in every tick after the simulation step.</summary>
         public static void Run()
         {
+            PlayerScope.RunTick();
             if (_rush != null)
                 try { _rush.Invoke(null, null); }
                 catch (Exception e) { Log.Error("lockstep: ability rush: " + (e.InnerException ?? e).Message); }
@@ -169,6 +228,10 @@ namespace Coopfall.Lockstep
         public static float UnscaledDeltaTime() => LockstepClock.InTick ? LockstepClock.DefaultStep : Time.unscaledDeltaTime;
 
         private static Dictionary<MethodInfo, MethodInfo> _swap;
+        private static readonly HashSet<Type> _swapped = new HashSet<Type>();
+
+        /// <summary>SwapClock, once per class.</summary>
+        public static int SwapClockOf(Harmony h, Type t) => _swapped.Add(t) ? SwapClock(h, t) : 0;
 
         /// <summary>Every method of the class (and its nested lambda classes) reads the tick clock in ticks.</summary>
         private static int SwapClock(Harmony h, Type t)

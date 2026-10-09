@@ -98,6 +98,36 @@ namespace Coopfall.Lockstep
             return true;
         }
 
+        private static readonly Dictionary<MethodBase, Func<object, object[], object>> _standIns = new Dictionary<MethodBase, Func<object, object[], object>>();
+
+        /// <summary>
+        /// A method that hands back an object: when it is sent, the caller gets standIn(instance,
+        /// args) instead (which may also fix arguments, e.g. pick the number the real one gets).
+        /// </summary>
+        public static bool Register(Harmony h, MethodInfo m, Func<object, object[], object> standIn)
+        {
+            string key = Key(m);
+            if (_byKey.ContainsKey(key)) return true;
+            try { h.Patch(m, prefix: new HarmonyMethod(typeof(WorldCalls), nameof(CallPrefixWithResult))); }
+            catch (Exception e) { Log.Warn("lockstep: couldn't relay " + key + ": " + e.Message); return false; }
+            _byKey[key] = m;
+            _keyOf[m] = key;
+            _standIns[m] = standIn;
+            return true;
+        }
+
+        private static bool CallPrefixWithResult(MethodBase __originalMethod, object __instance, object[] __args, ref object __result)
+        {
+            if (_replaying || !LockstepControl.Running || !LockstepClock.Active || LockstepClock.InTick) return true;
+            object standIn = null;
+            try { standIn = _standIns[__originalMethod](__instance, __args); }
+            catch (Exception e) { Log.Warn("lockstep: stand-in for " + __originalMethod.Name + " failed: " + e.Message); }
+            if (standIn == null) { __result = null; return false; }   // nothing to do (as the method itself would say)
+            if (CallPrefix(__originalMethod, __instance, __args)) return true;
+            __result = standIn;
+            return false;
+        }
+
         private static string Key(MethodBase m)
         {
             var sb = new StringBuilder(m.DeclaringType.Name).Append('.').Append(m.Name).Append('(');
@@ -150,20 +180,36 @@ namespace Coopfall.Lockstep
 
         // ------------------------------------------------------------------ the replay
 
-        /// <summary>LockstepInput, in a tick: make the call on this PC.</summary>
-        internal static void Apply(string enc)
+        /// <summary>LockstepInput, in a tick: make the call on this PC, as the player who made it.</summary>
+        internal static void Apply(string enc, int player)
         {
             _inFlight.Remove(enc);
-            if (!Decode(enc, out MethodBase m, out object inst, out object[] args, out string why))
+            PlayerScope.Run(player, () =>
             {
-                Log.Warn("lockstep: relayed call skipped (" + why + "): " + enc);
-                return;
-            }
-            _replaying = true;
-            try { m.Invoke(inst, args); Replayed++; }
-            catch (TargetInvocationException e) { Log.Warn("lockstep: relayed " + _keyOf[m] + " failed: " + (e.InnerException ?? e).Message); }
-            finally { _replaying = false; }
+                if (!Decode(enc, out MethodBase m, out object inst, out object[] args, out string why))
+                {
+                    Log.Warn("lockstep: relayed call skipped (" + why + "): " + enc);
+                    return;
+                }
+                bool was = _replaying;
+                _replaying = true;
+                try { m.Invoke(inst, args); Replayed++; }
+                catch (TargetInvocationException e) { Log.Warn("lockstep: relayed " + _keyOf[m] + " failed: " + (e.InnerException ?? e).Message); }
+                finally { _replaying = was; }
+            });
         }
+
+        // ------------------------------------------------------------------ other mods' objects
+
+        private sealed class CodecFns { public Func<object, long> id; public Func<long, object> get; }
+        private static readonly Dictionary<Type, CodecFns> _codecs = new Dictionary<Type, CodecFns>();
+        private static readonly Dictionary<Type, Func<object>> _perPlayer = new Dictionary<Type, Func<object>>();
+
+        /// <summary>Objects of this type travel by a number (e.g. Worldfall's carcasses by creature ID).</summary>
+        public static void Codec(Type t, Func<object, long> id, Func<long, object> get) => _codecs[t] = new CodecFns { id = id, get = get };
+
+        /// <summary>Each player has their own object of this type (PlayerScope): it travels as "the caller's".</summary>
+        public static void PerPlayer(Type t, Func<object> current) => _perPlayer[t] = current;
 
         // ------------------------------------------------------------------ encoding
 
@@ -233,11 +279,24 @@ namespace Coopfall.Lockstep
                 case Actor a: sb.Append('A').Append(a.getID()); return true;
                 case Building b: sb.Append('B').Append(b.getID()); return true;
                 case Item it: sb.Append('I').Append(it.getID()); return true;
+                case TileZone z: if (z.centerTile == null) return false; sb.Append('Z').Append(z.centerTile.x).Append(',').Append(z.centerTile.y); return true;
+                case Action<string> _: sb.Append('S'); return true;   // a message for the caller: shown on the caller's PC
+                case Action _: sb.Append('H'); return true;
+                case List<Actor> la:
+                    sb.Append('L');
+                    for (int i = 0; i < la.Count; i++) { if (i > 0) sb.Append(','); sb.Append(la[i] == null ? -1 : la[i].getID()); }
+                    return true;
                 case Asset asset:
                     if (asset.id == null || Library(asset.GetType()) == null) return false;
                     sb.Append('a').Append(Esc(asset.GetType().Name)).Append(':').Append(Esc(asset.id)); return true;
             }
             Type t = v.GetType();
+            if (_perPlayer.TryGetValue(t, out Func<object> mine))
+            {
+                if (!ReferenceEquals(mine(), v)) return false;
+                sb.Append('P').Append(Esc(t.Name)); return true;
+            }
+            if (_codecs.TryGetValue(t, out CodecFns cf)) { sb.Append('C').Append(Esc(t.Name)).Append(':').Append(cf.id(v).ToString(CultureInfo.InvariantCulture)); return true; }
             if (t.IsEnum) { sb.Append('e').Append(Convert.ToInt64(v).ToString(CultureInfo.InvariantCulture)); return true; }
             if (Manager(t) != null)
             {
@@ -296,6 +355,34 @@ namespace Coopfall.Lockstep
                 case 'A': v = World.world.units.get(long.Parse(r, CultureInfo.InvariantCulture)); return v != null;
                 case 'B': v = World.world.buildings.get(long.Parse(r, CultureInfo.InvariantCulture)); return v != null;
                 case 'I': v = World.world.items.get(long.Parse(r, CultureInfo.InvariantCulture)); return v != null;
+                case 'Z': { string[] q = r.Split(','); v = World.world.GetTile(int.Parse(q[0], CultureInfo.InvariantCulture), int.Parse(q[1], CultureInfo.InvariantCulture))?.zone; return v != null; }
+                case 'S': v = PlayerScope.ScopedToast(); return true;
+                case 'H': v = PlayerScope.ScopedHorn(); return true;
+                case 'L':
+                {
+                    var l = new List<Actor>();
+                    if (r.Length > 0)
+                        foreach (string q in r.Split(','))
+                        {
+                            Actor a = World.world.units.get(long.Parse(q, CultureInfo.InvariantCulture));
+                            if (a != null && a.isAlive()) l.Add(a);
+                        }
+                    v = l; return true;
+                }
+                case 'P':
+                {
+                    foreach (KeyValuePair<Type, Func<object>> kv in _perPlayer)
+                        if (kv.Key.Name == Uri.UnescapeDataString(r)) { v = kv.Value(); return v != null; }
+                    return false;
+                }
+                case 'C':
+                {
+                    int c = r.IndexOf(':');
+                    string tn = Uri.UnescapeDataString(r.Substring(0, c));
+                    foreach (KeyValuePair<Type, CodecFns> kv in _codecs)
+                        if (kv.Key.Name == tn) { v = kv.Value.get(long.Parse(r.Substring(c + 1), CultureInfo.InvariantCulture)); return v != null; }
+                    return false;
+                }
                 case 'a':
                 {
                     int c = r.IndexOf(':');

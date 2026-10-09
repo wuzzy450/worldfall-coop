@@ -336,6 +336,16 @@ namespace Coopfall.Lockstep
             SetStatic("TaxiManager", "timer_check", 0f);
             // cached "is kingdom A an enemy of B", keyed by hash codes, which restart every load
             Kingdom.cache_enemy_check.clear();
+            // KingdomAsset.isFoe caches its answers for the whole session and, on first use, adds
+            // each asset's own id to its tags, so a PC that already played (the host) answers some
+            // pairs differently from a fresh one. Put every PC in the fully used state.
+            FieldInfo foeCache = AccessTools.Field(typeof(KingdomAsset), "_cached_enemies");
+            if (foeCache == null) Log.Error("lockstep: KingdomAsset._cached_enemies not found (game changed?)");
+            foreach (KingdomAsset ka in AssetManager.kingdoms.list)
+            {
+                ka.list_tags.Add(ka.id);
+                (foeCache?.GetValue(ka) as System.Collections.IDictionary)?.Clear();
+            }
             ResetManagerTimers(w);
             // effect cooldowns (session-time stamps per effect type) carry over too
             FieldInfo fxCooldown = AccessTools.Field(typeof(EffectAsset), "_cooldown");

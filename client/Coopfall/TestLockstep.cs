@@ -36,7 +36,7 @@ namespace Coopfall
             if (Lockstep.LockstepControl.BeforeSample == null)
                 Lockstep.LockstepControl.BeforeSample = () => { if (ControllableUnit.isControllingUnit()) Lockstep.LockstepControl.Script(_lsMove, _lsAttack, _lsJump); _lsJump = false; };
             bool possessing = ControllableUnit.isControllingUnit();
-            if (!possessing || now - _lsPossessAt > 60f)
+            if ((!possessing || now - _lsPossessAt > 60f) && !LockstepKingTime(now))
             {
                 if (possessing) { ControllableUnit.clear(false); Log.Info("TEST lockstep: let go of my creature"); _lsPossessAt = now; return; }
                 if (_lsPossessAt > 0f && now - _lsPossessAt < 3f) return;
@@ -265,6 +265,7 @@ namespace Coopfall
             LockstepHouseTick(now);
             LockstepCallsTick(now);
             LockstepAbilityTick(now);
+            LockstepCampaignTick(now);
             // "-coopfall-test-desync": the guest nudges one creature after 60 s and again after 150 s (times resyncs)
             if (ForceDesync && !_s.IsHost && (_lsNudged == 0 && now - _lsStart > 60f || _lsNudged == 1 && now - _lsStart > 150f))
             {
