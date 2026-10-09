@@ -479,6 +479,10 @@ local function SendSnapshot(a_Client, a_Room)
 		return false
 	end
 	local rid = JStr(a_Room.id)
+	-- lockstep: a newcomer learns which epoch this save starts before it gets the save
+	if a_Room.wle and (a_Room.wleSha == snap.sha) then
+		SendLine(a_Client, a_Room.wle)
+	end
 	SendLine(a_Client, '{"t":"snap-begin","room":' .. rid .. ',"size":' .. string.format("%d", snap.size) ..
 		',"sha":' .. JStr(snap.sha) .. ',"total":' .. #snap.chunks .. ',"version":' .. (snap.version or 1) .. '}')
 	for i, chunk in ipairs(snap.chunks) do
@@ -875,6 +879,14 @@ function Handlers.resync(a_Client, a_Msg)
 		return
 	end
 	a_Client.WaitingSnap = true
+	-- lockstep: a guest fetching the current epoch's save gets the stored copy (or waits for its upload)
+	if (type(a_Msg.sha) == "string") and (room.snap and room.snap.sha == a_Msg.sha) then
+		SendSnapshot(a_Client, room)
+		return
+	end
+	if (type(a_Msg.sha) == "string") and room.pending then
+		return  -- served when the upload ends
+	end
 	if room.host then
 		RequestSnapshot(room, "resync")
 	elseif room.snap then
@@ -1143,7 +1155,9 @@ end
 
 --- Live world sync. Lines start with {"t":"<type>" so they are recognized without parsing.
 --- true = only the room's host may send it.
-local LIVE_SYNC = { wu = true, wb = true, wdata = true, wm = true, wa = true, ww = true, wt = true, wc = true, wneed = false, wask = false }
+local LIVE_SYNC = { wu = true, wb = true, wdata = true, wm = true, wa = true, ww = true, wt = true, wc = true, wneed = false, wask = false,
+	-- lockstep: epoch, inputs and tick grants come from the host; requests, checksums and "ready" from anyone
+	wle = true, wli = true, wlg = true, wlreload = true, wlr = false, wlh = false, wlready = false }
 
 local function RelayRawToRoom(a_Client, a_Type, a_Line)
 	local room = a_Client.Room
@@ -1152,6 +1166,11 @@ local function RelayRawToRoom(a_Client, a_Type, a_Line)
 	end
 	if LIVE_SYNC[a_Type] and (room.host ~= a_Client) then
 		return
+	end
+	if a_Type == "wle" then
+		local msg = JDecode(a_Line)
+		room.wle = a_Line
+		room.wleSha = msg and msg.sha
 	end
 	for _, m in ipairs(room.members) do
 		if (m ~= a_Client) and m.Synced and (not m.WaitingSnap) then

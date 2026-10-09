@@ -153,6 +153,9 @@ namespace Coopfall.Lockstep
             float y = MapBox.height * (0.5f + 0.4f * Mathf.Cos(t * 0.9f + 2 * _run));
             cam.transform.position = new Vector3(x, y, cam.transform.position.z);
             cam.orthographicSize = _run % 2 == 1 ? 150f : 12f;
+            // and a different local game speed (the world itself always runs x1 steps)
+            string speed = _run % 2 == 1 ? "x5" : "x2";
+            if (Config.time_scale_asset?.id != speed && AssetManager.time_scales.get(speed) != null) Config.time_scale_asset = AssetManager.time_scales.get(speed);
         }
 
         private void StartLoad()
@@ -272,7 +275,8 @@ namespace Coopfall.Lockstep
                 foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
                 {
                     // real-time stamps and native pointers differ by nature
-                    if (f.Name == "m_CachedPtr" || f.Name.Contains("unscaled")) continue;
+                    if (f.Name == "m_CachedPtr" || f.Name.Contains("unscaled") || f.Name == "is_visible" || f.Name == "_cached_color"
+                        || f.Name.StartsWith("cached_sprite") || f.Name.StartsWith("dirty_sprite") || f.Name.StartsWith("_last_") && f.Name.EndsWith("sprite")) continue;   // drawing only
                     object v;
                     try { v = f.GetValue(o); } catch { continue; }
                     d[prefix + t.Name + "." + f.Name] = Show(v);

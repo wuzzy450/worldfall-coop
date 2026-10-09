@@ -555,7 +555,7 @@ namespace Coopfall
                 case "hit": case "whit": case "shot":
                     if (InWorld && (string)p["room"] == RoomId) CoopMod.Instance?.Combat.OnPacket(t, p);
                     break;
-                case "wle": case "wli": case "wlg": case "wlr": case "wlready": case "wlh":
+                case "wle": case "wli": case "wlg": case "wlr": case "wlready": case "wlh": case "wlreload":
                     if (RoomId != null) Lockstep.OnPacket(t, p);
                     break;
                 case "wu": case "wb": case "wdata": case "wneed":

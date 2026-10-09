@@ -48,6 +48,7 @@ namespace Coopfall.Lockstep
         public string LastDesync;
 
         private int _epoch, _seed;
+        private string _h0;
         private string _sha;
         private bool _loaded;
         private float _epochAt = -999f;
@@ -145,14 +146,17 @@ namespace Coopfall.Lockstep
             }
             LockstepClock.NormalizeAfterLoad();
             _loaded = true;
+            // the world right after loading: a guest whose load went wrong is told to load again
+            string h0 = StateHash.Compute(0, false).Line();
             Log.Info("lockstep: epoch " + _epoch + " ready at tick 0");
             if (_s.IsHost)
             {
+                _h0 = h0;
                 _ready.Add(_s.MyId);
                 _waitingReady = true;
                 _readySince = Time.unscaledTime;
             }
-            else Send("wlready", new JObject { ["e"] = _epoch, ["from"] = _s.MyId });
+            else Send("wlready", new JObject { ["e"] = _epoch, ["from"] = _s.MyId, ["h0"] = h0 });
         }
 
         private void RequestEpochSave()
@@ -215,9 +219,16 @@ namespace Coopfall.Lockstep
         }
 
         /// <summary>Host: let the world run on, at the room's speed, not too far ahead of anyone.</summary>
+        private float _lastRate = -1f;
+
         private void Grant()
         {
             float rate = Rate();
+            if (rate != _lastRate)
+            {
+                Log.Info("lockstep: speed " + (rate == 0f ? "paused" : rate + " ticks/s") + " (" + Config.time_scale_asset?.id + (Config.paused ? ", paused" : "") + ")");
+                _lastRate = rate;
+            }
             _grantAcc += Time.unscaledDeltaTime * rate;
             long add = (long)_grantAcc;
             _grantAcc -= add;
@@ -318,6 +329,7 @@ namespace Coopfall.Lockstep
             {
                 SectionTrace.Install();
                 SectionTrace.Enabled = true;
+                SectionTrace.WatchSpecial = true;
                 SectionTrace.MaxTick = long.MaxValue;
             }
             if (_sectionsEpoch != _epoch || _sections == null)
@@ -462,7 +474,22 @@ namespace Coopfall.Lockstep
                     break;
                 case "wlready":
                     if (e != _epoch || !_s.IsHost) return;
+                    if (_h0 != null && (string)p["h0"] != null && (string)p["h0"] != _h0)
+                    {
+                        Log.Warn("lockstep: " + (_s.Player((string)p["from"])?.name ?? "a guest") + " loaded a different world (" + Describe(_h0, (string)p["h0"]) + "); asking it to load again");
+                        Send("wlreload", new JObject { ["e"] = _epoch, ["to"] = (string)p["from"] });
+                        _readySince = Time.unscaledTime;   // give it time
+                        return;
+                    }
                     _ready.Add((string)p["from"]);
+                    break;
+                case "wlreload":
+                    if (e != _epoch || _s.IsHost || (string)p["to"] != _s.MyId) return;
+                    Log.Warn("lockstep: the host says this world didn't load right; loading it again");
+                    _loaded = false;
+                    LockstepClock.Start(_seed);
+                    Randy.resetSeed(_seed);
+                    RequestEpochSave();
                     break;
                 case "wlh":
                     if (e != _epoch || !_s.IsHost) return;

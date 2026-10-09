@@ -137,9 +137,14 @@ namespace Coopfall.Lockstep
 
         private static void BehPostfix(MethodBase __originalMethod, Actor __0, ai.behaviours.BehResult __result)
         {
-            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick || Watch.Count == 0 || __0 == null || !Watch.Contains(__0.getID())) return;
+            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick || __0 == null) return;
+            if (!(Watch.Contains(__0.getID()) || (WatchSpecial && _special(__0) != null))) return;
             Current.Add(new Entry { tick = LockstepClock.Tick + 1, section = "beh[" + __0.getID() + "] " + __originalMethod.DeclaringType.Name + " -> " + __result, state = State() });
         }
+
+        /// <summary>Also trace every behaviour step of creatures with special parts (dragons, UFOs, ...).</summary>
+        public static bool WatchSpecial;
+        private static readonly AccessTools.FieldRef<Actor, List<BaseActorComponent>> _special = AccessTools.FieldRefAccess<Actor, List<BaseActorComponent>>("children_special");
 
         private static FieldInfo _decActions, _decFactors, _decCount;
 

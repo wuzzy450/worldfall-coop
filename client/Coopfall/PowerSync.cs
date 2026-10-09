@@ -126,8 +126,9 @@ namespace Coopfall
         private bool ToLockstep(GodPower p, WorldTile tile)
         {
             Lockstep.LockstepSession ls = _s.Lockstep;
-            if (ls == null || _replaying || !ls.Active || Lockstep.LockstepClock.InTick) return false;
-            ls.SubmitPower(p.id, tile, Config.current_brush);
+            if (ls == null || _replaying || !(ls.Active || ls.Starting) || Lockstep.LockstepClock.InTick) return false;
+            if (ls.Active) ls.SubmitPower(p.id, tile, Config.current_brush);
+            else CoopMod.Instance?.UI.ShowToast("The world is re-syncing - powers are back in a moment");
             return true;
         }
 

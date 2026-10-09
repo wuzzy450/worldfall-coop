@@ -219,6 +219,7 @@ namespace Coopfall.Lockstep
                 a.setupRandomDecisionCooldowns();
                 _staminaStamp(a) = 0;   // session-time stamp; not saved and not reset on reused objects
             }
+            ResetSpecialAnimations();
             RebuildBatches(World.world.units);
             RebuildBatches(World.world.buildings);
             ResetJobSkips(World.world.units);
@@ -245,6 +246,30 @@ namespace Coopfall.Lockstep
             if (_behTimer != null)
                 foreach (WorldBehaviourAsset b in AssetManager.world_behaviours.list)
                     if (b.manager != null) _behTimer(b.manager) = b.interval;
+        }
+
+        /// <summary>
+        /// Dragons (and other creatures with special parts) act on their animation frame, which
+        /// isn't saved: after loading it is whatever the new object started with. Restart each one's
+        /// current animation from its first frame.
+        /// </summary>
+        private static void ResetSpecialAnimations()
+        {
+            int n = 0;
+            foreach (Actor a in World.world.units)
+            {
+                if (a == null || !(AccessTools.Field(typeof(Actor), "children_special")?.GetValue(a) is List<BaseActorComponent> parts)) continue;
+                foreach (BaseActorComponent c in parts)
+                {
+                    FieldInfo state = AccessTools.Field(c.GetType(), "state");
+                    MethodInfo setFrames = state == null ? null : AccessTools.Method(c.GetType(), "setFrames", new[] { state.FieldType, typeof(bool) });
+                    if (setFrames != null) setFrames.Invoke(c, new object[] { state.GetValue(c), true });
+                }
+                SpriteAnimation s = a.sprite_animation;
+                if (s != null) { s.resetAnim(); s.dirty = false; }
+                n++;
+            }
+            if (n > 0) Log.Info("lockstep: restarted the animations of " + n + " special creatures");
         }
 
         /// <summary>
@@ -668,6 +693,10 @@ namespace Coopfall.Lockstep
             // (burning, ...): in a tick, always the zoomed-in way
             QualityChanger quality = _quality(map);
             bool lowRes = quality != null && _lowRes(quality);
+            // each tick is an x1 step whatever the speed (speed = ticks per second); the
+            // simulation also reads the local speed setting (knockback steps, Conway's life, ...)
+            WorldTimeScaleAsset speed = Config.time_scale_asset;
+            WorldTimeScaleAsset x1 = AssetManager.time_scales?.get("x1");
             int n = 0;
             try
             {
@@ -676,7 +705,9 @@ namespace Coopfall.Lockstep
                     BeforeTick?.Invoke(Tick);
                     _inTickAll = true;
                     if (quality != null) _lowRes(quality) = false;
+                    if (x1 != null) Config.time_scale_asset = x1;
                     Randy.resetSeed(TickSeed(Seed, Tick));
+                    ReseedBatches(map);
                     _isPaused(map) = false;   // local windows/pause must not change the shared world
                     // much of the simulation reads these instead of its argument
                     _elapsed(map) = StepElapsed;
@@ -704,7 +735,40 @@ namespace Coopfall.Lockstep
                     AfterTick?.Invoke(Tick);
                 }
             }
-            finally { if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
+            finally { Config.time_scale_asset = speed; if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
+        }
+
+        private static List<object> _batchLists;
+        private static FieldInfo _actorBatchRnd, _buildingBatchRnd;
+
+        /// <summary>
+        /// Creature and building batches each keep their own random generator (shaking, a few
+        /// decisions), seeded once when the batch is made; batches are pooled, so its state
+        /// depends on history. Reseed every batch from the tick and its place in the list.
+        /// </summary>
+        private static void ReseedBatches(MapBox map)
+        {
+            if (_batchLists == null)
+            {
+                _batchLists = new List<object>();
+                foreach (object manager in new object[] { map.units, map.buildings })
+                {
+                    object jobs = AccessTools.Field(manager.GetType(), "_job_manager")?.GetValue(manager);
+                    object active = jobs == null ? null : AccessTools.Field(jobs.GetType(), "_batches_active")?.GetValue(jobs);
+                    if (active != null) _batchLists.Add(active);
+                }
+                _actorBatchRnd = AccessTools.Field(typeof(BatchActors), "rnd");
+                _buildingBatchRnd = AccessTools.Field(typeof(BatchBuildings), "rnd");
+                if (_batchLists.Count < 2 || _actorBatchRnd == null || _buildingBatchRnd == null) Log.Error("lockstep: batch random generators not found: shaking may differ between PCs");
+            }
+            int k = 0;
+            foreach (object list in _batchLists)
+                foreach (object b in (System.Collections.IEnumerable)list)
+                {
+                    FieldInfo f = b is BatchActors ? _actorBatchRnd : b is BatchBuildings ? _buildingBatchRnd : null;
+                    uint s = (uint)TickSeed(Seed ^ 0x0BA7C4, Tick * 4099 + k++);
+                    f?.SetValue(b, new Unity.Mathematics.Random(s == 0 ? 1u : s));
+                }
         }
 
         public static int TickSeed(int seed, long tick)
