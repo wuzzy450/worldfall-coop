@@ -37,6 +37,9 @@ namespace Coopfall.Lockstep
             "stopBeingWarrior", "consumeFoodResource", "eatFoodItem", "giveInventoryResourcesToCity",
             "tryToConvertToReligion", "setArmy", "setFamily", "finishAngryStatus", "dieSimpleNone",
             "removeFromPreviousFaction", "clearCity", "setDefaultKingdom", "exitBoat", "getHitFullHealth",
+            "spendMana", "spendStamina",
+            // Worldfall lands a first-person jump on a roof or furniture from its frame code
+            "stopForce",
             // buildings, cities, kingdoms, wars
             "extractResources", "addResourcesToRandomStockpile", "takeResource", "makeWarrior", "startFire", "stopFire",
             "endWar", "leaveWar", "setCaptain", "setLeader",
@@ -81,6 +84,18 @@ namespace Coopfall.Lockstep
                     catch (Exception e) { Log.Warn("lockstep: couldn't relay " + key + ": " + e.Message); }
                 }
             Log.Info("lockstep: " + n + " world-changing game methods travel as inputs when called outside a tick");
+        }
+
+        /// <summary>One of Coopfall's own methods travels too (its arguments must be ones Value can name).</summary>
+        public static bool Register(Harmony h, MethodInfo m)
+        {
+            string key = Key(m);
+            if (_byKey.ContainsKey(key)) return true;
+            try { h.Patch(m, prefix: new HarmonyMethod(typeof(WorldCalls), nameof(CallPrefix))); }
+            catch (Exception e) { Log.Warn("lockstep: couldn't relay " + key + ": " + e.Message); return false; }
+            _byKey[key] = m;
+            _keyOf[m] = key;
+            return true;
         }
 
         private static string Key(MethodBase m)

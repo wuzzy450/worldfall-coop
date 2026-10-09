@@ -93,6 +93,7 @@ namespace Coopfall.Lockstep
 
         public static int Count => _table.Count;
         public static bool IsControlled(long id) => _table.ContainsKey(id);
+        public static IEnumerable<long> ControlledIds() => _table.Keys;
 
         /// <summary>A new epoch: nobody controls anything until they ask again.</summary>
         public static void Reset() { _table.Clear(); _sentPossess = 0; _lastSent = null; _pulses = 0; _indoors.Clear(); _wantHouse = 0; }
@@ -337,10 +338,10 @@ namespace Coopfall.Lockstep
             // per-frame world changes
             string[] gated =
             {
-                "Possess.Keep", "PossessionCombat.ShakeOffStuns", "PossessionCombat.SwingHit", "PossessionCombat.Punch",
+                "Possess.Keep", "PossessionCombat.ShakeOffStuns",
                 "Abilities.Update", "Abilities.UpdateCreatures", "Guards.Update", "FamilyFollow.Update", "FamilyFollow.Send",
                 "WarMap.UpkeepFlags", "WarMap.UpkeepFleet", "Service.Update", "Service.Send", "SoldierMap.Update", "Royal.Update",
-                "Butchery.Cut", "Boats.Board", "Boats.PutOff",
+                "Butchery.Cut",
                 // drawing first person moves the creatures around you: crowd steering, and pushing
                 // them out of your body
                 "Steering.Steer", "WorldBoxMod.KeepBodyClear",
@@ -363,6 +364,16 @@ namespace Coopfall.Lockstep
                         try { h.Patch(m, prefix: new HarmonyMethod(typeof(LockstepControl), nameof(GatePrefix))); }
                         catch (Exception e) { Log.Warn("lockstep: couldn't hold back Worldfall's " + g + ": " + e.Message); }
             }
+            // first-person hits and boarding travel as inputs (made in a tick on every PC)
+            foreach (string g in new[] { "PossessionCombat.SwingHit", "PossessionCombat.Punch", "Boats.Board", "Boats.PutOff" })
+            {
+                int dot = g.IndexOf('.');
+                MethodInfo m = AccessTools.Method(wf.GetType("FirstPerson." + g.Substring(0, dot), false), g.Substring(dot + 1));
+                if (m == null || !WorldCalls.Register(h, m)) Log.Warn("lockstep: Worldfall's " + g + " not relayed (renamed?): it may change one PC's world only");
+            }
+            // some of those run inside ticks instead
+            try { WorldfallInTick.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall features in ticks not available: " + e); }
         }
 
         private static bool RealTimePrefix(ref float __result)

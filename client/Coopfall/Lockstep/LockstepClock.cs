@@ -247,6 +247,7 @@ namespace Coopfall.Lockstep
             }
             SortTileSets();
             FrameUpdates.Normalize();
+            WorldfallInTick.Reset();
             // the map's zone list is shuffled (unseeded) when zones are made, once per map size and
             // game session; "a random zone" is picked from it by index
             object calc = AccessTools.Field(typeof(MapBox), "zone_calculator")?.GetValue(World.world);
@@ -518,7 +519,7 @@ namespace Coopfall.Lockstep
                 for (int i = 0; i < cs.Count; i++)
                 {
                     ulong h = 0; int n = 0;
-                    foreach (T o in cs[i]) { h += StateHash.Mix((ulong)o.getID()); n++; }
+                    foreach (T o in cs[i]) { h = h * 31 + StateHash.Mix((ulong)o.getID()); n++; }   // order counts: jobs hand out dice in this order
                     sb.Append(n).Append('/').Append((h & 0xffff).ToString("x")).Append(i < cs.Count - 1 ? "," : "");
                 }
             }
@@ -791,6 +792,7 @@ namespace Coopfall.Lockstep
                     LockstepControl.AfterInputs();
                     _updateSimulation(map, StepElapsed);
                     FrameUpdates.AfterSimulation();
+                    WorldfallInTick.Run();
                     _inTick = true;
                     try { map.delayed_actions_manager.update(StepElapsed, DefaultStep); }
                     finally { _inTick = false; }

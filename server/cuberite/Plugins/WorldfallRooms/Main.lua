@@ -1196,8 +1196,15 @@ local LIVE_SYNC = { wu = true, wb = true, wdata = true, wm = true, wa = true, ww
 local function RelayRawToRoom(a_Client, a_Type, a_Line)
 	local room = a_Client.Room
 	if (room == nil) or (not a_Client.Synced) or (a_Client.WaitingSnap) then
+		-- say so once per reason: a dropped lockstep checksum stalls the whole room
+		local why = (room == nil) and "no room" or ((not a_Client.Synced) and "not synced" or "waiting for a snapshot")
+		if a_Client.DropWhy ~= why then
+			a_Client.DropWhy = why
+			Warn("dropping " .. a_Type .. " from " .. tostring(a_Client.Name) .. ": " .. why)
+		end
 		return
 	end
+	a_Client.DropWhy = nil
 	if LIVE_SYNC[a_Type] and (room.host ~= a_Client) then
 		return
 	end

@@ -52,6 +52,13 @@ namespace Coopfall.Lockstep
 
         private int _epoch, _seed;
         private string _h0;
+        /// <summary>
+        /// Experiment (-coopfall-lockstep-hostkeep): the host keeps its running world instead of
+        /// reloading the save it just made (saves ~2.5 s per resync); falls back to reloading for
+        /// the rest of the session if a guest's tick-0 check differs.
+        /// </summary>
+        private static readonly bool HostKeepWanted = Array.Exists(Environment.GetCommandLineArgs(), x => x.Equals("-coopfall-lockstep-hostkeep", StringComparison.OrdinalIgnoreCase));
+        private bool _hostKeepOff, _hostKept;
         private string _sha;
         private bool _loaded;
         private float _epochAt = -999f;
@@ -143,6 +150,15 @@ namespace Coopfall.Lockstep
             Randy.resetSeed(_seed);
             SharedWeather.Reset(_seed);
             FastLoad.On = true;
+            _hostKept = false;
+            if (data != null && _s.IsHost && HostKeepWanted && !_hostKeepOff && WorldBoxApi.WorldReady)
+            {
+                _hostKept = true;
+                FastLoad.On = false;
+                Log.Info("lockstep: host keeps its running world for epoch " + _epoch + " (no reload)");
+                OnWorldLoaded(_sha);
+                return;
+            }
             if (data != null) _s.LoadOwnSnapshot(data);
         }
 
@@ -201,8 +217,26 @@ namespace Coopfall.Lockstep
 
         // ============================================================== frame
 
+        private long _watchGrant = -1;
+        private float _watchSince;
+
+        /// <summary>Host: the world stopped advancing although it isn't paused; say why, once per stall.</summary>
+        private void Watchdog()
+        {
+            if (_epoch <= 0) return;
+            if (LockstepClock.Granted != _watchGrant || !_loaded || _waitingReady || Rate() == 0f) { _watchGrant = LockstepClock.Granted; _watchSince = Time.unscaledTime; return; }
+            if (Time.unscaledTime - _watchSince < 5f) return;
+            _watchSince = Time.unscaledTime + 25f;   // again in 30 s if still stuck
+            var sb = new System.Text.StringBuilder("lockstep: stalled at grant " + LockstepClock.Granted + " (tick " + LockstepClock.Tick + "): inWorld " + _s.InWorld + ", worldReady " + WorldBoxApi.WorldReady
+                + ", active " + Active + ", loaded " + _loaded + ", waitingReady " + _waitingReady + ", rate " + Rate() + ", uploading " + _s.Uploading + ", players");
+            foreach (PlayerInfo p in RoomPlayers()) sb.Append(' ').Append(p.id).Append(p.id == _s.MyId ? "(me)" : "").Append(_ready.Contains(p.id) ? " ready" : " not-ready").Append(" at ").Append(_playerTick.TryGetValue(p.id, out long t) ? t : -1);
+            sb.Append("; ").Append(_s.Net.Stats());
+            Log.Warn(sb.ToString());
+        }
+
         public void Tick()
         {
+            Watchdog();
             if (_epoch > 0 && (!_s.Online || _s.RoomId == null || !_s.Cfg.lockstep)) { Stop(!_s.Cfg.lockstep ? "switched off" : "left the world"); return; }
             if (!_s.IsHost)
             {
@@ -461,7 +495,7 @@ namespace Coopfall.Lockstep
         private void OnTick(long tick)
         {
             if (TraceTicks && Active) TraceTick(tick);
-            if (TraceTicks && Active && tick % 100 == 0) Log.Info("lockstep: job lists at tick " + tick + ": " + LockstepClock.ListSignature());
+            if (TraceTicks && Active && tick % (tick < 1000 ? 10 : 100) == 0) Log.Info("lockstep: job lists at tick " + tick + ": " + LockstepClock.ListSignature());
             if (Active && DumpAt > 0 && (tick == 1 || (tick % DumpAt == 0 && tick <= 2000))) DumpMeta(tick);
             if (!Active || tick % HashEvery != 0 || tick == _lastHashTick) return;
             _lastHashTick = tick;
@@ -570,6 +604,24 @@ namespace Coopfall.Lockstep
                     break;
                 case "wlready":
                     if (e != _epoch || !_s.IsHost) return;
+                    if (_hostKept && _h0 != null && (string)p["h0"] != null && (string)p["h0"] != _h0)
+                    {
+                        Log.Warn("lockstep: host-keep: a guest's freshly loaded world differs from the host's kept one (" + Describe(_h0, (string)p["h0"]) + "); reloading from now on");
+                        _hostKeepOff = true;
+                        _hostKept = false;
+                        // reload this epoch's save here too, then that guest once more
+                        _loaded = false;
+                        _ready.Clear();
+                        _waitingReady = false;
+                        LockstepControl.Running = false;
+                        LockstepClock.Start(_seed);
+                        Randy.resetSeed(_seed);
+                        SharedWeather.Reset(_seed);
+                        FastLoad.On = true;
+                        _s.LoadOwnSnapshot(_epochData);
+                        Send("wlreload", new JObject { ["e"] = _epoch, ["to"] = (string)p["from"] });
+                        return;
+                    }
                     if (_h0 != null && (string)p["h0"] != null && (string)p["h0"] != _h0)
                     {
                         Log.Warn("lockstep: " + (_s.Player((string)p["from"])?.name ?? "a guest") + " loaded a different world (" + Describe(_h0, (string)p["h0"]) + "); asking it to load again");

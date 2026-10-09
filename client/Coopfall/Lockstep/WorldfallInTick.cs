@@ -1,0 +1,226 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Reflection.Emit;
+using HarmonyLib;
+using UnityEngine;
+
+namespace Coopfall.Lockstep
+{
+    /// <summary>
+    /// Some Worldfall features change the world from its per-frame code (held back outside ticks by
+    /// LockstepControl's gate). The ones that only need the world and the controlled creatures run
+    /// here instead, inside every tick on every PC: the same step, the tick clock in place of
+    /// Unity's real-time clock, and their static state reset when an epoch loads.
+    /// - Guards: a hurt king's people rally to him (only while someone controls a creature, as in
+    ///   Worldfall).
+    /// - Creature abilities: creatures near a controlled creature use their X abilities in fights.
+    /// - A player's own X ability: aimed on that PC, then paid for and used in a tick (UseAbility,
+    ///   relayed like a game call); rushes/leaps move on in ticks (Abilities.Update).
+    /// </summary>
+    public static class WorldfallInTick
+    {
+        private static MethodInfo _guards, _creatures, _rush, _for, _canPay, _pay, _refund, _aim;
+        private static Type _useType;
+        private static FieldInfo _view, _yaw;
+        private static Action<string> _noToast = s => { };
+        private static readonly List<KeyValuePair<FieldInfo, object>> _statics = new List<KeyValuePair<FieldInfo, object>>();
+        private static float _abilityTimer;
+        public static bool Ready => _guards != null || _creatures != null;
+
+        public static void Install(Harmony h, Assembly wf)
+        {
+            Type guards = wf.GetType("FirstPerson.Guards", false), abilities = wf.GetType("FirstPerson.Abilities", false);
+            _guards = guards == null ? null : AccessTools.Method(guards, "Update", new[] { typeof(float), typeof(Actor), typeof(Action<string>) });
+            _creatures = abilities == null ? null : AccessTools.Method(abilities, "UpdateCreatures", new[] { typeof(Actor), typeof(float) });
+            if (_guards == null) Log.Warn("lockstep: Worldfall's Guards.Update not found: kings' defenders stay off in lockstep");
+            if (_creatures == null) Log.Warn("lockstep: Worldfall's Abilities.UpdateCreatures not found: creature abilities stay off in lockstep");
+            int n = 0;
+            if (_guards != null) { n += SwapClock(h, guards); Remember(guards, "_timer", "_round", "LastRallied", "Kings", "Stale", "Candidates"); }
+            if (_creatures != null) { n += SwapClock(h, abilities); Remember(abilities, "PendingRush", "_npcTimer", "NpcReadyAt", "CreatureUses", "CreatureUsed"); }
+            InstallPlayerAbility(h, wf, abilities);
+            Log.Info("lockstep: Worldfall's " + (_guards != null ? "guards " : "") + (_creatures != null ? "creature abilities " : "") + "run in ticks (" + n + " methods on the tick clock)");
+        }
+
+        /// <summary>Static fields reset at every epoch load: collections emptied, values zeroed.</summary>
+        private static void Remember(Type t, params string[] names)
+        {
+            foreach (string f in names)
+            {
+                FieldInfo fi = AccessTools.Field(t, f);
+                if (fi == null || !fi.IsStatic) { Log.Warn("lockstep: Worldfall's " + t.Name + "." + f + " not found: it may carry state between epochs"); continue; }
+                _statics.Add(new KeyValuePair<FieldInfo, object>(fi, fi.FieldType.IsValueType ? Activator.CreateInstance(fi.FieldType) : null));
+            }
+        }
+
+        private static void InstallPlayerAbility(Harmony h, Assembly wf, Type abilities)
+        {
+            Type mod = wf.GetType("FirstPerson.WorldBoxMod", false), ability = wf.GetType("FirstPerson.Ability", false);
+            _useType = wf.GetType("FirstPerson.AbilityUse", false);
+            if (abilities == null || mod == null || ability == null || _useType == null) { Log.Warn("lockstep: Worldfall's abilities not found: X abilities stay off in lockstep"); return; }
+            _rush = AccessTools.Method(abilities, "Update", Type.EmptyTypes);
+            _for = AccessTools.Method(abilities, "For");
+            _canPay = AccessTools.Method(abilities, "CanPay");
+            _pay = AccessTools.Method(abilities, "Pay");
+            _refund = AccessTools.Method(abilities, "Refund");
+            _aim = AccessTools.Method(mod, "AbilityAim");
+            _view = AccessTools.Field(mod, "_view");
+            _yaw = _view == null ? null : AccessTools.Field(_view.FieldType, "Yaw");
+            MethodInfo release = AccessTools.Method(mod, "ReleaseAbility");
+            MethodInfo use = AccessTools.Method(typeof(WorldfallInTick), nameof(UseAbility));
+            if (_rush == null || _for == null || _canPay == null || _pay == null || _refund == null || _aim == null || _yaw == null || release == null || !WorldCalls.Register(h, use))
+            {
+                Log.Warn("lockstep: a Worldfall ability method is missing (renamed?): X abilities stay off in lockstep");
+                _rush = null;
+                return;
+            }
+            h.Patch(release, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(ReleasePrefix)));
+            // paid for in the tick, on every PC
+            h.Patch(_pay, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(OnlyInTicks)));
+            h.Patch(_refund, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(OnlyInTicks)));
+        }
+
+        private static bool OnlyInTicks() => !LockstepClock.Active || LockstepClock.InTick;
+
+        /// <summary>This player lets go of an X ability: aim here, use it in a tick everywhere.</summary>
+        private static bool ReleasePrefix(object __instance, Actor host, object ab)
+        {
+            if (!LockstepClock.Active || LockstepClock.InTick || _rush == null) return true;
+            if (host == null || !host.isAlive()) return false;
+            try
+            {
+                object[] args = { host, ab, null };
+                Vector2 at = (Vector2)_aim.Invoke(__instance, args);
+                float yaw = (float)_yaw.GetValue(_view.GetValue(__instance));
+                UseAbility(host, at, args[2] as Actor, new Vector2(Mathf.Cos(yaw), Mathf.Sin(yaw)));   // caught by WorldCalls and sent
+            }
+            catch (Exception e) { Log.Error("lockstep: X ability not sent: " + (e.InnerException ?? e).Message); }
+            return false;
+        }
+
+        /// <summary>The creature's X ability (null: none, or Worldfall's abilities aren't hooked).</summary>
+        public static string AbilityName(Actor a)
+        {
+            object ab = _for == null || a == null ? null : _for.Invoke(null, new object[] { a });
+            return ab == null ? null : (string)ab.GetType().GetField("Name").GetValue(ab);
+        }
+
+        /// <summary>Relayed (WorldCalls): runs in a tick on every PC.</summary>
+        public static void UseAbility(Actor self, Vector2 at, Actor target, Vector2 dir)
+        {
+            if (!LockstepClock.InTick || self == null || !self.isAlive() || _for == null) return;
+            object ab = _for.Invoke(null, new object[] { self });
+            if (ab == null) return;
+            object[] pay = { self, ab, null };
+            if (!(bool)_canPay.Invoke(null, pay)) return;
+            _pay.Invoke(null, new object[] { self, ab });
+            object use = Activator.CreateInstance(_useType);
+            _useType.GetField("Self").SetValue(use, self);
+            _useType.GetField("At").SetValue(use, at);
+            _useType.GetField("Target").SetValue(use, target);
+            _useType.GetField("Dir").SetValue(use, dir);
+            var effect = (Delegate)ab.GetType().GetField("Effect").GetValue(ab);
+            bool ok = false;
+            try { ok = (bool)effect.DynamicInvoke(use); }
+            catch (Exception e) { Log.Error("lockstep: X ability failed: " + (e.InnerException ?? e).Message); }
+            if (!ok) _refund.Invoke(null, new object[] { self, ab });
+        }
+
+        public static void Reset()
+        {
+            _abilityTimer = 0f;
+            foreach (KeyValuePair<FieldInfo, object> kv in _statics)
+            {
+                object v = kv.Key.GetValue(null);
+                if (v is IDictionary d) d.Clear();
+                else if (v is IList l) l.Clear();
+                else if (!kv.Key.IsInitOnly) kv.Key.SetValue(null, kv.Value);
+            }
+        }
+
+        /// <summary>Called in every tick after the simulation step.</summary>
+        public static void Run()
+        {
+            if (_rush != null)
+                try { _rush.Invoke(null, null); }
+                catch (Exception e) { Log.Error("lockstep: ability rush: " + (e.InnerException ?? e).Message); }
+            if (LockstepControl.Count == 0) return;
+            if (_guards != null)
+                try { _guards.Invoke(null, new object[] { LockstepClock.DefaultStep, null, _noToast }); }
+                catch (Exception e) { Log.Error("lockstep: guards: " + (e.InnerException ?? e).Message); }
+            if (_creatures == null) return;
+            // Worldfall checks every 0.5 s around its one player; here around every controlled
+            // creature, in ID order, on one shared timer
+            _abilityTimer -= LockstepClock.DefaultStep;
+            if (_abilityTimer > 0f) return;
+            _abilityTimer = 0.5f;
+            foreach (long id in LockstepControl.ControlledIds())
+            {
+                Actor a = World.world.units.get(id);
+                if (a == null || !a.isAlive()) continue;
+                try { _creatures.Invoke(null, new object[] { a, 1f }); }   // 1 s: past its own 0.5 s timer
+                catch (Exception e) { Log.Error("lockstep: creature abilities: " + (e.InnerException ?? e).Message); }
+            }
+        }
+
+        public static float UnscaledTime() => LockstepClock.InTick ? (float)LockstepClock.SessionTime : Time.unscaledTime;
+        public static float RealtimeSinceStartup() => LockstepClock.InTick ? (float)LockstepClock.SessionTime : Time.realtimeSinceStartup;
+        public static float UnscaledDeltaTime() => LockstepClock.InTick ? LockstepClock.DefaultStep : Time.unscaledDeltaTime;
+
+        private static Dictionary<MethodInfo, MethodInfo> _swap;
+
+        /// <summary>Every method of the class (and its nested lambda classes) reads the tick clock in ticks.</summary>
+        private static int SwapClock(Harmony h, Type t)
+        {
+            if (_swap == null)
+                _swap = new Dictionary<MethodInfo, MethodInfo>
+                {
+                    { AccessTools.PropertyGetter(typeof(Time), nameof(Time.frameCount)), AccessTools.Method(typeof(FrameClock), nameof(FrameClock.FrameCount)) },
+                    { AccessTools.PropertyGetter(typeof(Time), nameof(Time.deltaTime)), AccessTools.Method(typeof(FrameClock), nameof(FrameClock.DeltaTime)) },
+                    { AccessTools.PropertyGetter(typeof(Time), nameof(Time.time)), AccessTools.Method(typeof(FrameClock), nameof(FrameClock.TimeNow)) },
+                    { AccessTools.PropertyGetter(typeof(Time), nameof(Time.unscaledTime)), AccessTools.Method(typeof(WorldfallInTick), nameof(UnscaledTime)) },
+                    { AccessTools.PropertyGetter(typeof(Time), nameof(Time.realtimeSinceStartup)), AccessTools.Method(typeof(WorldfallInTick), nameof(RealtimeSinceStartup)) },
+                    { AccessTools.PropertyGetter(typeof(Time), nameof(Time.unscaledDeltaTime)), AccessTools.Method(typeof(WorldfallInTick), nameof(UnscaledDeltaTime)) },
+                };
+            int n = 0;
+            var types = new List<Type> { t };
+            for (int i = 0; i < types.Count; i++) types.AddRange(types[i].GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic));
+            var transpiler = new HarmonyMethod(typeof(WorldfallInTick), nameof(Transpiler));
+            foreach (Type x in types)
+            {
+                if (x.IsGenericTypeDefinition) continue;
+                foreach (MethodInfo m in x.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                {
+                    if (m.IsAbstract || m.ContainsGenericParameters || m.GetMethodBody() == null || !ReadsClock(m)) continue;
+                    try { h.Patch(m, transpiler: transpiler); n++; }
+                    catch (Exception e) { Log.Warn("lockstep: couldn't put " + x.Name + "." + m.Name + " on the tick clock: " + e.Message); }
+                }
+            }
+            return n;
+        }
+
+        private static bool ReadsClock(MethodInfo m)
+        {
+            try
+            {
+                foreach (KeyValuePair<OpCode, object> i in PatchProcessor.ReadMethodBody(m))
+                    if (i.Value is MethodInfo target && _swap.ContainsKey(target)) return true;
+            }
+            catch { }
+            return false;
+        }
+
+        private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var list = new List<CodeInstruction>(instructions);
+            foreach (CodeInstruction c in list)
+                if ((c.opcode == OpCodes.Call || c.opcode == OpCodes.Callvirt) && c.operand is MethodInfo m && _swap.TryGetValue(m, out MethodInfo to))
+                {
+                    c.opcode = OpCodes.Call;
+                    c.operand = to;
+                }
+            return list;
+        }
+    }
+}

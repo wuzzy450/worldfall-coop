@@ -32,6 +32,16 @@ namespace Coopfall.Net
         private readonly ConcurrentQueue<JObject> _incoming = new ConcurrentQueue<JObject>();
         private readonly ConcurrentQueue<string> _events = new ConcurrentQueue<string>();
         private long _bulkBytesQueued;
+        private long _bytesWritten, _lastWriteTicks, _writeStartTicks;
+        /// <summary>One line on the send queue's state (for stall reports).</summary>
+        public string Stats()
+        {
+            int f, b;
+            lock (_qLock) { f = _fast.Count; b = _bulk.Count; }
+            long now = DateTime.UtcNow.Ticks, ws = Interlocked.Read(ref _writeStartTicks);
+            return "net: connected " + Connected + ", queued fast " + f + " bulk " + b + " (" + Interlocked.Read(ref _bulkBytesQueued) / 1024 + " KB), sent " + Interlocked.Read(ref _bytesWritten) / 1024
+                + " KB, last write " + ((now - Interlocked.Read(ref _lastWriteTicks)) / TimeSpan.TicksPerMillisecond) + " ms ago" + (ws != 0 ? ", a write blocked for " + ((now - ws) / TimeSpan.TicksPerMillisecond) + " ms" : "");
+        }
 
         private static readonly JsonSerializer Ser = JsonSerializer.Create(new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
 
@@ -175,8 +185,12 @@ namespace Coopfall.Net
                         }
                         else { _wake.WaitOne(250); continue; }
                     }
+                    Interlocked.Exchange(ref _writeStartTicks, DateTime.UtcNow.Ticks);
                     _stream.Write(next, 0, next.Length);
+                    Interlocked.Exchange(ref _writeStartTicks, 0);
+                    Interlocked.Add(ref _bytesWritten, next.Length);
                     lastSend = DateTime.UtcNow;
+                    Interlocked.Exchange(ref _lastWriteTicks, lastSend.Ticks);
                     if (wasBulk) Interlocked.Add(ref _bulkBytesQueued, -next.Length);
                 }
             }

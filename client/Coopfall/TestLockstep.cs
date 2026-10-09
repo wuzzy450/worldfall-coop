@@ -191,10 +191,56 @@ namespace Coopfall
             }
         }
 
+        private int _lsAbilityStep;
+        private long _lsAbilityBy;
+
+        /// <summary>
+        /// At 150 s each player uses its creature's X ability (Worldfall) at the nearest creature, as
+        /// a release of the ability key would (relayed, used in a tick); at 160 s both log mana/stamina.
+        /// </summary>
+        private void LockstepAbilityTick(float now)
+        {
+            float t = now - _lsStart;
+            if (_lsAbilityStep == 0 && t > 150f)
+            {
+                _lsAbilityStep = 1;
+                Actor me = ControllableUnit.getControllableUnit();
+                if (me == null || !me.isAlive()) { Log.Warn("TEST lockstep: ability: not controlling a creature"); return; }
+                string name = Lockstep.WorldfallInTick.AbilityName(me);
+                if (name == null) { Log.Info("TEST lockstep: ability: #" + me.getID() + " (" + me.asset.id + ") has no X ability"); return; }
+                Actor near = null;
+                float best = float.MaxValue;
+                foreach (Actor a in World.world.units)
+                {
+                    if (a == null || a == me || !a.isAlive()) continue;
+                    float d = (a.current_position - me.current_position).sqrMagnitude;
+                    if (d < best) { best = d; near = a; }
+                }
+                Vector2 at = near != null ? near.current_position : me.current_position + Vector2.right;
+                _lsAbilityBy = me.getID();
+                _lsAbilityUsers.Add(_lsAbilityBy);
+                Log.Info("TEST lockstep: ability: #" + me.getID() + " (" + me.asset.id + ") uses " + name + " at " + (near != null ? "#" + near.getID() : "nothing") + ", mana " + me.getMana() + " stamina " + me.getStamina());
+                Lockstep.WorldfallInTick.UseAbility(me, at, near, (at - me.current_position).normalized);
+                _s.Net.Send("chat", new Newtonsoft.Json.Linq.JObject { ["text"] = "lsability " + me.getID() });
+            }
+            if (_lsAbilityStep <= 1 && t > 160f)
+            {
+                _lsAbilityStep = 2;
+                foreach (long id in _lsAbilityUsers)
+                {
+                    Actor a = World.world.units.get(id);
+                    Log.Info("TEST lockstep: ability: #" + id + (a == null ? " gone" : " alive " + a.isAlive() + " mana " + a.getMana() + " stamina " + a.getStamina() + " hp " + a.getHealth()));
+                }
+            }
+        }
+
+        private readonly System.Collections.Generic.SortedSet<long> _lsAbilityUsers = new System.Collections.Generic.SortedSet<long>();
+
         /// <summary>The guest tells which tree it chopped (chat line "lstree tree creature").</summary>
         internal void LockstepNote(string text)
         {
             string[] p = text.Split(' ');
+            if (p.Length == 2 && p[0] == "lsability" && long.TryParse(p[1], out long ab)) _lsAbilityUsers.Add(ab);
             if (p.Length == 3 && p[0] == "lstree") { long.TryParse(p[1], out _lsTree); long.TryParse(p[2], out _lsTreeBy); }
         }
 
@@ -218,6 +264,7 @@ namespace Coopfall
             LockstepPossessTick(now);
             LockstepHouseTick(now);
             LockstepCallsTick(now);
+            LockstepAbilityTick(now);
             // "-coopfall-test-desync": the guest nudges one creature after 60 s and again after 150 s (times resyncs)
             if (ForceDesync && !_s.IsHost && (_lsNudged == 0 && now - _lsStart > 60f || _lsNudged == 1 && now - _lsStart > 150f))
             {
