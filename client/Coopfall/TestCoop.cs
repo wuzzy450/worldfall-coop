@@ -32,7 +32,8 @@ namespace Coopfall
     {
         private bool _cpMode, _cpHooked;
         private int _cpStep;
-        private const float CoopSeconds = 170f;
+        private long _cpTickA;
+        private const float CoopSeconds = 220f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -54,6 +55,12 @@ namespace Coopfall
                 if (fits) return m.Invoke(on, args);
             }
             throw new MissingMethodException(t.Name, name);
+        }
+
+        private AvatarManager.Remote CpOther()
+        {
+            foreach (AvatarManager.Remote r in CoopMod.Instance.Avatars.Remotes.Values) if (r.actor != null && r.actor.isAlive()) return r;
+            return null;
         }
 
         private void CpShot(string name)
@@ -296,6 +303,58 @@ namespace Coopfall
                     CpOk("doorways", Lockstep.SteeringInTick.Doors > 0, Lockstep.SteeringInTick.Doors + " house doors shared this epoch");
                 }
                 if (_cpStep == 20 && t > 160f) { _cpStep = 21; CpShot("step-after-resync"); CpOk("made outside ticks", Lockstep.MadeOutsideTicks.Count == 0, Lockstep.MadeOutsideTicks.Count + " " + string.Join("; ", Lockstep.MadeOutsideTicks.Seen.ToArray())); }
+                // guest speed: the guest pauses, then sets x5; the host's grants (and so both PCs' ticks) follow
+                if (_cpStep == 21 && t > 165f)
+                {
+                    _cpStep = 22;
+                    if (!_s.IsHost) { Log.Info("TEST coop: guest pauses"); Config.paused = true; }
+                }
+                if (_cpStep == 22 && t > 170f) { _cpStep = 23; _cpTickA = Lockstep.LockstepClock.Tick; }
+                if (_cpStep == 23 && t > 175f)
+                {
+                    _cpStep = 24;
+                    long d = Lockstep.LockstepClock.Tick - _cpTickA;
+                    CpOk("guest pause", d <= 2 && Config.paused, "ticks in 5 s while paused: " + d + ", paused here " + Config.paused);
+                    if (!_s.IsHost) { Log.Info("TEST coop: guest sets x5"); Config.paused = false; Config.setWorldSpeed("x5"); }
+                }
+                if (_cpStep == 24 && t > 178f) { _cpStep = 25; _cpTickA = Lockstep.LockstepClock.Tick; }
+                if (_cpStep == 25 && t > 183f)
+                {
+                    _cpStep = 26;
+                    long d = Lockstep.LockstepClock.Tick - _cpTickA;
+                    CpOk("guest speed", Config.time_scale_asset?.id == "x5" && !Config.paused && d > 0, "ticks in 5 s at " + Config.time_scale_asset?.id + ": " + d + " (tick " + Lockstep.LockstepClock.Tick + ")");
+                    if (!_s.IsHost) { Config.setWorldSpeed("x1"); }
+                }
+                // nameplates: both bodies walk to each other (scripted controls travel as inputs), face each
+                // other, and each PC checks that it drew the other player's tag
+                if (_cpStep == 26 && t > 186f)
+                {
+                    _cpStep = 27;
+                    Lockstep.LockstepControl.BeforeSample = () =>
+                    {
+                        Actor mine = ControllableUnit.getControllableUnit(), other = CpOther()?.actor;
+                        Vector2 d = mine != null && other != null ? other.current_position - mine.current_position : Vector2.zero;
+                        Lockstep.LockstepControl.Script(d.magnitude > 2.5f ? d.normalized : Vector2.zero, false, false);
+                    };
+                }
+                if (_cpStep == 27 && t > 206f)
+                {
+                    _cpStep = 28;
+                    Lockstep.LockstepControl.BeforeSample = () => Lockstep.LockstepControl.Script(Vector2.zero, false, false);
+                    AvatarManager.Remote o = CpOther();
+                    if (o?.actor != null) { Vector2 d = o.actor.current_position - me.current_position; WorldfallBridge.SetViewYaw(Mathf.Atan2(d.y, d.x)); }
+                }
+                if (_cpStep == 28 && t > 210f)
+                {
+                    _cpStep = 29;
+                    AvatarManager.Remote o = CpOther();
+                    float dist = o?.actor != null ? Vector2.Distance(o.actor.current_position, me.current_position) : -1f;
+                    float age = o != null ? Time.unscaledTime - o.tagAt : 999f;
+                    CpOk("nameplate", o?.actor != null && age < 1f, "other player " + (o?.name ?? "none") + " #" + (o?.actor?.getID() ?? 0) + " at distance " + dist.ToString("F1") +
+                        ", first person " + WorldfallBridge.FirstPerson + ", tag drawn " + age.ToString("F1") + " s ago; me #" + me.getID() + " at " + me.current_position + ", tick " + Lockstep.LockstepClock.Tick);
+                    CpShot("step-nameplate");
+                    Lockstep.LockstepControl.BeforeSample = null;
+                }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }
         }

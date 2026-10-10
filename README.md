@@ -275,9 +275,9 @@ top-down view so you can use the mouse, and returns to first person when you clo
   creature).
 - Wire protocol: [`server/protocol.md`](server/protocol.md).
 
-## Lockstep (experimental)
+## Lockstep
 
-Turn on **Lockstep** in the co-op menu (the host's setting decides) and every game simulates
+**Lockstep** is on by default (co-op menu; the host's setting decides): every game simulates
 the same world tick by tick; only inputs travel (god powers, possession and controls,
 Worldfall's actions, menus and conversations). Nothing is copied and nothing drifts apart over
 time, and Worldfall's first-person features (law, guards, family, army service, the king's
@@ -304,8 +304,8 @@ things on the ground, the day clock) work for every player in the shared world.
   over the internet about your ping more). Guests still run the parts of the simulation that
   aren't random (creatures walking, buildings, lava flowing), so a guest's world can differ
   for a moment until the host's state arrives; guests check their terrain against the host's
-  every half second and the object lists every 15 s, and fix what differs. **Lockstep** (see
-  below) avoids this: every game computes exactly the same world.
+  every half second and the object lists every 15 s, and fix what differs. **Lockstep** (on by default, see
+  above) avoids this: every game computes exactly the same world.
 - Dragons (and a few other special creatures) can't be possessed. That's WorldBox's own rule,
   not something Coopfall or Worldfall changes.
 

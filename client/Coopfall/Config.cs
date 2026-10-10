@@ -103,11 +103,11 @@ namespace Coopfall
         /// <summary>Host streams creatures (positions, health, births, deaths) and buildings to guests continuously.</summary>
         public bool liveSync = true;
         /// <summary>
-        /// Lockstep (experimental): every player's game simulates the world itself from the same
+        /// Lockstep: every player's game simulates the world itself from the same
         /// save, and only god powers travel. When the host has it on, guests with it on follow;
         /// everyone needs the same mods. Possessing creatures is off while it runs.
         /// </summary>
-        public bool lockstep = false;
+        public bool lockstep = true;
         /// <summary>Live sync of cities, kingdoms, wars, cultures, ... and creatures' details (part of live sync).</summary>
         public bool syncMeta = true;
         /// <summary>Live sync of terrain, fire and burn marks (part of live sync).</summary>
@@ -134,7 +134,7 @@ namespace Coopfall
         /// </summary>
         public string[] clientOnlyMods = { "Worldfall" };
         public int configVersion = 0;
-        private const int CurrentConfigVersion = 7;
+        private const int CurrentConfigVersion = 8;
 
         [NonSerialized] private static string _path;
 
@@ -176,6 +176,8 @@ namespace Coopfall
                 if (cfg.configVersion < 6 && cfg.clientOnlyMods == null) cfg.clientOnlyMods = new[] { "Worldfall" };
                 // v7: connect automatically by default
                 if (cfg.configVersion < 7) cfg.autoConnect = true;
+                // v8: lockstep on by default
+                if (cfg.configVersion < 8) cfg.lockstep = true;
                 cfg.configVersion = CurrentConfigVersion;
             }
             if (cfg.serverPort <= 0 || cfg.serverPort > 65535) cfg.serverPort = 25598;
