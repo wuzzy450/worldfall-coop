@@ -44,6 +44,7 @@ namespace Coopfall.Lockstep
             InstallBodyClear(h, wf);
             FindLazyAssets(wf);
             InstallFirstPersonChecks(h, wf);
+            InstallShotsInTicks(h, wf);
             try { SteeringInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall steering in ticks not available: " + e); }
             try { VisualClock.Install(h, wf); }
@@ -251,6 +252,37 @@ namespace Coopfall.Lockstep
             _keepOnCarcass = butchery == null ? null : AccessTools.Method(butchery, "KeepOnCarcass", new[] { typeof(Actor), typeof(Actor) });
             if (_keepOnCarcass != null) h.Patch(_keepOnCarcass, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(KeepOnCarcassPrefix)));
             else Log.Warn("lockstep: Worldfall's Butchery.KeepOnCarcass not found: loot from kills near a player may differ between PCs");
+        }
+
+        /// <summary>
+        /// Worldfall flies the shots of this PC's own body (bow, gun, thrown abilities) with its
+        /// first-person aim physics, frame by frame against the drawn terrain, and rolls aim sway on
+        /// Unity's dice: only on the shooter's PC (the bone that hit #715 on one PC only, t7603).
+        /// In ticks the shot stays the game's own projectile on every PC.
+        /// </summary>
+        private static void InstallShotsInTicks(Harmony h, Assembly wf)
+        {
+            Type shots = wf.GetType("FirstPerson.FirstPersonShots", false), aim = wf.GetType("FirstPerson.FirstPersonAim", false);
+            _releaseShot = aim == null ? null : AccessTools.Method(aim, "ReleaseShot");
+            int n = 0;
+            foreach (string m in new[] { "AfterAttack", "LaunchAbility", "Launch" })
+            {
+                MethodInfo mi = shots == null ? null : AccessTools.Method(shots, m);
+                if (mi == null) continue;
+                h.Patch(mi, prefix: new HarmonyMethod(typeof(WorldfallInTick), m == "AfterAttack" ? nameof(AfterAttackPrefix) : nameof(NotInTicks)));
+                n++;
+            }
+            if (n < 3) Log.Warn("lockstep: Worldfall's first-person shots not all found (" + n + "/3): a player's shots may land differently between PCs");
+        }
+
+        private static MethodInfo _releaseShot;
+        private static bool NotInTicks() => !LockstepClock.InTick;
+
+        private static bool AfterAttackPrefix()
+        {
+            if (!LockstepClock.InTick) return true;
+            try { _releaseShot?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: aim release: " + e.Message); }
+            return false;
         }
 
         private static bool IsFirstPersonPrefix(ref bool __result)

@@ -44,10 +44,6 @@ namespace Coopfall.Lockstep
             MethodInfo ono = AccessTools.Method(typeof(Culture), "getOnomasticData");
             if (ono != null && _onoData != null) h.Patch(ono, prefix: new HarmonyMethod(typeof(FarmsInTick), nameof(OnoPrefix)), finalizer: new HarmonyMethod(typeof(FarmsInTick), nameof(OnoFinalizer)));
             else Log.Warn("lockstep: Culture.getOnomasticData not found: names may differ between PCs");
-            MethodInfo gen = AccessTools.Method(typeof(Actor), "generateNewName");
-            if (gen != null) h.Patch(gen, prefix: new HarmonyMethod(typeof(FarmsInTick), nameof(GenPrefix)));
-            MethodInfo setName = AccessTools.Method(typeof(NanoObject), "setName");
-            if (setName != null) h.Patch(setName, prefix: new HarmonyMethod(typeof(FarmsInTick), nameof(SetNamePrefix)));
             foreach (Type t in new[] { typeof(BehFindFarmField), typeof(BehFindWheat), typeof(BehFindTileForFarm), typeof(BehCityActorFindUngrownCrop) })
             {
                 try
@@ -137,21 +133,6 @@ namespace Coopfall.Lockstep
             return __exception;
         }
 
-        private static int _genLogged;
-        private static void GenPrefix(Actor __instance)
-        {
-            if (!LockstepClock.Active || LockstepClock.InTick || _genLogged > 20) return;
-            _genLogged++;
-            Log.Info("lockstep: naming #" + __instance.getID() + " at tick " + LockstepClock.Tick + (LockstepClock.InTick ? " in tick" : " OUTSIDE ticks") + " from " + new System.Diagnostics.StackTrace(2, false).ToString().Replace(Environment.NewLine, " | "));
-        }
-        private static void SetNamePrefix(object __instance, string __0)
-        {
-            if (!LockstepClock.Active || !(__instance is Actor a)) return;
-            if (LockstepClock.InTick) return;
-            if (_genLogged > 20) return;
-            _genLogged++;
-            Log.Info("lockstep: setName #" + a.getID() + " '" + __0 + "' at tick " + LockstepClock.Tick + " OUTSIDE ticks from " + new System.Diagnostics.StackTrace(2, false).ToString().Replace(Environment.NewLine, " | "));
-        }
 
         private static bool Enumerates(MethodInfo m)
         {

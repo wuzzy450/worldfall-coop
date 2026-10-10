@@ -301,6 +301,13 @@ namespace Coopfall.Lockstep
                 LockstepClock.BeforeTick += t => DropFrameRecords();
             }
             else Log.Warn("lockstep: Worldfall's Chronicle.Load/Records not found: a PC's own reads may reach the shared memories");
+            // Chronicle.Of (HUD, conversations) captures a person not swept yet: it harvests their memories
+            // with "who else" read now (a.city.name, a.kingdom.name) and saves fp_mem on this PC only
+            // (become_leader "Karakol"/"Cizanin" drift, 2026-10-10 t3350). Outside ticks there is no capture;
+            // the in-tick sweep reaches everyone.
+            MethodInfo capture = AccessTools.Method(chronicle, "Capture", new[] { typeof(Actor) });
+            if (capture != null) h.Patch(capture, prefix: new HarmonyMethod(typeof(TownsInTick), nameof(CaptureGatePrefix)));
+            else Log.Warn("lockstep: Worldfall's Chronicle.Capture not found: a look at someone may write their memories on one PC only");
             // what you did to someone (opinions, talks, gifts, crimes) travels
             PlayerScope.Relay(h, chronicle, "ChangeOpinion", "Note", "AddOwnMemory");
             features.Add("opinions");
@@ -321,6 +328,8 @@ namespace Coopfall.Lockstep
             if (LockstepClock.InTick || !LockstepControl.Running || !LockstepClock.Active) return;
             try { _frameRecords.Add(a.getID()); } catch { }   // Records is keyed by data.id, the same as the creature ID
         }
+
+        private static bool CaptureGatePrefix() => LockstepClock.InTick || !LockstepControl.Running || !LockstepClock.Active;
 
         private static void DropFrameRecords()
         {

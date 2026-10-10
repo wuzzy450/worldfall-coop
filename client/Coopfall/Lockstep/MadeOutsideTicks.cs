@@ -42,7 +42,29 @@ namespace Coopfall.Lockstep
             foreach (MethodBase m in targets)
                 try { h.Patch(m, prefix: new HarmonyMethod(typeof(MadeOutsideTicks), nameof(Prefix))); n++; }
                 catch (Exception e) { Log.Warn("lockstep: couldn't watch " + m.DeclaringType.Name + "." + m.Name + ": " + e.Message); }
+            MethodInfo gone = AccessTools.Method(typeof(BuildingManager), "destroyObject");
+            if (gone != null) h.Patch(gone, prefix: new HarmonyMethod(typeof(MadeOutsideTicks), nameof(GonePrefix)));
             Log.Info("lockstep: watching " + n + " ways of making things for calls outside ticks");
+        }
+
+        private static int _goneOutside;
+
+        /// <summary>
+        /// Early in an epoch: every building removed in a tick, with who removed it (after a re-sync the guest
+        /// lost one building more than the host at tick 28, every time); outside ticks: the first 20 removals.
+        /// </summary>
+        private static void GonePrefix(Building pBuilding)
+        {
+            if (!LockstepControl.Running || !LockstepClock.Active || pBuilding == null) return;
+            bool inTick = LockstepClock.InTick;
+            if (inTick ? !(LockstepSession.TraceTicks && LockstepClock.Tick < 100) : _goneOutside++ >= 20) return;
+            var st = new System.Diagnostics.StackTrace(2, false);
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < st.FrameCount && i < 10; i++) { MethodBase f = st.GetFrame(i)?.GetMethod(); if (f != null) sb.Append(" < ").Append(f.DeclaringType?.Name).Append('.').Append(f.Name); }
+            string what;
+            try { what = "#" + pBuilding.getID() + " " + Traverse.Create(pBuilding).Field("asset").Field("id").GetValue<string>() + (pBuilding.current_tile != null ? " at " + pBuilding.current_tile.x + "," + pBuilding.current_tile.y : ""); }
+            catch { what = "?"; }
+            Log.Info("lockstep: tick " + LockstepClock.Tick + (inTick ? " removes " : " removes OUTSIDE ticks ") + what + sb);
         }
 
         private static void Prefix(MethodBase __originalMethod, object[] __args)

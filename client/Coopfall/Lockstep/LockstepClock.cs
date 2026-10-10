@@ -40,6 +40,7 @@ namespace Coopfall.Lockstep
         private static bool _inTickAll;
 
         private static Action<MapBox, float> _updateSimulation;
+        private static int _tickErrors;
         private static Action<MapBox> _updateFinish;
         private static AccessTools.FieldRef<MapBox, bool> _isPaused;
         private static AccessTools.FieldRef<MapBox, ParallelOptions> _parallel;
@@ -819,6 +820,10 @@ namespace Coopfall.Lockstep
                     // target while drawing, i.e. for creatures on screen: copy it for all
                     foreach (Actor a in map.units) if (a != null) { a.updatePos(); a.updateRotation(); }
                     EffectState.RestoreAnimations();
+                    // once a tick has started it counts, even if something in it throws: an unfinished tick
+                    // was stepped again every frame (the world ran on outside ticks: guest stall 2026-10-10)
+                    try
+                    {
                     LockstepControl.TickStart();
                     LockstepInput.ApplyFor(Tick);
                     LockstepControl.AfterInputs();
@@ -832,6 +837,12 @@ namespace Coopfall.Lockstep
                     FlushContainers(map);
                     EffectState.SaveAnimations(map);
                     LockstepControl.TickEnd();
+                    }
+                    catch (Exception e)
+                    {
+                        if (_tickErrors++ < 10) Log.Error("lockstep: tick " + Tick + " threw (counted anyway): " + e);
+                        try { LockstepControl.TickEnd(); } catch { }
+                    }
                     _inTickAll = false;
                     Tick++;
                     n++;

@@ -640,8 +640,12 @@ namespace Coopfall.Lockstep
             _real = null;
             _tickUnits = null;
             // this player's creature died in the shared world: let go of it here too
+            // (a removed creature's data is gone: getID throws; a throw here would leave the tick unfinished
+            // while the world had already stepped, and every frame would step it again: guest stall 2026-10-10)
             Actor mine = _main();
-            if (mine != null && _sentPossess == mine.getID() && gone.Contains(_sentPossess)) LetGoLocally();
+            long mineId = -1;
+            if (mine != null) { try { mineId = mine.getID(); } catch (NullReferenceException) { mineId = _sentPossess; } }
+            if (mine != null && _sentPossess == mineId && gone.Contains(_sentPossess)) LetGoLocally();
         }
 
         private static void Enter(Actor a)
