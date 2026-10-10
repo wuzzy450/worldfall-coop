@@ -33,7 +33,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 220f;
+        private const float CoopSeconds = 230f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -314,7 +314,7 @@ namespace Coopfall
                 {
                     _cpStep = 24;
                     long d = Lockstep.LockstepClock.Tick - _cpTickA;
-                    CpOk("guest pause", d <= 2 && Config.paused, "ticks in 5 s while paused: " + d + ", paused here " + Config.paused);
+                    if (!_s.IsHost) CpOk("guest pause", d <= 2 && Config.paused, "ticks in 5 s while paused: " + d + ", paused here " + Config.paused);
                     if (!_s.IsHost) { Log.Info("TEST coop: guest sets x5"); Config.paused = false; Config.setWorldSpeed("x5"); }
                 }
                 if (_cpStep == 24 && t > 178f) { _cpStep = 25; _cpTickA = Lockstep.LockstepClock.Tick; }
@@ -322,7 +322,7 @@ namespace Coopfall
                 {
                     _cpStep = 26;
                     long d = Lockstep.LockstepClock.Tick - _cpTickA;
-                    CpOk("guest speed", Config.time_scale_asset?.id == "x5" && !Config.paused && d > 0, "ticks in 5 s at " + Config.time_scale_asset?.id + ": " + d + " (tick " + Lockstep.LockstepClock.Tick + ")");
+                    if (!_s.IsHost) CpOk("guest speed", Config.time_scale_asset?.id == "x5" && !Config.paused && d > 0, "ticks in 5 s at " + Config.time_scale_asset?.id + ": " + d + " (tick " + Lockstep.LockstepClock.Tick + ")");
                     if (!_s.IsHost) { Config.setWorldSpeed("x1"); }
                 }
                 // nameplates: both bodies walk to each other (scripted controls travel as inputs), face each
@@ -330,28 +330,38 @@ namespace Coopfall
                 if (_cpStep == 26 && t > 186f)
                 {
                     _cpStep = 27;
+                    FieldInfo scripted = CpType("PossessionHooks")?.GetField("ScriptedInput", Any);
                     Lockstep.LockstepControl.BeforeSample = () =>
                     {
                         Actor mine = ControllableUnit.getControllableUnit(), other = CpOther()?.actor;
                         Vector2 d = mine != null && other != null ? other.current_position - mine.current_position : Vector2.zero;
-                        Lockstep.LockstepControl.Script(d.magnitude > 2.5f ? d.normalized : Vector2.zero, false, false);
+                        bool go = d.magnitude > 2.5f;
+                        if (d != Vector2.zero) WorldfallBridge.SetViewYaw(Mathf.Atan2(d.y, d.x));
+                        // first person walks by Worldfall's own input (forward = where the view looks)
+                        scripted?.SetValue(null, go ? new Vector2(0f, 1f) : Vector2.zero);
+                        Lockstep.LockstepControl.Script(go ? d.normalized : Vector2.zero, false, false);
                     };
                 }
-                if (_cpStep == 27 && t > 206f)
+                if (_cpStep == 27 && t > 216f)
                 {
                     _cpStep = 28;
-                    Lockstep.LockstepControl.BeforeSample = () => Lockstep.LockstepControl.Script(Vector2.zero, false, false);
-                    AvatarManager.Remote o = CpOther();
-                    if (o?.actor != null) { Vector2 d = o.actor.current_position - me.current_position; WorldfallBridge.SetViewYaw(Mathf.Atan2(d.y, d.x)); }
+                    CpType("PossessionHooks")?.GetField("ScriptedInput", Any)?.SetValue(null, Vector2.zero);
+                    // stand still, keep looking at the other player until the check
+                    Lockstep.LockstepControl.BeforeSample = () =>
+                    {
+                        Actor mine = ControllableUnit.getControllableUnit(), other = CpOther()?.actor;
+                        if (mine != null && other != null) { Vector2 d = other.current_position - mine.current_position; if (d != Vector2.zero) WorldfallBridge.SetViewYaw(Mathf.Atan2(d.y, d.x)); }
+                        Lockstep.LockstepControl.Script(Vector2.zero, false, false);
+                    };
                 }
-                if (_cpStep == 28 && t > 210f)
+                if (_cpStep == 28 && t > 220f)
                 {
                     _cpStep = 29;
                     AvatarManager.Remote o = CpOther();
                     float dist = o?.actor != null ? Vector2.Distance(o.actor.current_position, me.current_position) : -1f;
                     float age = o != null ? Time.unscaledTime - o.tagAt : 999f;
-                    CpOk("nameplate", o?.actor != null && age < 1f, "other player " + (o?.name ?? "none") + " #" + (o?.actor?.getID() ?? 0) + " at distance " + dist.ToString("F1") +
-                        ", first person " + WorldfallBridge.FirstPerson + ", tag drawn " + age.ToString("F1") + " s ago; me #" + me.getID() + " at " + me.current_position + ", tick " + Lockstep.LockstepClock.Tick);
+                    CpOk("nameplate", o?.actor != null && age < 1f && dist >= 0f && dist < 5f, "other player " + (o?.name ?? "none") + " #" + (o?.actor?.getID() ?? 0) + " at distance " + dist.ToString("F1") +
+                        ", first person " + WorldfallBridge.FirstPerson + ", tag drawn " + age.ToString("F1") + " s ago; me #" + me.getID() + " at " + me.current_position + " health " + me.getHealth() + "/" + me.getMaxHealth() + " ratio " + me.getHealthRatio().ToString("F2") + ", other health " + (o?.actor != null ? o.actor.getHealth() + "/" + o.actor.getMaxHealth() + " tag " + o.hp + "/" + o.mhp : "-") + ", tick " + Lockstep.LockstepClock.Tick);
                     CpShot("step-nameplate");
                     Lockstep.LockstepControl.BeforeSample = null;
                 }

@@ -137,7 +137,7 @@ namespace Coopfall.Lockstep
             if (_last == null || _last.tick != tick) return;
             foreach (Actor a in World.world.units)
             {
-                if (a == null || !_last.units.TryGetValue(a.getID(), out ulong[] was)) continue;
+                if (a == null || (Filter != null && !Filter(a)) || !_last.units.TryGetValue(a.getID(), out ulong[] was)) continue;
                 ulong[] now = Values(a);
                 for (int i = 0; i < now.Length; i++)
                 {
@@ -155,13 +155,16 @@ namespace Coopfall.Lockstep
         {
             Init();
             var s = new Snap { tick = tick };
-            foreach (Actor a in World.world.units) if (a != null) s.units[a.getID()] = Values(a);
+            foreach (Actor a in World.world.units) if (a != null && (Filter == null || Filter(a))) s.units[a.getID()] = Values(a);
             _ring.Enqueue(s);
             while (_ring.Count > Keep) _ring.Dequeue();
             _last = s;
         }
 
         public static void Clear() { _ring.Clear(); _last = null; }
+
+        /// <summary>Only creatures this says yes to are recorded (null: all; the always-on watch uses a few).</summary>
+        public static Func<Actor, bool> Filter;
 
         /// <summary>Writes the ring as per-creature changes (first record of each creature in full).</summary>
         public static void Write(string path)

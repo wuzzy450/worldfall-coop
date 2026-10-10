@@ -91,6 +91,11 @@ namespace Coopfall.Lockstep
             } finally { DataCalls.LeaveLocal(); }
             // Worldfall's caches read the data again
             try { _exploredReset?.Invoke(null, null); } catch { }
+            // Chronicle keeps parsed kin/memories per person and only drops them when map_stats changes, which
+            // an epoch load doesn't do: a PC's stale copy (e.g. "died in 91" after a drift) was written back
+            // into every fresh epoch at the next sweep -> a desync every epoch, forever (2026-10-10, 80 loops).
+            // Drop it, so every PC reads the loaded world and sweeps from the same person.
+            try { _chronReset?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: Worldfall's Chronicle not reset: " + (e.InnerException ?? e).Message); }
             Log.Info("lockstep: this PC's explored maps put back for " + n + " creatures");
         }
 

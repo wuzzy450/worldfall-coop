@@ -289,6 +289,18 @@ namespace Coopfall.Lockstep
             _chronBudget = AccessTools.Field(chronicle, "BudgetMs");
             _chronReset = AccessTools.Method(chronicle, "Reset", Type.EmptyTypes);
             if (_chronPerFrame == null || _chronBudget == null) Log.Warn("lockstep: Worldfall's Chronicle sweep settings not found: memories may differ between PCs");
+            // Frame code (the open conversation, the HUD) reads people's records, and a read can create one
+            // (RegardOf makes a regard toward you): that copy existed on one PC only and the next in-tick sweep
+            // saved it (fp_you drift 2026-10-10, t137). Records touched outside ticks are dropped before each
+            // tick, so ticks always start from the shared data.
+            MethodInfo load = AccessTools.Method(chronicle, "Load", new[] { typeof(Actor) });
+            _chronRecords = AccessTools.Field(chronicle, "Records")?.GetValue(null) as System.Collections.IDictionary;
+            if (load != null && _chronRecords != null)
+            {
+                h.Patch(load, postfix: new HarmonyMethod(typeof(TownsInTick), nameof(ChronicleLoadPostfix)));
+                LockstepClock.BeforeTick += t => DropFrameRecords();
+            }
+            else Log.Warn("lockstep: Worldfall's Chronicle.Load/Records not found: a PC's own reads may reach the shared memories");
             // what you did to someone (opinions, talks, gifts, crimes) travels
             PlayerScope.Relay(h, chronicle, "ChangeOpinion", "Note", "AddOwnMemory");
             features.Add("opinions");
@@ -299,6 +311,22 @@ namespace Coopfall.Lockstep
                 foreach (string n in new[] { "Tick", "Write", "WriteAll" })
                     foreach (MethodInfo m in explored.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
                         if (m.Name == n) h.Patch(m, prefix: new HarmonyMethod(typeof(TownsInTick), nameof(LocalPrefix)), finalizer: new HarmonyMethod(typeof(TownsInTick), nameof(LocalFinalizer)));
+        }
+
+        private static System.Collections.IDictionary _chronRecords;
+        private static readonly HashSet<long> _frameRecords = new HashSet<long>();
+
+        private static void ChronicleLoadPostfix(Actor a)
+        {
+            if (LockstepClock.InTick || !LockstepControl.Running || !LockstepClock.Active) return;
+            try { _frameRecords.Add(a.getID()); } catch { }   // Records is keyed by data.id, the same as the creature ID
+        }
+
+        private static void DropFrameRecords()
+        {
+            if (_frameRecords.Count == 0) return;
+            foreach (long id in _frameRecords) _chronRecords.Remove(id);
+            _frameRecords.Clear();
         }
 
         private static MethodInfo _chronTick, _chronReset;

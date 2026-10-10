@@ -110,8 +110,14 @@ namespace Coopfall.Lockstep
             return ReferenceEquals(_owners[d.GetType()](id), d) ? name : null;
         }
 
+        private static readonly bool TraceYou = Array.Exists(Environment.GetCommandLineArgs(), x => x == "-coopfall-lockstep-watchall");
+
+        private static string Short(string s) => s.Length > 700 ? s.Substring(0, 700) : s;
+
         private static bool WritePrefix(BaseSystemData __instance, MethodBase __originalMethod, object[] __args)
         {
+            if (TraceYou && LockstepClock.InTick && !_replaying && __args.Length > 1 && __args[0] as string == "fp_you")
+                Log.Info("lockstep: in-tick fp_you write t" + LockstepClock.Tick + " #" + __instance.id + " = " + __args[1] + " from " + Short(new System.Diagnostics.StackTrace(2, false).ToString().Replace(Environment.NewLine, " <")));
             if (!Relaying) return true;
             string owner = Owner(__instance, out long id);
             if (owner == null) return true;   // not a world object's data (or a stale one): as before
@@ -151,6 +157,9 @@ namespace Coopfall.Lockstep
             try { Apply(owner, id, kind + key, enc); }   // caught by WorldCalls and sent
             finally { WorldCalls.SuppressDedupe = false; }
             Note(__instance, kind + key, remove, value);
+            // this PC's Chronicle copy already holds the change; until the tick applies it, ticks here must see
+            // the same old data as everywhere else (this PC's own reads get the pending value from the overlay)
+            if (kind == "s" && ChronicleKeys.Contains(key)) ForgetChronicle(id);
             Sent++;
             _sentByKey.TryGetValue(key, out int c);
             _sentByKey[key] = c + 1;
@@ -229,6 +238,20 @@ namespace Coopfall.Lockstep
             mine[kk] = new Pending { value = value, removed = remove, at = Time.unscaledTime };
         }
 
+        private static readonly HashSet<string> ChronicleKeys = new HashSet<string> { "fp_kin", "fp_mem", "fp_you" };
+        private static System.Collections.IDictionary _chronRecords;
+
+        private static void ForgetChronicle(long id)
+        {
+            try
+            {
+                Type ch = WorldfallBridge.Assembly?.GetType("FirstPerson.Chronicle", false);
+                if (_chronRecords == null && ch != null) _chronRecords = AccessTools.Field(ch, "Records")?.GetValue(null) as System.Collections.IDictionary;
+                _chronRecords?.Remove(id);
+            }
+            catch { }
+        }
+
         /// <summary>Relayed (WorldCalls): one data write, in a tick on every PC.</summary>
         public static void Apply(string owner, long id, string kindKey, string enc)
         {
@@ -255,6 +278,10 @@ namespace Coopfall.Lockstep
                 Replayed++;
             }
             finally { _replaying = was; }
+            // Worldfall's Chronicle keeps a parsed copy of each person's kin/memories/regards and flushes it whole:
+            // a PC whose copy predates this write would put the old value back at its next flush (fp_you "talks"
+            // drift 2026-10-10). Every PC drops its copy here, in the same tick, and reads the data again.
+            if (kind == "s" && ChronicleKeys.Contains(key)) ForgetChronicle(d.id);
             // this PC's own write has landed: its reads see the data again
             if (_pending.TryGetValue(d, out Dictionary<string, Pending> mine) && mine.TryGetValue(kindKey, out Pending p) && p.removed == remove && (remove || Equals(p.value, v)))
             {
@@ -312,8 +339,10 @@ namespace Coopfall.Lockstep
 
         // ------------------------------------------------------------------ checks
 
+        // fp_bagorder: the owner's bag/hotbar display order (Worldfall's Hotbar writes it on its own PC, e.g. right
+        // after a load); what a hotbar key does travels as its own input (Gear.PutOn...). Drift 2026-10-10 epoch 3 t10.
         /// <summary>Keys that are only one PC's cosmetic memory (kept local, left out of the check).</summary>
-        public static readonly HashSet<string> LocalKeys = new HashSet<string> { "fp_seen" };
+        public static readonly HashSet<string> LocalKeys = new HashSet<string> { "fp_seen", "fp_bagorder" };
 
         /// <summary>Keys some frame code writes many times a second (a sweep): kept on this PC from then on.</summary>
         private static readonly HashSet<string> _autoLocal = new HashSet<string>();
@@ -344,7 +373,7 @@ namespace Coopfall.Lockstep
             foreach (City c in w.cities) if (c != null) h += Rec(rec, "c", c.data);
             foreach (Kingdom k in w.kingdoms) if (k != null) h += Rec(rec, "k", k.data);
             _recent.Enqueue(new KeyValuePair<long, Dictionary<string, ulong>>(LockstepClock.Tick, rec));
-            while (_recent.Count > 8) _recent.Dequeue();
+            while (_recent.Count > 30) _recent.Dequeue();
             return h;
         }
 

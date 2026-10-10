@@ -48,6 +48,8 @@ namespace Coopfall.Lockstep
         public bool Starting => _epoch > 0 && !_loaded;
         public int Epoch => _epoch;
         public int Desyncs, Epochs, Checked;
+        private readonly List<float> _recentDesyncs = new List<float>();
+        private float _resyncDue = -1f;
         public string LastDesync;
 
         private int _epoch, _seed;
@@ -107,6 +109,12 @@ namespace Coopfall.Lockstep
             LockstepClock.BeforeTick += t => { if (_myKeyFor != _s.MyId) { _myKeyFor = _s.MyId; MyPlayer = PlayerKey(_s.MyId); } };
             LockstepInput.Applied += i => { if (TraceTicks) Log.Info("lockstep: applied " + i + " (epoch " + _epoch + ")"); };
             if (TraceTicks) LockstepClock.BeforeTick += t => { if (Active) UnitRing.BeforeTick(t); };
+            // WorldBox caches region-to-region routes and wipes the cache at 1000 entries; path queries made
+            // on one PC between ticks (drawing, Worldfall's frame code) fill it differently, so a creature
+            // got an old cached route on one PC and a fresh one on the other (drift 2026-10-10, #779 t4237).
+            // Each tick starts from an empty cache: routes in ticks depend only on the shared world.
+            var rpf = HarmonyLib.AccessTools.Field(typeof(MapBox), "region_path_finder");
+            LockstepClock.BeforeTick += t => { if (Active) (rpf?.GetValue(World.world) as RegionPathFinder)?.clearCache(); };
             ZeroHpWatch.Install();
         }
 
@@ -135,6 +143,7 @@ namespace Coopfall.Lockstep
             _sha = CoopSession.Sha256(data);
             _epochData = data;
             _epochAt = Time.unscaledTime;
+            _resyncDue = -1f;
             Epochs++;
             Log.Info("lockstep: epoch " + _epoch + " (" + reason + "), seed " + _seed + ", " + (data.Length / 1024) + " KB");
             var wle = new JObject { ["e"] = _epoch, ["seed"] = _seed, ["sha"] = _sha, ["mods"] = ModFingerprint(), ["reason"] = reason };
@@ -182,7 +191,7 @@ namespace Coopfall.Lockstep
             _sentGrant = -1;
             _grantAcc = 0;
             _lastHashTick = -1;
-            UnitRing.Clear();
+            UnitRing.Clear(); _recentRecs.Clear(); _recentTargets.Clear();
             _owners.Clear();
             LockstepControl.Reset();
             // freeze the world and seed loading before anything is loaded
@@ -354,6 +363,7 @@ namespace Coopfall.Lockstep
             }
             Grant();
             ReleaseLeavers();
+            if (_resyncDue >= 0f && Time.unscaledTime >= _resyncDue) { float at = _epochAt; StartEpoch("desync"); if (_epochAt != at) _resyncDue = -1f; }
             CompareHashes();
         }
 
@@ -593,11 +603,84 @@ namespace Coopfall.Lockstep
             if (TraceTicks && Active) TraceTick(tick);
             if (TraceTicks && Active && tick % (tick < 1000 ? 10 : 100) == 0) Log.Info("lockstep: job lists at tick " + tick + ": " + LockstepClock.ListSignature());
             if (Active && DumpAt > 0 && (tick == 1 || (tick % DumpAt == 0 && tick <= 2000))) DumpMeta(tick);
+            if (Active && !TraceTicks) WatchTick(tick);
             if (!Active || tick % HashEvery != 0 || tick == _lastHashTick) return;
             _lastHashTick = tick;
-            string h = StateHash.Compute(tick, false).Line();
+            TickHash th = StateHash.Compute(tick, !TraceTicks);
+            if (th.detail != null) { _recentRecs.Enqueue(th); while (_recentRecs.Count > 30) _recentRecs.Dequeue(); _recentTargets.Enqueue(new KeyValuePair<long, string>(tick, TileTargets())); while (_recentTargets.Count > 30) _recentTargets.Dequeue(); }
+            string h = th.Line();
             if (_s.IsHost) _myHashes[tick] = h;
             else Send("wlh", new JObject { ["e"] = _epoch, ["from"] = _s.MyId, ["tick"] = tick, ["h"] = h });
+        }
+
+        // ------------------------------------------------------------------ always-on drift watch
+        // Untraced runs drift where traced ones don't (timing), so a cheap record is kept all the time:
+        // every creature's checksum record at the last 30 checks, and every field of the creatures near
+        // a controlled body (and the bodies) for the last UnitRing.Keep ticks. Written on a desync by
+        // both PCs (lockstep-watchN.txt, lockstep-ringN.txt): tools/compare-watch.py names the first split.
+        private readonly Queue<TickHash> _recentRecs = new Queue<TickHash>();
+        private readonly List<Vector2> _bodies = new List<Vector2>();
+        private const float WatchRadius = 25f;
+        private static readonly bool WatchAll = Array.Exists(Environment.GetCommandLineArgs(), x => x == "-coopfall-lockstep-watchall");
+
+        private void WatchTick(long tick)
+        {
+            _bodies.Clear();
+            foreach (long id in LockstepControl.ControlledIds())
+            {
+                Actor b = World.world.units.get(id);
+                if (b != null && b.isAlive()) _bodies.Add(b.current_position);
+            }
+            if (UnitRing.Filter == null) UnitRing.Filter = a =>
+            {
+                if (WatchAll || LockstepControl.IsControlled(a.getID())) return true;
+                foreach (Vector2 p in _bodies) if ((a.current_position - p).sqrMagnitude < WatchRadius * WatchRadius) return true;
+                return false;
+            };
+            UnitRing.AfterTick(tick);
+        }
+
+        // which creature has reserved which tile (WorldTile._targeted_by: "is someone already going there"),
+        // not in the checksum but read by the AI (farmers' wheat pick, drift 2026-10-10 #731 t3963)
+        private readonly Queue<KeyValuePair<long, string>> _recentTargets = new Queue<KeyValuePair<long, string>>();
+        private static readonly HarmonyLib.AccessTools.FieldRef<WorldTile, Actor> _targetedBy = HarmonyLib.AccessTools.FieldRefAccess<WorldTile, Actor>("_targeted_by");
+        private static readonly HarmonyLib.AccessTools.FieldRef<MapBox, WorldTile[]> _tilesList = HarmonyLib.AccessTools.FieldRefAccess<MapBox, WorldTile[]>("tiles_list");
+
+        private static string TileTargets()
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (WorldTile t in _tilesList(World.world))
+            {
+                Actor a = _targetedBy(t);
+                if (a != null) sb.Append(t.tile_id).Append(':').Append(a.getID()).Append(a.isAlive() ? "" : "d").Append(' ');
+            }
+            return sb.ToString();
+        }
+
+        private void WriteWatch()
+        {
+            if (TraceTicks) return;
+            try
+            {
+                using (var w = new System.IO.StreamWriter(TracePath("lockstep-targets" + _epoch + ".txt")))
+                    foreach (KeyValuePair<long, string> kv in _recentTargets) w.WriteLine(kv.Key + "	" + kv.Value);
+            }
+            catch (Exception e) { Log.Warn("lockstep: couldn't write the tile targets: " + e.Message); }
+            _recentTargets.Clear();
+            UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
+            TileDump.Write(TracePath("lockstep-tiles" + _epoch + ".txt"));
+            try
+            {
+                using (var w = new System.IO.StreamWriter(TracePath("lockstep-watch" + _epoch + ".txt")))
+                    foreach (TickHash th in _recentRecs)
+                    {
+                        var ids = new List<long>(th.detail.Keys);
+                        ids.Sort();
+                        foreach (long id in ids) w.WriteLine(th.tick + "	" + id + "	" + th.detail[id].Hash().ToString("x16") + "	" + th.detail[id].Diff(default(UnitRec)));
+                    }
+            }
+            catch (Exception e) { Log.Warn("lockstep: couldn't write the watch: " + e.Message); }
+            _recentRecs.Clear();
         }
 
         private void CompareHashes()
@@ -615,13 +698,27 @@ namespace Coopfall.Lockstep
                 _theirHashes.RemoveAt(i);
                 string theirs = (string)p["h"];
                 if (theirs == mine) { Checked++; continue; }
+                if (_resyncDue >= 0f) continue;   // a re-sync is already on its way
                 Desyncs++;
                 LastDesync = (_s.Player(who)?.name ?? who) + " at tick " + tick;
                 Log.Warn("lockstep: " + LastDesync + " differs: " + Describe(mine, theirs));
                 _s.AddChat(null, "Lockstep: " + (_s.Player(who)?.name ?? "a player") + "'s world drifted at tick " + tick + " - re-syncing everyone", true);
                 if (TraceTicks) UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
+                WriteWatch();
                 DataCalls.WriteRecent(TracePath("lockstep-wfdata" + _epoch + ".txt"));
-                StartEpoch("desync");
+                // A drift that comes back right after every re-sync must not reload everyone every few seconds:
+                // from the 6th desync in 2 minutes the wait doubles (10 s .. 60 s) and the room is told once.
+                float now = Time.unscaledTime;
+                _recentDesyncs.RemoveAll(x => now - x > 120f);
+                _recentDesyncs.Add(now);
+                float wait = 0f;
+                if (_recentDesyncs.Count >= 6)
+                {
+                    wait = Mathf.Min(60f, 10f * (1 << Math.Min(3, _recentDesyncs.Count - 6)));
+                    Log.Warn("lockstep: " + _recentDesyncs.Count + " desyncs in 2 minutes; next re-sync in " + wait + " s");
+                    if (_recentDesyncs.Count == 6) _s.AddChat(null, "Lockstep keeps drifting apart; re-syncing less often for now. If it goes on, turning Lockstep off in the co-op menu (host) switches to live sync.", true);
+                }
+                _resyncDue = now + wait;
                 return;
             }
             // keep a few seconds of our own checksums
@@ -664,6 +761,7 @@ namespace Coopfall.Lockstep
                     }
                     if (e == _epoch && (string)p["sha"] == _sha) return;   // the relay repeats it ahead of the save it serves
                     if (TraceTicks && (string)p["reason"] == "desync" && _epoch > 0) UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
+                    if ((string)p["reason"] == "desync" && _epoch > 0) WriteWatch();
                     if ((string)p["reason"] == "desync" && _epoch > 0) DataCalls.WriteRecent(TracePath("lockstep-wfdata" + _epoch + ".txt"));
                     _epoch = e;
                     _seed = (int?)p["seed"] ?? 1;
