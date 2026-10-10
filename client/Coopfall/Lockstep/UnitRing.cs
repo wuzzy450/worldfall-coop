@@ -96,20 +96,36 @@ namespace Coopfall.Lockstep
 
         private static ulong[] Values(Actor a)
         {
-            var v = new ulong[_actorFields.Length + _aiFields.Length + 5];
+            var v = new ulong[_actorFields.Length + _aiFields.Length + 9];
             int x = _actorFields.Length + _aiFields.Length;
             v[x] = (uint)StateHash.Gear(a);
             v[x + 1] = (uint)a.getHealth();
             v[x + 2] = StateHash.Cooldowns(a);
             v[x + 3] = (uint)StateHash.Path(a);
             v[x + 4] = (uint)StateHash.Task(a);
+            // what decides a creature's next enemy besides the ring fields (drift at t1573, 2026-10-09)
+            v[x + 5] = IdSetHash(_aggro?.GetValue(a));
+            v[x + 6] = IdSetHash(_ignore?.GetValue(a));
+            try { v[x + 7] = a.isInsideSomething() ? 1UL : 0UL; } catch { v[x + 7] = 0xDEAD; }
+            try { v[x + 8] = (_inMagnet != null && (bool)_inMagnet.Invoke(a, null)) ? 1UL : 0UL; } catch { v[x + 8] = 0xDEAD; }
             for (int i = 0; i < _actorFields.Length; i++) v[i] = Bits(_actorFields[i], a);
             object ai = _ai?.GetValue(a);
             if (ai != null) for (int i = 0; i < _aiFields.Length; i++) v[_actorFields.Length + i] = Bits(_aiFields[i], ai);
             return v;
         }
 
-        private static readonly string[] Extra = { "equipment", "health", "decision cooldowns (hash)", "path (hash)", "task (hash)" };
+        private static readonly string[] Extra = { "equipment", "health", "decision cooldowns (hash)", "path (hash)", "task (hash)", "aggression targets (hash)", "ignored targets (hash)", "inside something", "in magnet" };
+        private static readonly FieldInfo _aggro = typeof(Actor).GetField("_aggression_targets", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic), _ignore = typeof(BaseSimObject).GetField("_targets_to_ignore", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        private static readonly MethodInfo _inMagnet = typeof(Actor).GetMethod("isInMagnet", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+
+        /// <summary>Order-free hash of a set of creature IDs (0 for none).</summary>
+        private static ulong IdSetHash(object set)
+        {
+            if (!(set is HashSet<long> h) || h.Count == 0) return 0;
+            ulong sum = 0;
+            foreach (long id in h) { ulong z = (ulong)id * 0x9E3779B97F4A7C15UL; z ^= z >> 29; sum += z; }
+            return sum ^ (ulong)h.Count;
+        }
         private static string Name(int i) => i < _actorFields.Length ? _actorFields[i].name : i - _actorFields.Length < _aiFields.Length ? _aiFields[i - _actorFields.Length].name : Extra[i - _actorFields.Length - _aiFields.Length];
         private static Fld Field(int i) => i < _actorFields.Length ? _actorFields[i] : i - _actorFields.Length < _aiFields.Length ? _aiFields[i - _actorFields.Length] : new Fld { name = Name(i), kind = KLong };
 

@@ -46,6 +46,8 @@ namespace Coopfall.Lockstep
             InstallFirstPersonChecks(h, wf);
             try { SteeringInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall steering in ticks not available: " + e); }
+            try { ClimbingInTick.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall climbing in ticks not available: " + e); }
             try { PlayerScope.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall per player not available: " + e); }
             Log.Info("lockstep: Worldfall's " + (_guards != null ? "guards " : "") + (_creatures != null ? "creature abilities " : "") + "run in ticks (" + n + " methods on the tick clock)");
@@ -309,6 +311,7 @@ namespace Coopfall.Lockstep
             AddLazyAssets();
             PlayerScope.Reset();
             SteeringInTick.Reset();
+            ClimbingInTick.Reset();
             foreach (KeyValuePair<FieldInfo, object> kv in _statics)
             {
                 object v = kv.Key.GetValue(null);
