@@ -48,6 +48,10 @@ namespace Coopfall.Lockstep
             catch (Exception e) { Log.Error("lockstep: Worldfall steering in ticks not available: " + e); }
             try { VisualClock.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall's figures not on the world's clock: " + e); }
+            try { EffectSeeds.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's effects not on the world's dice: " + e); }
+            try { OwnMindInTick.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall OwnMind in ticks not available: " + e); }
             try { ClimbingInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall climbing in ticks not available: " + e); }
             try { PlayerScope.Install(h, wf); }
@@ -318,6 +322,7 @@ namespace Coopfall.Lockstep
             PlayerScope.Reset();
             SteeringInTick.Reset();
             ClimbingInTick.Reset();
+            EffectSeeds.Reset();
             foreach (KeyValuePair<FieldInfo, object> kv in _statics)
             {
                 object v = kv.Key.GetValue(null);

@@ -247,6 +247,7 @@ namespace Coopfall.Lockstep
             }
             SortTileSets();
             FrameUpdates.Normalize();
+            PerPlayerMemory.Put();
             WorldfallInTick.Reset();
             // the map's zone list is shuffled (unseeded) when zones are made, once per map size and
             // game session; "a random zone" is picked from it by index

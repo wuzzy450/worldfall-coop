@@ -60,7 +60,9 @@ namespace Coopfall.Lockstep
         private static readonly bool HostKeepWanted = Array.Exists(Environment.GetCommandLineArgs(), x => x.Equals("-coopfall-lockstep-hostkeep", StringComparison.OrdinalIgnoreCase));
         private bool _hostKeepOff, _hostKept;
         private string _sha;
-        private bool _loaded;
+        private bool _loaded, _everLoaded;
+        private int _h0Epoch = -1;
+        private readonly List<JObject> _earlyReady = new List<JObject>();
         private float _epochAt = -999f;
 
         // host
@@ -123,8 +125,10 @@ namespace Coopfall.Lockstep
             if (!LockstepClock.Install()) { Log.Error("lockstep: can't hook the game loop; staying on live sync"); return; }
             if (_s.Uploading) return;   // an autosave is still going up; try again next frame
             byte[] data;
+            var snapWatch = System.Diagnostics.Stopwatch.StartNew();
             try { data = WorldBoxApi.TakeSnapshot(); }
             catch (Exception e) { Log.Error("lockstep: snapshot failed: " + e); return; }
+            Log.Info("lockstep: snapshot took " + snapWatch.ElapsedMilliseconds + " ms");
             _epoch = Math.Max(_epoch + 1, 1);
             _seed = LockstepClock.TickSeed(Environment.TickCount, _epoch);
             _sha = CoopSession.Sha256(data);
@@ -145,6 +149,10 @@ namespace Coopfall.Lockstep
             if (wps != null && wps.ToString(Newtonsoft.Json.Formatting.None).Length > 512 * 1024) { Log.Warn("lockstep: Worldfall state too big to carry; players start fresh"); wps = null; }
             if (wps != null) wle["wps"] = wps;
             PlayerScope.Carry(wps == null ? null : JObject.Parse(wps.ToString(Newtonsoft.Json.Formatting.None)));
+            // things left on the ground
+            JArray wbn = _epoch > 1 && LockstepControl.Running ? BelongingsInTick.Save() : null;
+            if (wbn != null) wle["wbn"] = wbn;
+            BelongingsInTick.Carry(wbn == null ? null : (JArray)wbn.DeepClone());
             Send("wle", wle);
             _s.UploadSnapshotData(data, "lockstep");
             BeginEpochLoad(data);
@@ -160,6 +168,8 @@ namespace Coopfall.Lockstep
 
         private void BeginEpochLoad(byte[] data)
         {
+            // this PC's own explored maps and memories: from the world it leaves (a first join has none)
+            PerPlayerMemory.Take(_s.IsHost || _everLoaded);
             _loaded = false;
             LockstepControl.Running = false;
             _myKeyFor = _s.MyId;
@@ -205,11 +215,14 @@ namespace Coopfall.Lockstep
                 return;
             }
             FastLoad.On = false;
+            Log.Info("lockstep: epoch load: " + FastLoad.Report());
+            var normWatch = System.Diagnostics.Stopwatch.StartNew();
             LockstepClock.NormalizeAfterLoad();
+            Log.Info("lockstep: normalizing after the load took " + normWatch.ElapsedMilliseconds + " ms");
             WorldfallSettings.Lock();
             TownsInTick.SetTod(_epochTod);
             _settingsTold = false;
-            _loaded = true;
+            _loaded = true; _everLoaded = true;
             LockstepControl.Running = true;
             // the world right after loading: a guest whose load went wrong is told to load again
             string h0 = StateHash.Compute(0, false).Line();
@@ -217,6 +230,10 @@ namespace Coopfall.Lockstep
             if (_s.IsHost)
             {
                 _h0 = h0;
+                _h0Epoch = _epoch;
+                var early = new List<JObject>(_earlyReady);
+                _earlyReady.Clear();
+                foreach (JObject r in early) if (((int?)r["e"] ?? 0) == _epoch) OnPacket("wlready", r);
                 _ready.Add(_s.MyId);
                 _waitingReady = true;
                 _readySince = Time.unscaledTime;
@@ -303,9 +320,11 @@ namespace Coopfall.Lockstep
         public void Tick()
         {
             Watchdog();
+            if (_loaded) FastLoad.RedrawLater();
             CheckSettings();
             TalkInTick.Frame();
             InputPointer.Frame(this);
+            if (_s.IsHost) SteeringInTick.ShareDoorsFrame();
             if (_epoch > 0 && (!_s.Online || _s.RoomId == null || !_s.Cfg.lockstep)) { Stop(!_s.Cfg.lockstep ? "switched off" : "left the world"); return; }
             if (!_s.IsHost)
             {
@@ -600,6 +619,7 @@ namespace Coopfall.Lockstep
                 Log.Warn("lockstep: " + LastDesync + " differs: " + Describe(mine, theirs));
                 _s.AddChat(null, "Lockstep: " + (_s.Player(who)?.name ?? "a player") + "'s world drifted at tick " + tick + " - re-syncing everyone", true);
                 if (TraceTicks) UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
+                DataCalls.WriteRecent(TracePath("lockstep-wfdata" + _epoch + ".txt"));
                 StartEpoch("desync");
                 return;
             }
@@ -643,6 +663,7 @@ namespace Coopfall.Lockstep
                     }
                     if (e == _epoch && (string)p["sha"] == _sha) return;   // the relay repeats it ahead of the save it serves
                     if (TraceTicks && (string)p["reason"] == "desync" && _epoch > 0) UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
+                    if ((string)p["reason"] == "desync" && _epoch > 0) DataCalls.WriteRecent(TracePath("lockstep-wfdata" + _epoch + ".txt"));
                     _epoch = e;
                     _seed = (int?)p["seed"] ?? 1;
                     _sha = (string)p["sha"];
@@ -651,6 +672,7 @@ namespace Coopfall.Lockstep
                     WorldfallSettings.Apply(p["wfs"] as JObject);
                     _epochTod = (float?)p["tod"] ?? -1f;
                     PlayerScope.Carry(p["wps"] as JObject);
+                    BelongingsInTick.Carry(p["wbn"] as JArray);
                     _loadAskedAt = Time.unscaledTime;
                     BeginEpochLoad(null);
                     // a new arrival gets this before the save itself; everyone else fetches the save
@@ -683,6 +705,8 @@ namespace Coopfall.Lockstep
                     break;
                 case "wlready":
                     if (e != _epoch || !_s.IsHost) return;
+                    // a guest can finish loading before the host: compare once the host's own world is ready
+                    if (!_loaded || _h0Epoch != _epoch) { _earlyReady.Add(p); return; }
                     if (_hostKept && _h0 != null && (string)p["h0"] != null && (string)p["h0"] != _h0)
                     {
                         Log.Warn("lockstep: host-keep: a guest's freshly loaded world differs from the host's kept one (" + Describe(_h0, (string)p["h0"]) + "); reloading from now on");

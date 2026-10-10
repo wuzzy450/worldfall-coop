@@ -15,7 +15,9 @@ namespace Coopfall.Lockstep
     /// creature (sorted by ID), with obstacles made from the world's buildings (their asset
     /// footprint, the same on every PC), on the tick clock. The renderer's own Begin/Add/SetDoor
     /// calls are skipped while lockstep runs (it still reads the result: Hidden, Solid, InsideAt).
-    /// Doorways (taken from drawn 3D models) are not used: creatures go into houses as in vanilla.
+    /// Doorways come from Worldfall's 3D models, which load in the background (so a PC may not have
+    /// a model yet): the host works each nearby house's door out the way the renderer does and
+    /// sends it (ShareDoor, relayed); every PC uses it from the same tick on.
     /// </summary>
     public static class SteeringInTick
     {
@@ -28,6 +30,13 @@ namespace Coopfall.Lockstep
         private static bool _ours;
         private static readonly AccessTools.FieldRef<Building, BuildingAsset> _bAsset = AccessTools.FieldRefAccess<Building, BuildingAsset>("asset");
         public static bool Ready => _steer != null;
+        private static MethodInfo _special, _family, _model, _mirrored, _doorOf, _setDoor, _info, _infoFloat;
+        private static FieldInfo _mMin, _mMax;
+        /// <summary>Doorways shared in ticks (building ID: the spot just outside the door), and the ones the host has sent.</summary>
+        private static readonly SortedDictionary<long, Vector2> _doors = new SortedDictionary<long, Vector2>();
+        private static readonly HashSet<long> _doorAsked = new HashSet<long>();
+        private static int _doorFrame;
+        public static int Doors => _doors.Count;
         /// <summary>Creatures moved by steering since the epoch loaded (the same on every PC).</summary>
         public static long Steered;
 
@@ -70,7 +79,24 @@ namespace Coopfall.Lockstep
             WorldfallInTick.SwapClockOf(h, st);
             // which way a creature slides along a wall came from its object hash (differs per process)
             h.Patch(AccessTools.Method(st, "SteerOne"), transpiler: new HarmonyMethod(typeof(SteeringInTick), nameof(HashTranspiler)));
-            Log.Info("lockstep: Worldfall's steering runs in ticks around every controlled creature");
+            Type models = wf.GetType("FirstPerson.Models", false), mesh = wf.GetType("FirstPerson.Core.MeshModel", false);
+            _special = models == null ? null : AccessTools.Method(models, "SpecialFamily", new[] { typeof(string) });
+            _family = models == null ? null : AccessTools.Method(models, "BuildingFamily", new[] { typeof(Building) });
+            _model = models == null ? null : AccessTools.Method(models, "Get", new[] { typeof(string) });
+            _mirrored = models == null ? null : AccessTools.Method(models, "Mirrored", new[] { typeof(Building) });
+            _doorOf = AccessTools.Method(st, "DoorOf");
+            _setDoor = AccessTools.Method(st, "SetDoor");
+            _info = mesh == null ? null : AccessTools.Method(mesh, "Info", new[] { typeof(string) });
+            _infoFloat = mesh == null ? null : AccessTools.Method(mesh, "InfoFloat", new[] { typeof(string), typeof(float) });
+            _mMin = mesh == null ? null : AccessTools.Field(mesh, "Min");
+            _mMax = mesh == null ? null : AccessTools.Field(mesh, "Max");
+            if (_special == null || _family == null || _model == null || _mirrored == null || _doorOf == null || _setDoor == null || _info == null || _infoFloat == null || _mMin == null || _mMax == null
+                || !WorldCalls.Register(h, AccessTools.Method(typeof(SteeringInTick), nameof(ShareDoor))))
+            {
+                Log.Warn("lockstep: Worldfall's building models or doors not found: creatures don't use doorways in lockstep");
+                _setDoor = null;
+            }
+            Log.Info("lockstep: Worldfall's steering runs in ticks around every controlled creature" + (_setDoor != null ? " (with doorways)" : ""));
         }
 
         private static bool OnlyOurs() => !LockstepClock.Active || _ours;
@@ -104,6 +130,8 @@ namespace Coopfall.Lockstep
         public static void Reset()
         {
             Steered = 0;
+            _doors.Clear();
+            _doorAsked.Clear();
             if (_steer == null) return;
             _ours = true;
             try
@@ -207,6 +235,95 @@ namespace Coopfall.Lockstep
             }
             _two[0] = col; _two[1] = b;
             _add.Invoke(null, _two);
+            if (look == "House" && _setDoor != null && _doors.TryGetValue(b.getID(), out Vector2 door))
+            {
+                _two[0] = b; _two[1] = door;
+                _setDoor.Invoke(null, _two);
+            }
         }
+
+        /// <summary>Relayed (from the host): where a house's doorway is (in a tick, on every PC).</summary>
+        public static void ShareDoor(Building b, Vector2 at)
+        {
+            if (!LockstepClock.InTick || b == null) return;
+            _doors[b.getID()] = at;
+        }
+
+        /// <summary>
+        /// Host, between ticks: the doorways of houses near controlled creatures that aren't shared
+        /// yet, worked out as Worldfall's renderer does (model family, sprite width, mirroring).
+        /// </summary>
+        public static void ShareDoorsFrame()
+        {
+            if (_setDoor == null || !LockstepControl.Running || !LockstepClock.Active || LockstepClock.InTick || LockstepControl.Count == 0) return;
+            if (++_doorFrame % 15 != 0) return;
+            int sent = 0;
+            MapBox w = World.world;
+            foreach (long id in LockstepControl.ControlledIds())
+            {
+                Actor body = w.units.get(id);
+                if (body == null || !body.isAlive()) continue;
+                int cx = Mathf.FloorToInt(body.current_position.x), cy = Mathf.FloorToInt(body.current_position.y);
+                for (int y = cy - 40; y < cy + 40 && sent < 20; y++)
+                    for (int x = cx - 40; x < cx + 40 && sent < 20; x++)
+                    {
+                        Building b = w.GetTile(x, y)?.building;
+                        if (b == null || b.current_tile == null || b.current_tile.x != x || b.current_tile.y != y || _doorAsked.Contains(b.getID())) continue;
+                        if (!b.isAlive() || (bool)_isRuin.Invoke(b, null) || b.isUnderConstruction()) continue;
+                        int got = DoorFor(b, out Vector2 door);
+                        if (got == 0) continue;            // its model isn't loaded yet: try again later
+                        _doorAsked.Add(b.getID());
+                        if (got < 0) continue;            // no doorway (not a house, or a model without one)
+                        ShareDoor(b, door);                // caught by WorldCalls and sent
+                        sent++;
+                    }
+            }
+        }
+
+        private static readonly object[] _doorArgs = new object[2];
+
+        /// <summary>1: the door; -1: none; 0: not known yet (model loading).</summary>
+        private static int DoorFor(Building b, out Vector2 door)
+        {
+            door = Vector2.zero;
+            BuildingAsset asset = _bAsset(b);
+            if (asset == null) return -1;
+            _one[0] = asset;
+            if (_classify.Invoke(null, _one).ToString() != "House") return -1;
+            try
+            {
+                string family = _special.Invoke(null, new object[] { asset.id ?? "" }) as string ?? _family.Invoke(null, new object[] { b }) as string;
+                if (family == null) return -1;
+                object model = _model.Invoke(null, new object[] { family });
+                if (model == null) return 0;
+                string kind = _info.Invoke(model, new object[] { "kind" }) as string;
+                if (kind != "house" && kind != "hall" && kind != "tent") return -1;
+                _doorArgs[0] = model; _doorArgs[1] = null;
+                if (!(bool)_doorOf.Invoke(null, _doorArgs)) return -1;
+                Vector2 at = (Vector2)_doorArgs[1];
+                Sprite sprite = b.checkSpriteToRender();
+                if (sprite == null) return 0;
+                float ppu = sprite.pixelsPerUnit > 0f ? sprite.pixelsPerUnit : 100f;
+                float width = sprite.rect.width / ppu * Mathf.Abs(asset.scale_base.x);
+                object min = _mMin.GetValue(model), max = _mMax.GetValue(model);
+                FieldInfo vx = min.GetType().GetField("X"), vy = min.GetType().GetField("Y");
+                float minX = (float)vx.GetValue(min), maxX = (float)vx.GetValue(max), minY = (float)vy.GetValue(min);
+                float scale = width / Mathf.Max(0.5f, (float)_infoFloat.Invoke(model, new object[] { "width", maxX - minX }));
+                bool mirrored = (float)_infoFloat.Invoke(model, new object[] { "footing", 0f }) > 0f && (bool)_mirrored.Invoke(null, new object[] { b });
+                BuildingFundament f = asset.fundament;
+                Vector3 p = b.current_tile.posV3;
+                float y0 = p.y + (f == null ? 0f : (f.top - f.bottom) * 0.5f);
+                door = new Vector2(p.x + (mirrored ? -at.x : at.x) * scale, y0 + Mathf.Min(at.y, minY) * scale - 0.3f);
+                return 1;
+            }
+            catch (Exception e)
+            {
+                if (_doorFailed++ == 0) Log.Warn("lockstep: a house's doorway: " + (e.InnerException ?? e).Message);
+                return -1;
+            }
+        }
+
+        private static int _doorFailed;
+        private static readonly MethodInfo _isRuin = AccessTools.Method(typeof(Building), "isRuin");
     }
 }

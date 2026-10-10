@@ -338,11 +338,50 @@ namespace Coopfall.Lockstep
             ulong h = 0;
             MapBox w = World.world;
             if (w == null) return 0;
-            foreach (Actor a in w.units) if (a != null) h += One(_actorData(a));
-            foreach (Building b in w.buildings) if (b != null) h += One(_buildingData(b));
-            foreach (City c in w.cities) if (c != null) h += One(c.data);
-            foreach (Kingdom k in w.kingdoms) if (k != null) h += One(k.data);
+            var rec = new Dictionary<string, ulong>();
+            foreach (Actor a in w.units) if (a != null) h += Rec(rec, "u", _actorData(a));
+            foreach (Building b in w.buildings) if (b != null) h += Rec(rec, "b", _buildingData(b));
+            foreach (City c in w.cities) if (c != null) h += Rec(rec, "c", c.data);
+            foreach (Kingdom k in w.kingdoms) if (k != null) h += Rec(rec, "k", k.data);
+            _recent.Enqueue(new KeyValuePair<long, Dictionary<string, ulong>>(LockstepClock.Tick, rec));
+            while (_recent.Count > 8) _recent.Dequeue();
             return h;
+        }
+
+        /// <summary>The last few checks' per-object hashes (to name what drifted when wfdata differs).</summary>
+        private static readonly Queue<KeyValuePair<long, Dictionary<string, ulong>>> _recent = new Queue<KeyValuePair<long, Dictionary<string, ulong>>>();
+
+        private static ulong Rec(Dictionary<string, ulong> rec, string kind, BaseSystemData d)
+        {
+            ulong v = One(d);
+            if (v != 0) rec[kind + d.id] = v;
+            return v;
+        }
+
+        /// <summary>On a desync: the kept per-object hashes and every object's Worldfall data now, as text.</summary>
+        public static void WriteRecent(string path)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                foreach (KeyValuePair<long, Dictionary<string, ulong>> t in _recent)
+                {
+                    var keys = new List<string>(t.Value.Keys);
+                    keys.Sort(StringComparer.Ordinal);
+                    foreach (string k in keys) sb.Append("tick ").Append(t.Key).Append(' ').Append(k).Append(' ').Append(t.Value[k].ToString("x16")).Append('\n');
+                }
+                MapBox w = World.world;
+                if (w != null)
+                {
+                    foreach (Actor a in w.units) if (a != null) { string d = Describe(_actorData(a)); if (d.Length > 0) sb.Append("now u").Append(a.getID()).Append(' ').Append(d).Append('\n'); }
+                    foreach (Building b in w.buildings) if (b != null) { string d = Describe(_buildingData(b)); if (d.Length > 0) sb.Append("now b").Append(b.getID()).Append(' ').Append(d).Append('\n'); }
+                    foreach (City c in w.cities) if (c != null) { string d = Describe(c.data); if (d.Length > 0) sb.Append("now c").Append(c.getID()).Append(' ').Append(d).Append('\n'); }
+                    foreach (Kingdom k in w.kingdoms) if (k != null) { string d = Describe(k.data); if (d.Length > 0) sb.Append("now k").Append(k.getID()).Append(' ').Append(d).Append('\n'); }
+                }
+                System.IO.File.WriteAllText(path, sb.ToString());
+                Log.Info("lockstep: Worldfall data of the last checks written to " + path);
+            }
+            catch (Exception e) { Log.Warn("lockstep: can't write the Worldfall data: " + e.Message); }
         }
 
         /// <summary>Test log: one object's Worldfall data as text (sorted).</summary>

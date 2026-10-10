@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace Coopfall.Lockstep
@@ -269,10 +270,72 @@ namespace Coopfall.Lockstep
             }
         }
 
+        /// <summary>Bundles carried from the host's last tick into the next epoch (null: none).</summary>
+        private static JArray _carried;
+
+        /// <summary>Host, as it saves the world for a new epoch: every bundle on the ground, in list order.</summary>
+        public static JArray Save()
+        {
+            if (!(_list?.GetValue(null) is IList l) || l.Count == 0) return null;
+            var a = new JArray();
+            Type bt = _bundle;
+            foreach (object b in l)
+            {
+                Vector2 at = (Vector2)AccessTools.Field(bt, "At").GetValue(b);
+                object piece = AccessTools.Field(bt, "Piece").GetValue(b);
+                a.Add(new JArray(at.x, at.y, (float)AccessTools.Field(bt, "Z").GetValue(b), (float)AccessTools.Field(bt, "Yaw").GetValue(b),
+                    (float)_age.GetValue(b), (string)AccessTools.Field(bt, "Resource").GetValue(b), (int)AccessTools.Field(bt, "Count").GetValue(b),
+                    piece == null ? null : PieceText(piece)));
+            }
+            return a;
+        }
+
+        public static void Carry(JArray a) => _carried = a;
+
         public static void Reset()
         {
             _nextSerial = 0;
-            if (_list?.GetValue(null) is IList l) l.Clear();
+            if (!(_list?.GetValue(null) is IList l)) return;
+            l.Clear();
+            // Bundles clears its list when the world changes (map_stats): this world is the new one now
+            AccessTools.Field(_list.DeclaringType, "_world")?.SetValue(null, World.world == null ? null : AccessTools.Field(typeof(MapBox), "map_stats").GetValue(World.world));
+            if (_carried == null) return;
+            int n = 0;
+            foreach (JToken t in _carried)
+            {
+                if (!(t is JArray v) || v.Count < 8) continue;
+                try
+                {
+                    object b = Activator.CreateInstance(_bundle, true);
+                    AccessTools.Field(_bundle, "At").SetValue(b, new Vector2((float)v[0], (float)v[1]));
+                    AccessTools.Field(_bundle, "Z").SetValue(b, (float)v[2]);
+                    AccessTools.Field(_bundle, "Yaw").SetValue(b, (float)v[3]);
+                    _age.SetValue(b, (float)v[4]);
+                    AccessTools.Field(_bundle, "Resource").SetValue(b, (string)v[5]);
+                    AccessTools.Field(_bundle, "Count").SetValue(b, (int)v[6]);
+                    string piece = (string)v[7];
+                    AccessTools.Field(_bundle, "Piece").SetValue(b, piece == null ? null : PieceOf(piece));
+                    l.Add(b);
+                    _serials.Add(b, new Serial { n = ++_nextSerial });
+                    n++;
+                }
+                catch (Exception e) { Fail("carrying a bundle", e); }
+            }
+            if (n > 0) Log.Info("lockstep: " + n + " bundles on the ground carried into this epoch");
+        }
+
+        /// <summary>For the test's state line: every bundle (serial, resource/piece, count).</summary>
+        public static string Describe()
+        {
+            if (!(_list?.GetValue(null) is IList l)) return "-";
+            var parts = new List<string>();
+            foreach (object b in l)
+            {
+                object piece = AccessTools.Field(_bundle, "Piece").GetValue(b);
+                Vector2 at = (Vector2)AccessTools.Field(_bundle, "At").GetValue(b);
+                parts.Add((_serials.TryGetValue(b, out Serial s) ? s.n : 0) + ":" + (piece != null ? (string)_pId.GetValue(piece) : (string)AccessTools.Field(_bundle, "Resource").GetValue(b)) + "x" + (int)AccessTools.Field(_bundle, "Count").GetValue(b) + "@" + at.x.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "," + at.y.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            return parts.Count == 0 ? "-" : string.Join(" ", parts);
         }
 
         private static readonly HashSet<string> _failed = new HashSet<string>();

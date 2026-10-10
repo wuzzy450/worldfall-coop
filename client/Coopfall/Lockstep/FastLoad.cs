@@ -62,6 +62,45 @@ namespace Coopfall.Lockstep
             pSkipFrame = false;
             if (pNewWaitTimerValue > 0.001f) pNewWaitTimerValue = 0.001f;
             if (pId == "UnloadUnusedAssets") pAction = () => { };
+            // a forced garbage collection (lastGC): 0.25-0.4 s, nothing depends on it
+            else if (pId == "Rewriting The World" && Bigger) pAction = () => { };
+
+            MapLoaderAction inner = pAction;
+            string id = pId;
+            pAction = () =>
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                inner();
+                Steps.Add(new KeyValuePair<string, double>(id, sw.Elapsed.TotalMilliseconds));
+            };
+        }
+
+        private static bool _redraw;
+
+        /// <summary>After an epoch is ready: the tile redraw the load left out (drawing only).</summary>
+        public static void RedrawLater()
+        {
+            if (!_redraw) return;
+            _redraw = false;
+            try { World.world.redrawTiles(); }
+            catch (System.Exception e) { Log.Warn("lockstep: redrawing tiles after the load: " + e.Message); }
+        }
+
+        /// <summary>The last epoch load's steps and how long each took (ms).</summary>
+        public static readonly List<KeyValuePair<string, double>> Steps = new List<KeyValuePair<string, double>>();
+
+        /// <summary>One log line: the slowest steps of the load that just finished.</summary>
+        public static string Report()
+        {
+            var l = new List<KeyValuePair<string, double>>(Steps);
+            double total = 0;
+            foreach (KeyValuePair<string, double> kv in l) total += kv.Value;
+            l.Sort((a, b) => b.Value.CompareTo(a.Value));
+            var sb = new System.Text.StringBuilder();
+            sb.Append(l.Count).Append(" steps, ").Append(total.ToString("F0")).Append(" ms:");
+            for (int i = 0; i < l.Count && i < 12; i++) sb.Append(' ').Append(l[i].Key).Append(' ').Append(l[i].Value.ToString("F0"));
+            Steps.Clear();
+            return sb.ToString();
         }
     }
 }

@@ -249,11 +249,58 @@ namespace Coopfall
                     object settings = modT.GetField("Settings", Any).GetValue(mod);
                     if (_s.IsHost) { settings.GetType().GetField("DayMinutes", Any).SetValue(settings, 5f); CpOk("host setting", true, "DayMinutes 5: a new epoch should follow"); }
                     else { settings.GetType().GetField("FriendlyFire", Any).SetValue(settings, true); CpOk("guest setting", true, "FriendlyFire on here: the shared world keeps the host's"); }
+                    _cpStep = 190;
+                }
+                if (_cpStep == 190 && t > 120f)
+                {
+                    _cpStep = 191;
+                    if (_s.IsHost)
+                    {
+                        WorldTile at = World.world.GetTile(me.current_tile.x + 22, me.current_tile.y + 6) ?? me.current_tile;
+                        CpOk("meteor", CoopMod.Instance.Powers.UseLocal("meteorite", at), "thrown at " + at.x + "," + at.y);
+                    }
+                }
+                if (_cpStep == 191 && t > 121.2f) { _cpStep = 192; CpOk("meteor look", Lockstep.EffectSeeds.Given.Count > 0, "seeds given " + string.Join(",", Lockstep.EffectSeeds.Given.ConvertAll(x => x.ToString()).ToArray()) + ", drawn with them here " + Lockstep.EffectSeeds.Drawn + ", drawing now: " + CpMeteorSeeds(mod, modT)); CpShot("step-meteor"); }
+                if (_cpStep == 192 && t > 130f)
+                {
+                    _cpStep = 193;
+                    if (!_s.IsHost)
+                    {
+                        Vector2 p = me.current_position + new Vector2(1.5f, 0.5f);
+                        object made = CpCall(bundles, null, "Drop", p, (Func<Vector2, float>)(v => 0f), "wood", 5, null);
+                        CpOk("drop wood", made == null, "5 wood set down at " + p.ToString("F1") + " before the resync (on the ground from the tick on)");
+                    }
+                }
+                if (_cpStep == 193 && t > 133f)
+                {
+                    _cpStep = 194;
+                    Actor smith = World.world.units.get(_cpSmith);
+                    if (smith != null)
+                    {
+                        // a memory only this PC has (like the ones Worldfall's own sweep writes on each PC)
+                        string who = _s.IsHost ? "host" : "guest", before = CpMem(smith);
+                        Lockstep.DataCalls.LocalOnly(() => (R.Get(smith, "data") as BaseSystemData).set("fp_mem", (before.Length > 0 ? before + "|" : "") + "test,1,1,1,seen by the " + who));
+                        CpCall(chron, null, "Reset");
+                        _cpShareBefore = CpExplored(me);
+                        CpOk("own memory", CpMem(smith).Contains("seen by the " + (_s.IsHost ? "host" : "guest")), "smith #" + _cpSmith + " remembers on this PC only; explored here " + _cpShareBefore.ToString("F4"));
+                    }
+                    _cpStep = 19;
                 }
                 if (_cpStep == 19 && t > 140f)
                 {
                     _cpStep = 20;
                     if (_s.IsHost) { Log.Info("TEST coop: forcing a resync"); _s.Lockstep.StartEpoch("test coop"); }
+                }
+                if (_cpStep == 20 && t > 160f)
+                {
+                    Actor smith = World.world.units.get(_cpSmith);
+                    string mem = smith == null ? "" : CpMem(smith), mine = "seen by the " + (_s.IsHost ? "host" : "guest"), theirs = "seen by the " + (_s.IsHost ? "guest" : "host");
+                    CpOk("memory after resync", mem.Contains(mine) && !mem.Contains(theirs), "smith remembers here: " + mem);
+                    float share = CpExplored(me);
+                    CpOk("explored after resync", share >= _cpShareBefore - 0.0001f && share > 0f, "explored here " + _cpShareBefore.ToString("F4") + " -> " + share.ToString("F4"));
+                    string wood = CpBundles();
+                    CpOk("bundles after resync", wood.Contains("5 wood"), wood);
+                    CpOk("doorways", Lockstep.SteeringInTick.Doors > 0, Lockstep.SteeringInTick.Doors + " house doors shared this epoch");
                 }
                 if (_cpStep == 20 && t > 160f) { _cpStep = 21; CpShot("step-after-resync"); CpOk("made outside ticks", Lockstep.MadeOutsideTicks.Count == 0, Lockstep.MadeOutsideTicks.Count + " " + string.Join("; ", Lockstep.MadeOutsideTicks.Seen.ToArray())); }
             }
@@ -370,6 +417,34 @@ namespace Coopfall
             CpOk("plot", made == null, "at " + spot.x + "," + spot.y + " (" + race + "): nothing here until the tick");
         }
 
+        private float _cpShareBefore;
+
+        private static string CpMem(Actor a)
+        {
+            string v = null;
+            (R.Get(a, "data") as BaseSystemData)?.get("fp_mem", out v, (string)null);
+            return v ?? "";
+        }
+
+        /// <summary>How much of the world this PC's player has explored (Worldfall's own measure).</summary>
+        private static float CpExplored(Actor me)
+        {
+            Type ex = CpType("Explored");
+            object m = ex == null ? null : CpCall(ex, null, "Of", me);
+            return m == null ? -1f : (float)CpCall(ex, null, "Share", m);
+        }
+
+        /// <summary>The look seed of every meteor Worldfall draws on this PC (the same on both PCs).</summary>
+        private static string CpMeteorSeeds(object mod, Type modT)
+        {
+            object scene = modT.GetProperty("SceneForTest", Any)?.GetValue(mod, null);
+            if (!(scene?.GetType().GetField("_meteors", Any)?.GetValue(scene) is IDictionary d)) return "?";
+            var l = new List<string>();
+            foreach (DictionaryEntry e in d) l.Add(e.Value.GetType().GetField("_seed", Any).GetValue(e.Value).ToString());
+            l.Sort(StringComparer.Ordinal);
+            return d.Count + " drawn [" + string.Join(",", l.ToArray()) + "]";
+        }
+
         private string CpBundles()
         {
             var sb = new StringBuilder();
@@ -422,6 +497,8 @@ namespace Coopfall
                 shops.Sort(StringComparer.Ordinal);
                 sb.Append("town ").Append(town.name).Append(" buildings ").Append(town.buildings.Count).Append(" {").Append(string.Join("; ", shops.ToArray())).Append("} ");
             }
+            sb.Append("doors ").Append(Lockstep.SteeringInTick.Doors).Append(" steered ").Append(Lockstep.SteeringInTick.Steered).Append("; ");
+            sb.Append("meteor seeds [").Append(string.Join(",", Lockstep.EffectSeeds.Given.ConvertAll(x => x.ToString()).ToArray())).Append("] ");
             sb.Append("bundles ").Append(CpBundles()).Append("; quests").Append(CpQuestLogs()).Append("; items ").Append(World.world.items.Count);
             return sb.ToString();
         }
