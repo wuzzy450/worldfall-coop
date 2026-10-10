@@ -75,6 +75,9 @@ namespace Coopfall.Lockstep
                     MethodInfo ex = AccessTools.DeclaredMethod(t, "execute", new[] { typeof(Actor) });
                     if (ex != null) n += TryPatch(h, ex, behPost);
                 }
+            // a creature standing on a blocking tile rolls dice here (the drift at the guest's first
+            // epoch, tick 989 of 2026-10-09's run): name it and its tile
+            n += TryPatchPrefix(h, AccessTools.Method(typeof(Actor), "u5_curTileAction"), new HarmonyMethod(typeof(SectionTrace), nameof(TileActionPrefix)));
             Log.Info("lockstep: section trace on " + n + " methods");
         }
 
@@ -182,6 +185,21 @@ namespace Coopfall.Lockstep
             if (m == null) return 0;
             try { h.Patch(m, postfix: post); return 1; }
             catch (Exception e) { Log.Info("lockstep: trace skip " + m.DeclaringType?.Name + "." + m.Name + ": " + e.Message); return 0; }
+        }
+
+        private static int TryPatchPrefix(Harmony h, MethodBase m, HarmonyMethod pre)
+        {
+            if (m == null) return 0;
+            try { h.Patch(m, prefix: pre); return 1; }
+            catch (Exception e) { Log.Info("lockstep: trace skip " + m.DeclaringType?.Name + "." + m.Name + ": " + e.Message); return 0; }
+        }
+
+        private static void TileActionPrefix(Actor __instance)
+        {
+            if (!Enabled || !LockstepClock.InTick || LockstepClock.Tick >= MaxTick) return;
+            WorldTile t = __instance.current_tile;
+            if (t == null || t.Type == null || !t.Type.block) return;
+            Mark("tile action #" + __instance.getID() + " on " + t.x + "," + t.y + " " + t.Type.id + " height " + __instance.position_height.ToString("R"));
         }
 
         private static void Postfix(MethodBase __originalMethod)

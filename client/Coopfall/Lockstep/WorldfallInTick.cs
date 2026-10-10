@@ -42,6 +42,10 @@ namespace Coopfall.Lockstep
             InstallPlayerAbility(h, wf, abilities);
             HideCollidersInTicks(wf);
             InstallBodyClear(h, wf);
+            FindLazyAssets(wf);
+            InstallFirstPersonChecks(h, wf);
+            try { SteeringInTick.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall steering in ticks not available: " + e); }
             try { PlayerScope.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall per player not available: " + e); }
             Log.Info("lockstep: Worldfall's " + (_guards != null ? "guards " : "") + (_creatures != null ? "creature abilities " : "") + "run in ticks (" + n + " methods on the tick clock)");
@@ -216,10 +220,95 @@ namespace Coopfall.Lockstep
             _nearHeld.Clear();
         }
 
+        private static MethodInfo _keepOnCarcass;
+        private static bool _inKeep;
+        private static readonly object[] _keepArgs = new object[2];
+
+        /// <summary>
+        /// "Is this player in first person?" is a local fact. In ticks Worldfall asks it of the
+        /// acting player: the answer comes from that player's controls (the same on every PC).
+        /// A kill near a first-person player keeps the carcass for butchering (Butchery's hook on
+        /// the game's loot pickup, run inside the simulation): there it is asked of every
+        /// controlled creature in turn, in ID order, each in its player's scope.
+        /// </summary>
+        private static void InstallFirstPersonChecks(Harmony h, Assembly wf)
+        {
+            Type mod = wf.GetType("FirstPerson.WorldBoxMod", false), butchery = wf.GetType("FirstPerson.Butchery", false);
+            MethodInfo fp = mod == null ? null : AccessTools.PropertyGetter(mod, "IsFirstPerson");
+            if (fp != null) h.Patch(fp, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(IsFirstPersonPrefix)));
+            else Log.Warn("lockstep: Worldfall's IsFirstPerson not found: features asking it in ticks may differ between PCs");
+            _keepOnCarcass = butchery == null ? null : AccessTools.Method(butchery, "KeepOnCarcass", new[] { typeof(Actor), typeof(Actor) });
+            if (_keepOnCarcass != null) h.Patch(_keepOnCarcass, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(KeepOnCarcassPrefix)));
+            else Log.Warn("lockstep: Worldfall's Butchery.KeepOnCarcass not found: loot from kills near a player may differ between PCs");
+        }
+
+        private static bool IsFirstPersonPrefix(ref bool __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            Actor b = PlayerScope.CurrentBody;
+            __result = b != null && LockstepControl.FirstPersonOf(b.getID());
+            return false;
+        }
+
+        private static bool KeepOnCarcassPrefix(Actor self, Actor killer, ref bool __result)
+        {
+            if (!LockstepClock.InTick || PlayerScope.Open || _inKeep) return true;
+            __result = false;
+            var ids = new List<long>(LockstepControl.ControlledIds());
+            ids.Sort();
+            _inKeep = true;
+            try
+            {
+                foreach (long id in ids)
+                {
+                    int player = LockstepControl.OwnerOf(id);
+                    if (player == 0) continue;
+                    bool keep = false;
+                    _keepArgs[0] = self; _keepArgs[1] = killer;
+                    PlayerScope.Run(player, () => keep = (bool)_keepOnCarcass.Invoke(null, _keepArgs));
+                    if (keep) { __result = true; break; }
+                }
+            }
+            catch (Exception e) { Log.Error("lockstep: carcass check: " + (e.InnerException ?? e).Message); }
+            finally { _inKeep = false; }
+            return false;
+        }
+
+        private static readonly List<MethodInfo> _lazyAssets = new List<MethodInfo>();
+
+        /// <summary>
+        /// Worldfall adds some AI tasks (and a loyalty kind) to the game's libraries the first time
+        /// its feature runs, which happens only on the PC whose player uses it. A relayed call that
+        /// sets such a task (town patrons walking up, family following, a king's levy, ships
+        /// sailing) then finds no task on the other PCs. Every PC adds them all at each epoch load.
+        /// </summary>
+        private static void FindLazyAssets(Assembly wf)
+        {
+            foreach (string spec in new[] { "FirstPerson.FamilyFollow.RegisterTasks", "FirstPerson.Law.RegisterFavour", "FirstPerson.Royal.RegisterTask",
+                "FirstPerson.Royal.RegisterSailTask", "FirstPerson.Royal.RegisterBoardTask", "FirstPerson.Royal.RegisterHoldTask",
+                "FirstPerson.Towns.HomeLife.Register", "FirstPerson.Towns.Patrons.Register" })
+            {
+                int dot = spec.LastIndexOf('.');
+                Type t = wf.GetType(spec.Substring(0, dot), false);
+                MethodInfo m = t == null ? null : AccessTools.Method(t, spec.Substring(dot + 1), Type.EmptyTypes);
+                if (m == null || !m.IsStatic) Log.Warn("lockstep: Worldfall's " + spec + " not found: what it adds may exist on one PC only");
+                else _lazyAssets.Add(m);
+            }
+        }
+
+        private static void AddLazyAssets()
+        {
+            foreach (MethodInfo m in _lazyAssets)
+                try { m.Invoke(null, null); }
+                catch (Exception e) { Log.Warn("lockstep: Worldfall's " + m.DeclaringType.Name + "." + m.Name + ": " + (e.InnerException ?? e).Message); }
+        }
+
         public static void Reset()
         {
             _abilityTimer = 0f;
+            AddLazyAssets();
             PlayerScope.Reset();
+            SteeringInTick.Reset();
             foreach (KeyValuePair<FieldInfo, object> kv in _statics)
             {
                 object v = kv.Key.GetValue(null);
@@ -237,6 +326,7 @@ namespace Coopfall.Lockstep
                 try { _rush.Invoke(null, null); }
                 catch (Exception e) { Log.Error("lockstep: ability rush: " + (e.InnerException ?? e).Message); }
             if (LockstepControl.Count == 0) return;
+            SteeringInTick.Run();
             if (_guards != null)
                 try { _guards.Invoke(null, new object[] { LockstepClock.DefaultStep, null, _noToast }); }
                 catch (Exception e) { Log.Error("lockstep: guards: " + (e.InnerException ?? e).Message); }

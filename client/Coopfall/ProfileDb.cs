@@ -16,6 +16,19 @@ namespace Coopfall
         private static bool _failed;
         private static float _next;
 
+        /// <summary>This profile's own database file, or null when no "-coopfall-profile" is in use.</summary>
+        public static string Mine()
+        {
+            if (Log.Dir == null) return null;
+            string mine = Path.Combine(Log.Dir, "stats.s3db");
+            return Path.GetFullPath(Path.GetDirectoryName(mine)) == Path.GetFullPath(Path.Combine(Application.persistentDataPath, "coopfall")) ? null : mine;
+        }
+
+        /// <summary>
+        /// Fallback for when the path patch (Lockstep.ProfileDbPatch) isn't in: moving the open
+        /// database later can catch a world load between two of its steps ("database schema has
+        /// changed", the load then hangs), so the patch sets the path before the game opens it.
+        /// </summary>
         public static void Tick()
         {
             if (_failed || Time.unscaledTime < _next) return;

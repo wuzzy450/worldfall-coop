@@ -67,6 +67,7 @@ namespace Coopfall
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private void InitLockstep()
         {
+            Lockstep.ProfileDbPatch.Install();
             Probe = Lockstep.DeterminismProbe.FromCommandLine();
             Session.Lockstep = new Lockstep.LockstepSession(Session);
         }

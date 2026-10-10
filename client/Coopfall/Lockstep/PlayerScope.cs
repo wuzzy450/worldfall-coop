@@ -122,7 +122,7 @@ namespace Coopfall.Lockstep
                 if (g != null) h.Patch(g, prefix: new HarmonyMethod(typeof(PlayerScope), nameof(BodyPrefix)));
                 else Log.Warn("lockstep: Worldfall's WorldBoxMod." + p + " not found: campaign features may act for the wrong player");
             }
-            if (_toast != null) h.Patch(_toast, prefix: new HarmonyMethod(typeof(PlayerScope), nameof(OnlyLocalPrefix)));
+            if (_toast != null) h.Patch(_toast, prefix: new HarmonyMethod(typeof(PlayerScope), nameof(ToastPrefix)));
             if (_horn != null) h.Patch(_horn, prefix: new HarmonyMethod(typeof(PlayerScope), nameof(OnlyLocalPrefix)));
 
             Type law = wf.GetType("FirstPerson.Law", false);
@@ -427,7 +427,7 @@ namespace Coopfall.Lockstep
             keys.UnionWith(maps.Keys);
             foreach (int k in keys)
             {
-                sb.Append("[player ").Append(k == LockstepSession.MyPlayer ? "me" : k.ToString()).Append(" body ").Append(LockstepControl.BodyOf(k)?.getID().ToString() ?? "none");
+                sb.Append("[player ").Append(k).Append(" body ").Append(LockstepControl.BodyOf(k)?.getID().ToString() ?? "none");
                 if (royals.TryGetValue(k, out object r) && r != null)
                 {
                     object c = AccessTools.Field(r.GetType(), "Active")?.GetValue(r);
@@ -441,6 +441,13 @@ namespace Coopfall.Lockstep
                     }
                     IList raids = AccessTools.Field(r.GetType(), "Raids")?.GetValue(r) as IList;
                     sb.Append(", raids ").Append(raids?.Count ?? -1);
+                    if (AccessTools.Field(r.GetType(), "Storms")?.GetValue(r) is IList storms)
+                    {
+                        sb.Append(", storms ").Append(storms.Count);
+                        foreach (object st in storms)
+                            sb.Append(" (").Append(AccessTools.Field(st.GetType(), "Kind")?.GetValue(st)).Append(" on ").Append(AccessTools.Field(st.GetType(), "TargetName")?.GetValue(st))
+                              .Append(" meteors left ").Append(AccessTools.Field(st.GetType(), "MeteorsLeft")?.GetValue(st)).Append(" bolts left ").Append(AccessTools.Field(st.GetType(), "BoltsLeft")?.GetValue(st)).Append(')');
+                    }
                 }
                 if (maps.TryGetValue(k, out object m) && m != null && _flags != null)
                 {
@@ -803,6 +810,16 @@ namespace Coopfall.Lockstep
 
         /// <summary>Messages and sounds for the acting player only.</summary>
         private static bool OnlyLocalPrefix() => !LockstepClock.InTick || IsLocal;
+
+        /// <summary>Test runs log the messages Worldfall shows this player (why a council order was refused, ...).</summary>
+        public static bool LogToasts;
+
+        private static bool ToastPrefix(string __0)
+        {
+            bool mine = OnlyLocalPrefix();
+            if (mine && LogToasts) Log.Info("TEST features: toast: " + __0);
+            return mine;
+        }
 
         /// <summary>Royal.Update calls Peace.Update: in ticks it runs once, from RunTick, outside any player.</summary>
         private static bool PeacePrefix() => !(LockstepClock.InTick && Open);

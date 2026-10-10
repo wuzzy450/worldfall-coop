@@ -110,6 +110,9 @@ namespace Coopfall.Lockstep
 
         public static int OwnerOf(long id) => _ownerOf.TryGetValue(id, out int p) ? p : 0;
 
+        /// <summary>Whether this controlled creature's player is in Worldfall's first person, as every PC has it.</summary>
+        public static bool FirstPersonOf(long id) => _wfActive >= 0 && _table.TryGetValue(id, out Ctl c) && c?.wf != null && _wfActive < c.wf.Length && c.wf[_wfActive] != 0;
+
         /// <summary>Players controlling something, in number order.</summary>
         public static List<int> Players()
         {
@@ -137,7 +140,14 @@ namespace Coopfall.Lockstep
         private static FieldInfo[] _wfFields;
         private static readonly HashSet<string> WfPulses = new HashSet<string> { "ReleaseAttack", "ScriptedJump" };
         private static bool[] _wfPulse;
-        private static int _wfActive = -1;
+        private static int _wfActive = -1, _wfYaw = -1;
+
+        /// <summary>Which way this controlled creature's player looks (Worldfall's first-person yaw), as every PC has it; null if unknown.</summary>
+        public static float? YawOf(long id)
+        {
+            if (_wfYaw < 0 || !_table.TryGetValue(id, out Ctl c) || c?.wf == null || _wfYaw >= c.wf.Length) return null;
+            return BitConverter.Int32BitsToSingle((int)c.wf[_wfYaw]);
+        }
         private static MethodInfo _wfShake;
 
         private static bool WfPulse(int i) => _wfPulse != null && i < _wfPulse.Length && _wfPulse[i];
@@ -326,7 +336,7 @@ namespace Coopfall.Lockstep
                 l.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
                 _wfFields = l.ToArray();
                 _wfPulse = new bool[_wfFields.Length];
-                for (int i = 0; i < _wfFields.Length; i++) { _wfPulse[i] = WfPulses.Contains(_wfFields[i].Name); if (_wfFields[i].Name == "Active") _wfActive = i; }
+                for (int i = 0; i < _wfFields.Length; i++) { _wfPulse[i] = WfPulses.Contains(_wfFields[i].Name); if (_wfFields[i].Name == "Active") _wfActive = i; if (_wfFields[i].Name == "Yaw") _wfYaw = i; }
                 MethodInfo rt = AccessTools.Method(hooks, "RealTime");
                 if (rt != null) h.Patch(rt, prefix: new HarmonyMethod(typeof(LockstepControl), nameof(RealTimePrefix)));
                 else Log.Warn("lockstep: Worldfall's RealTime not found: a controlled creature's pace may follow the frame rate");
@@ -397,9 +407,37 @@ namespace Coopfall.Lockstep
                 MethodInfo m = AccessTools.Method(wf.GetType("FirstPerson." + g.Substring(0, dot), false), g.Substring(dot + 1));
                 if (m == null || !WorldCalls.Register(h, m)) Log.Warn("lockstep: Worldfall's " + g + " not relayed (renamed?): it may change one PC's world only");
             }
+            // family members gather in front of you: Worldfall takes "in front" from this PC's camera
+            // when it is your creature, from the creature's walk target otherwise; in a tick it is
+            // the yaw from the player's controls (the same on every PC)
+            Type family = wf.GetType("FirstPerson.FamilyFollow", false);
+            MethodInfo facing = family == null ? null : AccessTools.Method(family, "Facing", new[] { typeof(Actor) });
+            if (facing != null) h.Patch(facing, prefix: new HarmonyMethod(typeof(LockstepControl), nameof(FacingPrefix)));
+            else Log.Warn("lockstep: Worldfall's FamilyFollow.Facing not found: family members may line up differently on each PC");
+            // Worldfall's town patrons walk up to a first-person player: Send sets the task (a relayed
+            // game call) and then writes the walk target straight into the creature, on this PC only;
+            // the whole call travels instead, and runs in a tick on every PC
+            foreach (string g in new[] { "Patrons.Send", "Patrons.Release" })
+            {
+                int dot = g.IndexOf('.');
+                MethodInfo m = AccessTools.Method(wf.GetType("FirstPerson.Towns." + g.Substring(0, dot), false), g.Substring(dot + 1));
+                if (m == null || !WorldCalls.Register(h, m)) Log.Warn("lockstep: Worldfall's " + g + " not relayed (renamed?): town patrons may walk on one PC only");
+            }
             // some of those run inside ticks instead
             try { WorldfallInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall features in ticks not available: " + e); }
+        }
+
+        private static bool FacingPrefix(Actor you, ref float __result)
+        {
+            if (!LockstepClock.InTick || you == null) return true;
+            float? yaw = YawOf(you.getID());
+            if (yaw.HasValue) { __result = yaw.Value; return false; }
+            // not controlled: Worldfall's own answer for that case (from the walk target)
+            __result = 0f;
+            WorldTile t = R.Get(you, "tile_target") as WorldTile;
+            if (t != null) __result = Mathf.Atan2(t.y + 0.5f - you.current_position.y, t.x + 0.5f - you.current_position.x);
+            return false;
         }
 
         private static bool RealTimePrefix(ref float __result)
