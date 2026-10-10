@@ -47,6 +47,7 @@ namespace Coopfall
                     d._scenario = args[i + 1].ToLowerInvariant();
                     Log.Info("TEST scenario " + d._scenario);
                     if (d._scenario == "lockstep-features") { d._scenario = "lockstep"; d._fxMode = true; }
+                    if (d._scenario == "lockstep-looks") { d._scenario = "lockstep"; d._lkMode = true; }
                     if (d._scenario == "lockstep") s.Cfg.lockstep = true;   // this run only, not saved
                 }
             if (d != null)
