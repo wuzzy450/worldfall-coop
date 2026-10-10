@@ -9,6 +9,8 @@
 > **Want to try it now?** See [Download](#download) below. You can also point your own AI
 > coding agent at this repository (see [For AI agents](#for-ai-agents)) and let it build,
 > install and test it for you. Bug reports are welcome.
+>
+> **Join the Discord** for help, bug reports and people to play with: https://discord.gg/nuvpXycag8
 
 Coopfall lets several people play WorldBox together over the internet or a LAN:
 
@@ -35,7 +37,7 @@ bubbles, and the co-op HUD and chat stay usable in first person.
 | You are | Download | Then |
 |---|---|---|
 | **Every player** | **[Coopfall.dll](https://github.com/wuzzy450/worldfall-coop/raw/main/release/Coopfall.dll)** (the mod, one file) | [1. Install the mod](#1-install-the-mod-every-player) |
-| **The one running the server** | **[Everything (ZIP)](https://github.com/wuzzy450/worldfall-coop/archive/refs/heads/main.zip)** (server, mod and source, about 4 MB) | [2. Run the server](#2-run-the-server-one-person) |
+| **The one running a standalone server** (optional: any player can host from the game) | **[Everything (ZIP)](https://github.com/wuzzy450/worldfall-coop/archive/refs/heads/main.zip)** (server, mod and source, about 4 MB) | [2. Run the server](#2-run-the-server-one-person) |
 
 The ZIP also contains the mod (`release\Coopfall.dll`), so the person running the server
 only needs the ZIP. Unzip it anywhere (for example to your Desktop); it unpacks to a folder
@@ -83,6 +85,20 @@ Then in WorldBox: **Settings**, turn on **Experimental Mode**, restart WorldBox.
 turns this off after game updates; turn it on again if mods stop loading.
 
 ## 2. Run the server (one person)
+
+> **Port forwarding is recommended** for playing over the internet: forward **TCP 25598** on the
+> host's router to the host PC (see "Playing over the internet"). UPnP (below) tries to do this
+> automatically, but many routers have it switched off or don't support it.
+
+**Easiest: host it from the game.** In the co-op menu tick **Host the server on this PC** and
+press **Connect**. The relay runs inside your game (nothing to download), and Coopfall asks your
+router to open port 25598 with **UPnP**. The menu shows the address friends type in: your LAN
+address for the same network, your public address for the internet. If it says no UPnP router
+answered, turn UPnP on in your router's settings or forward TCP 25598 by hand (see "Playing over
+the internet"). Worlds are saved in `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\relay`.
+The server stops when you close the game; for an always-on server use the standalone relay below.
+
+### Standalone relay
 
 The server is a small relay. It does not simulate anything: one player's game (the **host** of
 each world) runs the world, and the relay passes messages and stores world saves.
@@ -248,20 +264,37 @@ top-down view so you can use the mouse, and returns to first person when you clo
   creature).
 - Wire protocol: [`server/protocol.md`](server/protocol.md).
 
+## Lockstep (experimental)
+
+Turn on **Lockstep** in the co-op menu (the host's setting decides) and every game simulates
+the same world tick by tick; only inputs travel (god powers, possession and controls,
+Worldfall's actions, menus and conversations). Nothing is copied and nothing drifts apart over
+time, and Worldfall's first-person features (law, guards, family, army service, the king's
+council, war flags and fleets, quests and trials, towns and shops, bag, gear and crafting,
+things on the ground, the day clock) work for every player in the shared world.
+
+- Everyone needs exactly the same mods, Worldfall build and WorldBox version (checked at
+  join; otherwise that player stays on live sync).
+- Every 10 ticks the games compare a checksum. If a game ever computes something different, the
+  host saves the world and everyone reloads it (a **re-sync**, about 2-3 s); what each player
+  carries, wears and has explored goes on.
+- Each player's explored map and people's memories of them stay their own.
+- The host's gameplay Worldfall settings apply to everyone while playing together.
+
 ## Known limits
 
 - Tested on two PCs on the same network (LAN), not yet over the internet via a public IP (see
   the top of this page).
-- Everyone needs the same Coopfall version (the server refuses older ones: protocol v3).
+- Everyone needs the same Coopfall version (the server refuses older ones: protocol v4). Update the
+  server too: an older `Plugins\WorldfallRooms` relay refuses this mod.
 - The mods check compares files. It can't tell whether a mod is really safe to mix; that is
   up to the `clientOnly` marks.
 - Every change reaches the guests after the network delay (on a LAN well under a second,
   over the internet about your ping more). Guests still run the parts of the simulation that
   aren't random (creatures walking, buildings, lava flowing), so a guest's world can differ
   for a moment until the host's state arrives; guests check their terrain against the host's
-  every half second and the object lists every 15 s, and fix what differs. A full lockstep
-  simulation (every game computing exactly the same thing) isn't possible, because WorldBox
-  itself isn't deterministic.
+  every half second and the object lists every 15 s, and fix what differs. **Lockstep** (see
+  below) avoids this: every game computes exactly the same world.
 - Dragons (and a few other special creatures) can't be possessed. That's WorldBox's own rule,
   not something Coopfall or Worldfall changes.
 

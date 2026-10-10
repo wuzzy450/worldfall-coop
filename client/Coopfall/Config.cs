@@ -86,6 +86,8 @@ namespace Coopfall
         public string color = "";
         public string serverHost = "127.0.0.1";
         public int serverPort = 25598;
+        /// <summary>Run the relay inside this game (friends connect to this PC); the port is opened on the router with UPnP.</summary>
+        public bool hostServer = false;
         /// <summary>"shared" = everyone plays one world together; "own" = each player hosts their own world and visits others.</summary>
         public string mode = "shared";
         public bool autoConnect = true;

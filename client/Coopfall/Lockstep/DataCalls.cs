@@ -313,7 +313,7 @@ namespace Coopfall.Lockstep
         // ------------------------------------------------------------------ checks
 
         /// <summary>Keys that are only one PC's cosmetic memory (kept local, left out of the check).</summary>
-        public static readonly HashSet<string> LocalKeys = new HashSet<string> { "fp_kin", "fp_mem", "fp_memt", "fp_you", "fp_seen" };
+        public static readonly HashSet<string> LocalKeys = new HashSet<string> { "fp_seen" };
 
         /// <summary>Keys some frame code writes many times a second (a sweep): kept on this PC from then on.</summary>
         private static readonly HashSet<string> _autoLocal = new HashSet<string>();
@@ -377,6 +377,14 @@ namespace Coopfall.Lockstep
                     foreach (Building b in w.buildings) if (b != null) { string d = Describe(_buildingData(b)); if (d.Length > 0) sb.Append("now b").Append(b.getID()).Append(' ').Append(d).Append('\n'); }
                     foreach (City c in w.cities) if (c != null) { string d = Describe(c.data); if (d.Length > 0) sb.Append("now c").Append(c.getID()).Append(' ').Append(d).Append('\n'); }
                     foreach (Kingdom k in w.kingdoms) if (k != null) { string d = Describe(k.data); if (d.Length > 0) sb.Append("now k").Append(k.getID()).Append(' ').Append(d).Append('\n'); }
+                }
+                if (w != null)
+                {
+                    var bl = new List<string>();
+                    foreach (Building b in w.buildings)
+                        if (b != null) bl.Add("building " + b.getID() + " " + (AccessTools.Field(typeof(Building), "asset").GetValue(b) as BuildingAsset)?.id + " " + (b.current_tile == null ? "-" : b.current_tile.x + "," + b.current_tile.y) + (b.isAlive() ? "" : " dead"));
+                    bl.Sort(StringComparer.Ordinal);
+                    foreach (string x in bl) sb.Append(x).Append('\n');
                 }
                 System.IO.File.WriteAllText(path, sb.ToString());
                 Log.Info("lockstep: Worldfall data of the last checks written to " + path);

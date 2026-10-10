@@ -22,7 +22,7 @@
 ---------------------------------------------------------------------
 
 local PLUGIN_NAME = "WorldfallRooms"
-local PROTOCOL_VERSION = 3
+local PROTOCOL_VERSION = 4
 
 local CFG =
 {

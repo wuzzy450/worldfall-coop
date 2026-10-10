@@ -6,8 +6,9 @@ using HarmonyLib;
 namespace Coopfall.Lockstep
 {
     /// <summary>
-    /// What each PC remembers on its own: Worldfall's explored maps (fp_seen) and people's memories,
-    /// kin and regards (fp_mem, fp_memt, fp_kin, fp_you). They stay out of the shared world (DataCalls.LocalKeys),
+    /// What each PC remembers on its own: Worldfall's explored maps (fp_seen; only the HUD and minimap
+    /// read them). People's memories, kin and regards are read by the simulation, so they are shared
+    /// (the chronicle sweep runs in ticks, TownsInTick). Explored maps stay out of the shared world (DataCalls.LocalKeys),
     /// but an epoch loads the host's save, which carries the host's copy. So every PC keeps its own
     /// copy across the load: written out of Worldfall's caches and taken from the old world just before
     /// the load, put back (by creature ID) into the new one right after. Creatures this PC had nothing
@@ -46,10 +47,6 @@ namespace Coopfall.Lockstep
             try
             {
                 try { _writeAll?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: Worldfall's explored maps not written: " + (e.InnerException ?? e).Message); }
-                if (_flush != null && _cached != null)
-                    foreach (Actor a in World.world.units)
-                        try { if (a != null && a.isAlive() && _cached.Invoke(null, new object[] { _data(a).id }) != null) _flush.Invoke(null, new object[] { a }); }
-                        catch { }
             }
             finally { DataCalls.LeaveLocal(); }
             _kept = new Dictionary<long, Kept>();
@@ -62,11 +59,9 @@ namespace Coopfall.Lockstep
                     string v = null;
                     if (key != "fp_memt" && _data(a).custom_data_string != null && _data(a).custom_data_string.TryGetValue(key, out v)) (k = k ?? new Kept()).s[key] = v;
                 }
-                long t = 0;
-                if (_data(a).custom_data_long != null && _data(a).custom_data_long.TryGetValue("fp_memt", out t)) { k = k ?? new Kept(); k.t = t; k.hasT = true; }
                 if (k != null) _kept[_data(a).id] = k;
             }
-            Log.Info("lockstep: kept this PC's explored maps and memories of " + _kept.Count + " creatures across the load");
+            Log.Info("lockstep: kept this PC's explored maps of " + _kept.Count + " creatures across the load");
         }
 
         /// <summary>Right after an epoch loaded (every PC, before tick 0): this PC's own copy goes back in.</summary>
@@ -91,14 +86,12 @@ namespace Coopfall.Lockstep
                     if (k != null && k.s.TryGetValue(key, out string v)) d.set(key, v);
                     else if (d.custom_data_string != null && d.custom_data_string.TryGetValue(key, out _)) d.removeString(key);
                 }
-                if (k != null && k.hasT) d.set("fp_memt", k.t);
-                else if (d.custom_data_long != null && d.custom_data_long.TryGetValue("fp_memt", out _)) d.removeLong("fp_memt");
                 if (k != null) n++;
             }
             } finally { DataCalls.LeaveLocal(); }
             // Worldfall's caches read the data again
-            try { _exploredReset?.Invoke(null, null); _chronReset?.Invoke(null, null); } catch { }
-            Log.Info("lockstep: this PC's explored maps and memories put back for " + n + " creatures");
+            try { _exploredReset?.Invoke(null, null); } catch { }
+            Log.Info("lockstep: this PC's explored maps put back for " + n + " creatures");
         }
 
         /// <summary>For the test's state line: a digest of this PC's local data of one creature.</summary>

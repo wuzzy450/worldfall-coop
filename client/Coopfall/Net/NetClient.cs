@@ -23,7 +23,7 @@ namespace Coopfall.Net
     public class NetClient
     {
         private TcpClient _tcp;
-        private NetworkStream _stream;
+        private Stream _stream;
         private volatile bool _running;
         private readonly object _qLock = new object();
         private readonly Queue<byte[]> _fast = new Queue<byte[]>();
@@ -61,6 +61,19 @@ namespace Coopfall.Net
             {
                 try
                 {
+                    if (SteamTransport.IsSteamAddress(host, out ulong steamId))
+                    {
+                        // over Steam's relay network: no port forwarding needed
+                        _tcp = null;
+                        _stream = SteamTransport.Connect(steamId, 15000);
+                        lock (_qLock) { _fast.Clear(); _bulk.Clear(); Interlocked.Exchange(ref _bulkBytesQueued, 0); }
+                        _running = true;
+                        Connected = true;
+                        new Thread(ReadLoop) { IsBackground = true, Name = "Coopfall-Read" }.Start();
+                        new Thread(WriteLoop) { IsBackground = true, Name = "Coopfall-Write" }.Start();
+                        _events.Enqueue("+");
+                        return;
+                    }
                     var tcp = new TcpClient();
                     IAsyncResult ar = tcp.BeginConnect(host, port, null, null);
                     if (!ar.AsyncWaitHandle.WaitOne(8000))

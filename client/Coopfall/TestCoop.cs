@@ -260,7 +260,7 @@ namespace Coopfall
                         CpOk("meteor", CoopMod.Instance.Powers.UseLocal("meteorite", at), "thrown at " + at.x + "," + at.y);
                     }
                 }
-                if (_cpStep == 191 && t > 121.2f) { _cpStep = 192; CpOk("meteor look", Lockstep.EffectSeeds.Given.Count > 0, "seeds given " + string.Join(",", Lockstep.EffectSeeds.Given.ConvertAll(x => x.ToString()).ToArray()) + ", drawn with them here " + Lockstep.EffectSeeds.Drawn + ", drawing now: " + CpMeteorSeeds(mod, modT)); CpShot("step-meteor"); }
+                if (_cpStep == 191 && t > 126f) { _cpStep = 192; CpOk("meteor look", Lockstep.EffectSeeds.Given.Count > 0, "seeds given " + string.Join(",", Lockstep.EffectSeeds.Given.ConvertAll(x => x.ToString()).ToArray()) + ", drawn with them here " + Lockstep.EffectSeeds.Drawn + ", drawing now: " + CpMeteorSeeds(mod, modT)); CpShot("step-meteor"); }
                 if (_cpStep == 192 && t > 130f)
                 {
                     _cpStep = 193;
@@ -277,12 +277,8 @@ namespace Coopfall
                     Actor smith = World.world.units.get(_cpSmith);
                     if (smith != null)
                     {
-                        // a memory only this PC has (like the ones Worldfall's own sweep writes on each PC)
-                        string who = _s.IsHost ? "host" : "guest", before = CpMem(smith);
-                        Lockstep.DataCalls.LocalOnly(() => (R.Get(smith, "data") as BaseSystemData).set("fp_mem", (before.Length > 0 ? before + "|" : "") + "test,1,1,1,seen by the " + who));
-                        CpCall(chron, null, "Reset");
                         _cpShareBefore = CpExplored(me);
-                        CpOk("own memory", CpMem(smith).Contains("seen by the " + (_s.IsHost ? "host" : "guest")), "smith #" + _cpSmith + " remembers on this PC only; explored here " + _cpShareBefore.ToString("F4"));
+                        CpOk("explored", _cpShareBefore > 0f, "explored here " + _cpShareBefore.ToString("F4") + " (each PC's own)");
                     }
                     _cpStep = 19;
                 }
@@ -293,9 +289,6 @@ namespace Coopfall
                 }
                 if (_cpStep == 20 && t > 160f)
                 {
-                    Actor smith = World.world.units.get(_cpSmith);
-                    string mem = smith == null ? "" : CpMem(smith), mine = "seen by the " + (_s.IsHost ? "host" : "guest"), theirs = "seen by the " + (_s.IsHost ? "guest" : "host");
-                    CpOk("memory after resync", mem.Contains(mine) && !mem.Contains(theirs), "smith remembers here: " + mem);
                     float share = CpExplored(me);
                     CpOk("explored after resync", share >= _cpShareBefore - 0.0001f && share > 0f, "explored here " + _cpShareBefore.ToString("F4") + " -> " + share.ToString("F4"));
                     string wood = CpBundles();
@@ -480,7 +473,7 @@ namespace Coopfall
                 }
                 sb.Append(" data {").Append(Lockstep.DataCalls.Describe(R.Get(b, "data") as BaseSystemData)).Append('}');
                 Actor smith = World.world.units.get(_cpSmith);
-                if (smith != null && chron != null) try { sb.Append(" smith thinks ").Append(CpCall(chron, null, "Opinion", smith, b)); } catch { }
+                if (smith != null && chron != null) try { sb.Append(" smith thinks ").Append(CpCall(chron, null, "Opinion", smith, b)).Append(" smith remembers {").Append(CpMem(smith)).Append('}'); } catch { }
                 sb.Append("] ");
             }
             City town = World.world.cities.get(_cpCity);

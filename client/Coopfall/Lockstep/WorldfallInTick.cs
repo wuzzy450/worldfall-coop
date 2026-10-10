@@ -323,6 +323,7 @@ namespace Coopfall.Lockstep
             SteeringInTick.Reset();
             ClimbingInTick.Reset();
             EffectSeeds.Reset();
+            ZeroHpWatch.Reset();
             foreach (KeyValuePair<FieldInfo, object> kv in _statics)
             {
                 object v = kv.Key.GetValue(null);

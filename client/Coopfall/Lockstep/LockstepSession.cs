@@ -107,6 +107,7 @@ namespace Coopfall.Lockstep
             LockstepClock.BeforeTick += t => { if (_myKeyFor != _s.MyId) { _myKeyFor = _s.MyId; MyPlayer = PlayerKey(_s.MyId); } };
             LockstepInput.Applied += i => { if (TraceTicks) Log.Info("lockstep: applied " + i + " (epoch " + _epoch + ")"); };
             if (TraceTicks) LockstepClock.BeforeTick += t => { if (Active) UnitRing.BeforeTick(t); };
+            ZeroHpWatch.Install();
         }
 
         private bool Wanted => _s.Cfg.lockstep && _s.Online && _s.RoomId != null;
@@ -499,7 +500,7 @@ namespace Coopfall.Lockstep
         // ============================================================== checks
 
         /// <summary>"-coopfall-lockstep-trace": every tick's checksum to lockstep-epochN.tsv (compare with tools/compare-determinism.py).</summary>
-        private static readonly bool TraceTicks = Array.Exists(Environment.GetCommandLineArgs(), a => a.Equals("-coopfall-lockstep-trace", StringComparison.OrdinalIgnoreCase));
+        internal static readonly bool TraceTicks = Array.Exists(Environment.GetCommandLineArgs(), a => a.Equals("-coopfall-lockstep-trace", StringComparison.OrdinalIgnoreCase));
         private System.IO.StreamWriter _trace;
         private int _traceEpoch;
 

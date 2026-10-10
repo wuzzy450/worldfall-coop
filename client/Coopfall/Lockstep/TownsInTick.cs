@@ -281,8 +281,14 @@ namespace Coopfall.Lockstep
             Type chronicle = wf.GetType("FirstPerson.Chronicle", false);
             MethodInfo tick = chronicle == null ? null : AccessTools.Method(chronicle, "Tick", Type.EmptyTypes);
             if (tick == null) { Log.Warn("lockstep: Worldfall's Chronicle.Tick not found: people's memories may be written on one PC only"); return; }
-            // each PC's sweep writes what people remember (kin, events): kept on that PC
-            h.Patch(tick, prefix: new HarmonyMethod(typeof(TownsInTick), nameof(LocalPrefix)), finalizer: new HarmonyMethod(typeof(TownsInTick), nameof(LocalFinalizer)));
+            // the sweep that writes what people remember (kin, events) is read by the simulation
+            // (quests, service, teachers, family): it runs in ticks, a fixed number of people per tick
+            h.Patch(tick, prefix: new HarmonyMethod(typeof(TownsInTick), nameof(ChronicleGatePrefix)));
+            _chronTick = tick;
+            _chronPerFrame = AccessTools.Field(chronicle, "PerFrame");
+            _chronBudget = AccessTools.Field(chronicle, "BudgetMs");
+            _chronReset = AccessTools.Method(chronicle, "Reset", Type.EmptyTypes);
+            if (_chronPerFrame == null || _chronBudget == null) Log.Warn("lockstep: Worldfall's Chronicle sweep settings not found: memories may differ between PCs");
             // what you did to someone (opinions, talks, gifts, crimes) travels
             PlayerScope.Relay(h, chronicle, "ChangeOpinion", "Note", "AddOwnMemory");
             features.Add("opinions");
@@ -294,6 +300,31 @@ namespace Coopfall.Lockstep
                     foreach (MethodInfo m in explored.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
                         if (m.Name == n) h.Patch(m, prefix: new HarmonyMethod(typeof(TownsInTick), nameof(LocalPrefix)), finalizer: new HarmonyMethod(typeof(TownsInTick), nameof(LocalFinalizer)));
         }
+
+        private static MethodInfo _chronTick, _chronReset;
+        private static FieldInfo _chronPerFrame, _chronBudget;
+        private static bool _chronOurs;
+
+        /// <summary>Chronicle.Tick: not from the frame while lockstep runs (RunTick calls it in ticks).</summary>
+        private static bool ChronicleGatePrefix() => _chronOurs || !LockstepControl.Running || !LockstepClock.Active;
+
+        /// <summary>In a tick: the chronicle sweep with a fixed count (no time budget, which differs per PC).</summary>
+        private static void TickChronicle()
+        {
+            if (_chronTick == null || _chronPerFrame == null || _chronBudget == null) return;
+            object per = _chronPerFrame.GetValue(null), budget = _chronBudget.GetValue(null);
+            _chronOurs = true;
+            try
+            {
+                _chronPerFrame.SetValue(null, 16);
+                _chronBudget.SetValue(null, 1e9);
+                _chronTick.Invoke(null, null);
+            }
+            catch (Exception e) { if (_chronFailed++ == 0) Log.Error("lockstep: Worldfall's chronicle in a tick: " + (e.InnerException ?? e)); }
+            finally { _chronOurs = false; _chronPerFrame.SetValue(null, per); _chronBudget.SetValue(null, budget); }
+        }
+
+        private static int _chronFailed;
 
         private static void LocalPrefix() => DataCalls.EnterLocal();
 
@@ -310,12 +341,14 @@ namespace Coopfall.Lockstep
         {
             TickClock();
             TickShops();
+            TickChronicle();
         }
 
         public static void Reset()
         {
             _shopCursor = 0;
             _shopTimer = 0f;
+            try { _chronReset?.Invoke(null, null); } catch { }   // its cache and sweep position start fresh on every PC
         }
 
         private static readonly HashSet<string> _failed = new HashSet<string>();

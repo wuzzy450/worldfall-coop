@@ -1,4 +1,4 @@
-# WorldfallRooms protocol v3
+# WorldfallRooms protocol v4
 
 TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"` (type).
 
@@ -6,7 +6,7 @@ TCP, port 25598, UTF-8 JSON, one object per line (`\n`). Every message has `"t"`
 
 | t | fields | meaning |
 |---|---|---|
-| `hello` | `name, version:3, color "#rrggbb", game, mods[{id, ver}]` | first message; names are made unique. `mods` = gameplay mods (client-only mods left out), `ver` a file fingerprint |
+| `hello` | `name, version:4, color "#rrggbb", game, mods[{id, ver}]` | first message; names are made unique. `mods` = gameplay mods (client-only mods left out), `ver` a file fingerprint |
 | `join` | `room, name?, seed, preferLocal, resume?, password?, spectate?` | enter a world. `seed`: willing to provide my open world if the room is new/empty. `preferLocal`: replace the stored copy with my open world (owner of a `home-` room, or `shared`). `resume`: I was this world's last host (connection dropped), so `preferLocal` is allowed for me too |
 | `leave` | | leave the current world |
 | `resync` | | guest asks for a fresh copy of the world from the host |
@@ -67,6 +67,26 @@ guestPowers, blocked, guestSpeed, allowExtraMods, everyoneAdmin}` (never the pas
 
 Defaults: no password, not locked, no approval, any number of players, spectators allowed,
 `guestPowers` all, `guestSpeed` true, `allowExtraMods` false, `everyoneAdmin` true.
+
+## Lockstep (v4)
+
+When the host has **Lockstep** on (co-op menu), every game runs the same simulation and only
+inputs travel. These lines go over the live-sync lane (they start with `{"t":"<type>"` and are
+relayed raw to the room); the relay keeps the last `wle` and sends it ahead of the save to anyone
+who joins or re-syncs.
+
+| t | from | fields | meaning |
+|---|---|---|---|
+| `wle` | host | `e, seed, sha, mods, reason, wfs?, tod?, wps?, wbn?` | a new epoch: everyone loads the save with this `sha` and waits at tick 0. `wfs` the host's Worldfall settings, `tod` time of day, `wps` every player's Worldfall campaign state, `wbn` things lying on the ground |
+| `wlready` | anyone | `e, from, h0` | loaded; `h0` is the tick-0 checksum line |
+| `wlreload` | host | `e, to` | that guest's load came out different: load again |
+| `wlr` | anyone | `e, from, id, k, a?, b?, brush?` | a request: a god power, possession, controls or a relayed game call |
+| `wli` | host | `e, i` | the request stamped with the tick it applies at |
+| `wlg` | host | `e, g` | the world may run up to tick `g` |
+| `wlh` | anyone | `e, from, tick, h` | checksum line every 10 ticks; a mismatch starts a new epoch (re-sync) |
+
+Only the host may send `wle, wli, wlg, wlreload`. Lines from a client that isn't synced yet are
+dropped (the relay logs `dropping <type> from <name>: <why>` once per reason).
 
 ## Room rules
 

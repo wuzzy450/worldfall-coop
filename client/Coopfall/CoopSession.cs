@@ -59,7 +59,7 @@ namespace Coopfall
     public class CoopSession
     {
         public const int ChunkBytes = 60 * 1024;
-        public const int ProtocolVersion = 3;
+        public const int ProtocolVersion = 4;
 
         public readonly NetClient Net = new NetClient();
         /// <summary>Set by the mod once Harmony is loaded.</summary>
@@ -146,9 +146,60 @@ namespace Coopfall
             if (Net.Connected || Net.Connecting) return;
             _userLeft = false;
             SetPhase(Phase.Connecting);
-            Status = "Connecting to " + Cfg.serverHost + ":" + Cfg.serverPort + " ...";
+            string host = Cfg.serverHost.Trim();
+            int ai = Array.IndexOf(Environment.GetCommandLineArgs(), "-coopfall-server");
+            if (ai >= 0 && ai + 1 < Environment.GetCommandLineArgs().Length) host = Environment.GetCommandLineArgs()[ai + 1];   // tests
+            if (host == "steam:self") host = Coopfall.Net.SteamTransport.MyAddress ?? host;
+            if (Cfg.hostServer || HostArg)
+            {
+                if (!StartHosting()) { Status = "Couldn't host the server: " + Relay?.Error; SetPhase(Phase.Offline); return; }
+                host = "127.0.0.1";
+            }
+            Status = "Connecting to " + host + ":" + Cfg.serverPort + " ...";
             Log.Info(Status);
-            Net.ConnectAsync(Cfg.serverHost.Trim(), Cfg.serverPort);
+            Net.ConnectAsync(host, Cfg.serverPort);
+        }
+
+        /// <summary>-coopfall-host-server: host the built-in relay this session (tests; not saved).</summary>
+        public static readonly bool HostArg = Array.Exists(Environment.GetCommandLineArgs(), a => a == "-coopfall-host-server");
+
+        /// <summary>The relay running inside this game (null: not hosting), and the router port it asked for.</summary>
+        public Net.EmbeddedRelay Relay { get; private set; }
+        public Net.Upnp PortMap { get; private set; }
+
+        /// <summary>Starts the built-in relay on the configured port (and asks the router to open it).</summary>
+        public bool StartHosting()
+        {
+            if (Relay != null && Relay.Running) return true;
+            Relay = new Net.EmbeddedRelay(Cfg.serverPort, System.IO.Path.Combine(UnityEngine.Application.persistentDataPath, "coopfall", "relay"));
+            if (!Relay.Start()) return false;
+            PortMap = new Net.Upnp(Cfg.serverPort);
+            PortMap.OpenAsync();
+            Coopfall.Net.SteamTransport.StartHost(Relay);
+            return true;
+        }
+
+        public void StopHosting()
+        {
+            Coopfall.Net.SteamTransport.StopHost();
+            PortMap?.Close();
+            PortMap = null;
+            Relay?.Stop();
+            Relay = null;
+        }
+
+        /// <summary>This PC's address on the local network (for friends on the same network).</summary>
+        public static string LanAddress()
+        {
+            try
+            {
+                using (var s = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp))
+                {
+                    s.Connect("8.8.8.8", 53);
+                    return ((System.Net.IPEndPoint)s.LocalEndPoint).Address.ToString();
+                }
+            }
+            catch { return "?"; }
         }
 
         public void Disconnect()

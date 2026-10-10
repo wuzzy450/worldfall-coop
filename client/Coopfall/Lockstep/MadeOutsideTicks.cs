@@ -45,8 +45,16 @@ namespace Coopfall.Lockstep
             Log.Info("lockstep: watching " + n + " ways of making things for calls outside ticks");
         }
 
-        private static void Prefix(MethodBase __originalMethod)
+        private static void Prefix(MethodBase __originalMethod, object[] __args)
         {
+            // early in an epoch: every building made in a tick, with who made it (to compare between PCs)
+            if (LockstepSession.TraceTicks && LockstepControl.Running && LockstepClock.InTick && LockstepClock.Tick < 100 && __originalMethod.Name == "addBuilding")
+            {
+                var st0 = new System.Diagnostics.StackTrace(2, false);
+                var sb = new System.Text.StringBuilder();
+                for (int i = 0; i < st0.FrameCount && i < 8; i++) { MethodBase f = st0.GetFrame(i)?.GetMethod(); if (f != null) sb.Append(" < ").Append(f.DeclaringType?.Name).Append('.').Append(f.Name); }
+                Log.Info("lockstep: tick " + LockstepClock.Tick + " builds " + (__args != null && __args.Length > 0 ? __args[0] is BuildingAsset ba ? ba.id : __args[0]?.ToString() : "?") + (__args != null && __args.Length > 1 && __args[1] is WorldTile wt ? " at " + wt.x + "," + wt.y : "") + sb);
+            }
             if (!LockstepControl.Running || !LockstepClock.Active || LockstepClock.InTick) return;
             Count++;
             var st = new System.Diagnostics.StackTrace(2, false);

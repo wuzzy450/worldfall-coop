@@ -82,6 +82,8 @@ namespace Coopfall
             Log.Tick();
             ProfileDb.Tick();
             Prof.Frame();
+            Coopfall.Net.MainThread.Drain();
+            Coopfall.Net.SteamTransport.Pump();
             if (!Config.game_loaded) return;
             try
             {
@@ -199,6 +201,7 @@ namespace Coopfall
                 _guard.Shutdown();
                 Session?.SaveBeforeQuit();
                 Session?.Disconnect();
+                Session?.StopHosting();
                 Log.Flush();
             }
             catch { }

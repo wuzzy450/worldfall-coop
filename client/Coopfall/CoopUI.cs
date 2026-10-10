@@ -391,6 +391,32 @@ namespace Coopfall
             _portEdit = GUILayout.TextField(_portEdit ?? "", 5, _field, GUILayout.Width(64));
             GUILayout.EndHorizontal();
             GUI.enabled = true;
+            bool hostHere = Tog(_cfg.hostServer, " Host the server on this PC (no download: friends connect to you)", _small);
+            if (hostHere != _cfg.hostServer)
+            {
+                _cfg.hostServer = hostHere;
+                _cfg.Save();
+                if (!hostHere && _s.Relay != null) { _s.Disconnect(); _s.StopHosting(); }
+            }
+            if (_cfg.hostServer)
+            {
+                if (_s.Relay != null && _s.Relay.Running)
+                {
+                    GUILayout.Label("  Server running on port " + _s.Relay.Port + ", " + _s.Relay.Players + " connected. Same network: " + CoopSession.LanAddress() + ":" + _s.Relay.Port, _small);
+                    GUILayout.Label("  Internet: " + (_s.PortMap?.Status ?? "-"), _small);
+                    string steam = Net.SteamTransport.MyAddress;
+                    if (steam != null)
+                    {
+                        GUILayout.BeginHorizontal();
+                        GUILayout.Label("  Over Steam (no port forwarding): friends type " + steam, _small);
+                        if (GUILayout.Button("Copy", _btn, GUILayout.Width(60))) GUIUtility.systemCopyBuffer = steam;
+                        GUILayout.EndHorizontal();
+                    }
+                    if (_s.PortMap == null || !_s.PortMap.Open) GUILayout.Label("  For friends over the internet, forwarding TCP port " + _s.Relay.Port + " on your router to this PC is recommended.", _small);
+                }
+                else if (_s.Relay != null && _s.Relay.Error != null) GUILayout.Label("  Couldn't start the server: " + _s.Relay.Error, _small);
+                else GUILayout.Label("  The server starts when you press Connect. Over the internet, forwarding TCP port " + _cfg.serverPort + " on your router is recommended.", _small);
+            }
 
             GUILayout.Space(6);
             GUILayout.Label("Mode", _label);
