@@ -64,7 +64,7 @@ namespace Coopfall.Lockstep
         private static bool UiName(string n)
         {
             foreach (string w in new[] { "Open", "Selected", "Mark", "Hover", "Scroll", "Page", "Tab", "Zoom", "Pan", "View", "Drag", "Cursor", "Picked", "Focus",
-                "group", "Group", "Texture", "Tex", "Camera", "Menu", "Card", "Shown", "Toast", "Said", "Prompt", "Board" })
+                "group", "Group", "Texture", "Tex", "Camera", "Menu", "Card", "Shown", "Toast", "Said", "Prompt", "Board", "Sort" })
                 if (n.IndexOf(w, StringComparison.Ordinal) >= 0) return true;
             return false;
         }
@@ -206,6 +206,9 @@ namespace Coopfall.Lockstep
                 _parts.Add(new Part { f = _warMap, instance = true, fresh = true });
                 InstallWarMap(h, wf, warMapT, royalT);
             }
+            // quests and trials, naming newborns, kin tracking
+            try { CivilInTick.Install(h, wf, _features); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's civil life (quests, births, kin) not per player: " + e); }
             foreach (string f in new[] { "Orders", "Charge" })
             {
                 FieldInfo fi = AccessTools.Field(_mod, f);
@@ -245,7 +248,7 @@ namespace Coopfall.Lockstep
         }
 
         /// <summary>A feature's static fields become per player; its clock reads become the tick clock.</summary>
-        private static bool Statics(Harmony h, Type t)
+        internal static bool Statics(Harmony h, Type t)
         {
             var types = new List<Type> { t };
             for (int i = 0; i < types.Count; i++) types.AddRange(types[i].GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic));
@@ -271,7 +274,7 @@ namespace Coopfall.Lockstep
         private static bool Coll(Type t) => t.IsGenericType && AccessTools.Method(t, "Clear", Type.EmptyTypes) != null && typeof(IEnumerable).IsAssignableFrom(t)
             && Array.Exists(t.GetMethods(), m => m.Name == "Add" && m.GetParameters().Length == 1);
 
-        private static void Relay(Harmony h, Type t, params string[] names)
+        internal static void Relay(Harmony h, Type t, params string[] names)
         {
             foreach (string n in names)
             {
@@ -909,6 +912,7 @@ namespace Coopfall.Lockstep
                     }
                     if (_lawUpdate != null) Try("law", () => _lawUpdate.Invoke(null, new object[] { you, dt, toast }));
                     if (_economyUpdate != null) Try("hired guards", () => _economyUpdate.Invoke(null, new object[] { you, dt, toast }));
+                    CivilInTick.RunPlayer(you, dt, toast, Try);
                     if (_familyUpdate != null)
                     {
                         object settings = _settings.GetValue(Mod());

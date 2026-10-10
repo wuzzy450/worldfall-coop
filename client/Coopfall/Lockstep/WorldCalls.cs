@@ -208,6 +208,12 @@ namespace Coopfall.Lockstep
         /// <summary>Objects of this type travel by a number (e.g. Worldfall's carcasses by creature ID).</summary>
         public static void Codec(Type t, Func<object, long> id, Func<long, object> get) => _codecs[t] = new CodecFns { id = id, get = get };
 
+        private sealed class TextFns { public Func<object, string> write; public Func<string, object> read; }
+        private static readonly Dictionary<Type, TextFns> _texts = new Dictionary<Type, TextFns>();
+
+        /// <summary>Objects of this type travel as text (e.g. Worldfall's quests, as Worldfall saves them).</summary>
+        public static void TextCodec(Type t, Func<object, string> write, Func<string, object> read) => _texts[t] = new TextFns { write = write, read = read };
+
         /// <summary>Each player has their own object of this type (PlayerScope): it travels as "the caller's".</summary>
         public static void PerPlayer(Type t, Func<object> current) => _perPlayer[t] = current;
 
@@ -318,6 +324,12 @@ namespace Coopfall.Lockstep
                 if (!ReferenceEquals(mine(), v)) return false;
                 sb.Append('P').Append(Esc(t.Name)); return true;
             }
+            if (_texts.TryGetValue(t, out TextFns tf))
+            {
+                string text = tf.write(v);
+                if (text == null) return false;
+                sb.Append('X').Append(Esc(t.Name)).Append(':').Append(Esc(text)); return true;
+            }
             if (_codecs.TryGetValue(t, out CodecFns cf)) { sb.Append('C').Append(Esc(t.Name)).Append(':').Append(cf.id(v).ToString(CultureInfo.InvariantCulture)); return true; }
             if (t.IsEnum) { sb.Append('e').Append(Convert.ToInt64(v).ToString(CultureInfo.InvariantCulture)); return true; }
             if (Manager(t) != null)
@@ -403,6 +415,14 @@ namespace Coopfall.Lockstep
                     string tn = Uri.UnescapeDataString(r.Substring(0, c));
                     foreach (KeyValuePair<Type, CodecFns> kv in _codecs)
                         if (kv.Key.Name == tn) { v = kv.Value.get(long.Parse(r.Substring(c + 1), CultureInfo.InvariantCulture)); return v != null; }
+                    return false;
+                }
+                case 'X':
+                {
+                    int c = r.IndexOf(':');
+                    string tn = Uri.UnescapeDataString(r.Substring(0, c));
+                    foreach (KeyValuePair<Type, TextFns> kv in _texts)
+                        if (kv.Key.Name == tn) { v = kv.Value.read(Uri.UnescapeDataString(r.Substring(c + 1))); return v != null; }
                     return false;
                 }
                 case 'a':

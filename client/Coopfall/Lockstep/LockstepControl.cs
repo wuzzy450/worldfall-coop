@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
+using System.Linq;
 using HarmonyLib;
 using UnityEngine;
 
@@ -384,7 +385,7 @@ namespace Coopfall.Lockstep
                 // creatures winding up an attack in first person get their attack timer set
                 "Law.SendGuards", "Law.Update", "Economy.Update", "WindUps.Update", "SwingState.KeepBodyClear", "Wind.Look", "StormRun.Board", "StormRun.Hold", "StormRun.March",
             };
-            foreach (string g in gated)
+            foreach (string g in gated.Concat(CivilInTick.Gated))
             {
                 int dot = g.IndexOf('.');
                 string cls = g.Substring(0, dot);
@@ -466,7 +467,9 @@ namespace Coopfall.Lockstep
             float d = Toolbox.SquaredDist(target.x, target.y + (float)R.CallN(pTargetToCheck, "getHeight", 0), pData.hit_position.x, pData.hit_position.y + pData.hit_position.z);
             float r = pData.area_of_effect + ((BaseStats)R.Get(pTargetToCheck, "stats"))["size"];
             if (!(d < r * r)) { __result = AttackDataResult.Miss; return false; }
+            CivilInTick.BeforeHit(ref pData, by, pTargetToCheck);
             __result = (AttackDataResult)_applyAttack.Invoke(null, new object[] { pData, pTargetToCheck });
+            CivilInTick.AfterHit(by, pTargetToCheck, __result.state == ApplyAttackState.Hit, pData.is_projectile);
             if (__result.state == ApplyAttackState.Hit)
             {
                 Vector3 hp = pData.hit_position;
