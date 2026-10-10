@@ -346,21 +346,29 @@ namespace Coopfall
                 {
                     _cpStep = 28;
                     CpType("PossessionHooks")?.GetField("ScriptedInput", Any)?.SetValue(null, Vector2.zero);
-                    // stand still, keep looking at the other player until the check
+                    // stand still, keep looking at the other player until the check; step back if the two
+                    // bodies ended up inside each other (a tag that close is behind the camera)
                     Lockstep.LockstepControl.BeforeSample = () =>
                     {
                         Actor mine = ControllableUnit.getControllableUnit(), other = CpOther()?.actor;
-                        if (mine != null && other != null) { Vector2 d = other.current_position - mine.current_position; if (d != Vector2.zero) WorldfallBridge.SetViewYaw(Mathf.Atan2(d.y, d.x)); }
-                        Lockstep.LockstepControl.Script(Vector2.zero, false, false);
+                        Vector2 d = mine != null && other != null ? other.current_position - mine.current_position : Vector2.zero;
+                        if (d != Vector2.zero) WorldfallBridge.SetViewYaw(Mathf.Atan2(d.y, d.x));
+                        bool back = mine != null && other != null && d.magnitude < 1.5f;
+                        CpType("PossessionHooks")?.GetField("ScriptedInput", Any)?.SetValue(null, back ? new Vector2(0f, -1f) : Vector2.zero);
+                        Lockstep.LockstepControl.Script(back ? (d == Vector2.zero ? Vector2.left : -d.normalized) : Vector2.zero, false, false);
                     };
                 }
                 if (_cpStep == 28 && t > 220f)
                 {
-                    _cpStep = 29;
                     AvatarManager.Remote o = CpOther();
                     float dist = o?.actor != null ? Vector2.Distance(o.actor.current_position, me.current_position) : -1f;
                     float age = o != null ? Time.unscaledTime - o.tagAt : 999f;
-                    CpOk("nameplate", o?.actor != null && age < 1f && dist >= 0f && dist < 5f, "other player " + (o?.name ?? "none") + " #" + (o?.actor?.getID() ?? 0) + " at distance " + dist.ToString("F1") +
+                    bool seen = o?.actor != null && age < 1f && dist >= 0f && dist < 5f;
+                    // a bush or wall between the two hides the tag for a moment: watch for 6 s
+                    if (!seen && t < 226f) return;
+                    _cpStep = 29;
+                    CpType("PossessionHooks")?.GetField("ScriptedInput", Any)?.SetValue(null, Vector2.zero);
+                    CpOk("nameplate", seen, "other player " + (o?.name ?? "none") + " #" + (o?.actor?.getID() ?? 0) + " at distance " + dist.ToString("F1") +
                         ", first person " + WorldfallBridge.FirstPerson + ", tag drawn " + age.ToString("F1") + " s ago; me #" + me.getID() + " at " + me.current_position + " health " + me.getHealth() + "/" + me.getMaxHealth() + " ratio " + me.getHealthRatio().ToString("F2") + ", other health " + (o?.actor != null ? o.actor.getHealth() + "/" + o.actor.getMaxHealth() + " tag " + o.hp + "/" + o.mhp : "-") + ", tick " + Lockstep.LockstepClock.Tick);
                     CpShot("step-nameplate");
                     Lockstep.LockstepControl.BeforeSample = null;

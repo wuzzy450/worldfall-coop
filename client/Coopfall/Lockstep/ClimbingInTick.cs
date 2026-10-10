@@ -46,6 +46,12 @@ namespace Coopfall.Lockstep
             h.Patch(climbs, prefix: new HarmonyMethod(typeof(ClimbingInTick), nameof(ClimbsPrefix)));
             if (onBoards != null) h.Patch(onBoards, prefix: new HarmonyMethod(typeof(ClimbingInTick), nameof(OnBoardsPrefix)));
             else Log.Warn("lockstep: Worldfall's dock boards step not found: creatures on docks may differ between PCs");
+            // every other dock check in ticks too (a body's pace and slope on a dock, where a
+            // ferry puts its warriors ashore): only docks this PC has drawn are registered
+            Type docks = wf.GetType("FirstPerson.DockDecks", false);
+            MethodInfo onDeck = docks == null ? null : AccessTools.Method(docks, "On", new[] { typeof(UnityEngine.Vector2) });
+            if (onDeck != null) h.Patch(onDeck, prefix: new HarmonyMethod(typeof(ClimbingInTick), nameof(OnBoardsPrefix)));
+            else Log.Warn("lockstep: Worldfall's DockDecks.On not found: creatures on docks may differ between PCs");
         }
 
         public static void Reset() { _bodies.Clear(); _left.Clear(); }

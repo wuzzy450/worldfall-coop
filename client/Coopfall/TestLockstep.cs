@@ -90,6 +90,13 @@ namespace Coopfall
         /// (nearest house), the host at 95 s (the house the guest's creature is in, as the shared
         /// world has it). Until 120 s both log every 2 s what they see; then both leave.
         /// </summary>
+        /// <summary>A building or creature removed meanwhile (its data released) logs as "removed".</summary>
+        private static string SafeId(BaseSimObject o)
+        {
+            try { return o.getID().ToString(); }
+            catch (System.NullReferenceException) { return "removed"; }
+        }
+
         private void LockstepHouseTick(float now)
         {
             if (NoPossess || _lsHouseDone || now - _lsStart < (_s.IsHost ? 95f : 90f) || !WorldfallBridge.Present) return;
@@ -131,12 +138,12 @@ namespace Coopfall
                 {
                     if (a == null || !a.isAlive() || !Lockstep.LockstepControl.IsControlled(a.getID())) continue;
                     Building b = WorldBoxApi.InsideBuilding(a);
-                    sb.Append('#').Append(a.getID()).Append(b != null ? " in #" + b.getID() : " OUTSIDE")
+                    sb.Append('#').Append(a.getID()).Append(b != null ? " in #" + SafeId(b) : " OUTSIDE")
                       .Append(b != null && ((Vector2)a.current_position - b.current_position).sqrMagnitude < 0.01f ? " at the house" : " at " + ((Vector2)a.current_position).ToString("F1"))
                       .Append(" hp ").Append(a.getHealth()).Append(" visible ").Append(R.Get(a, "is_visible")).Append("; ");
                 }
                 Building mine = WorldfallBridge.InsideHouse;
-                sb.Append("my room ").Append(mine != null ? "#" + mine.getID() : "none");
+                sb.Append("my room ").Append(mine != null ? "#" + SafeId(mine) : "none");
                 if (WorldfallBridge.RoomEye(out Vector2 eye)) sb.Append(" eye ").Append(eye.ToString("F2"));
                 foreach (AvatarManager.Remote r in CoopMod.Instance.Avatars.Remotes.Values)
                     sb.Append("; ").Append(r.name).Append(" says house #").Append(r.bld).Append(r.roomPos.HasValue ? " spot " + r.roomPos.Value.ToString("F2") : "")
@@ -147,7 +154,7 @@ namespace Coopfall
             if (_lsInRoom) WorldfallBridge.TestCall("LeaveRoomForTest");
             else WorldfallBridge.Assembly.GetType("FirstPerson.HouseInterior", false)?.GetMethod("LetOut", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.Invoke(null, new object[] { me, _lsHouse });
             _lsHouseDone = true;
-            Log.Info("TEST lockstep: house: left #" + _lsHouse.getID());
+            Log.Info("TEST lockstep: house: left #" + SafeId(_lsHouse));
         }
 
         private long _lsTree, _lsTreeBy;

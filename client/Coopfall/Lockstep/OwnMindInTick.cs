@@ -32,8 +32,21 @@ namespace Coopfall.Lockstep
             _checkCurrent = AccessTools.MethodDelegate<Func<Actor, bool>>(cur);
             _checkEnemies = AccessTools.MethodDelegate<Func<Actor, bool>>(en);
             h.Patch(strike, prefix: new HarmonyMethod(typeof(OwnMindInTick), nameof(StrikePrefix)));
+            h.Patch(cur, prefix: new HarmonyMethod(typeof(OwnMindInTick), nameof(TrapPrefix)));
+            h.Patch(en, prefix: new HarmonyMethod(typeof(OwnMindInTick), nameof(TrapPrefix)));
             h.Patch(look, prefix: new HarmonyMethod(typeof(OwnMindInTick), nameof(LookPrefix)));
             Log.Info("lockstep: Worldfall's OwnMind treats every player's creature alike in ticks");
+        }
+
+        private static int _trapped;
+
+        /// <summary>A player's creature looks for enemies only by its player's controls: log who else asks (a few times).</summary>
+        private static void TrapPrefix(Actor __instance, MethodBase __originalMethod)
+        {
+            if (_trapped >= 8 || !LockstepClock.Active || !LockstepControl.Running || __instance == null || !LockstepControl.IsControlled(__instance.getID())) return;
+            _trapped++;
+            Log.Warn("lockstep: " + __originalMethod.Name + " on player creature #" + __instance.getID() + " at tick " + LockstepClock.Tick + (LockstepClock.InTick ? " (in a tick)" : " (outside ticks)")
+                + ", called from:" + Environment.NewLine + new System.Diagnostics.StackTrace(1, false));
         }
 
         private static bool Ordered(Actor a, out bool firing)

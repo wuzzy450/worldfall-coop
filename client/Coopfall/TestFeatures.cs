@@ -25,6 +25,7 @@ namespace Coopfall
     public partial class TestDriver
     {
         private bool _fxMode;
+        private Kingdom _fxWronged;
         private int _fxStep;
         private bool _fxHooked;
         private long _fxRealm, _fxChestAt = -1, _fxStormCity;
@@ -161,10 +162,19 @@ namespace Coopfall
                             FxCall(FxType("Law"), null, "OnHit", victim);
                             // a bounty high enough that any grown subject nearby comes, not only warriors
                             FxCall(FxType("Law"), null, "SetBounty", victim.kingdom, me, 250);
+                            _fxWronged = victim.kingdom;
                             FxOk("crime", true, "#" + me.getID() + " hits #" + victim.getID() + " of " + victim.kingdom.name + " at " + Mathf.Sqrt(best).ToString("F1") + " tiles");
                         }
                         else FxOk("crime", false, "no victim");
                     }
+                }
+                // the guards came (crime ok): call them off so the guest's creature lives on for the service steps
+                if (_fxStep == 3 && t > 32f && _fxWronged != null && !_s.IsHost && me != null)
+                {
+                    FxCall(FxType("Law"), null, "SetBounty", _fxWronged, me, 0);
+                    FxCall(FxType("Law"), null, "StandDown", _fxWronged, me);
+                    FxOk("crime stand down", true, _fxWronged.name);
+                    _fxWronged = null;
                 }
                 if (_fxStep == 3 && t > 40f)
                 {

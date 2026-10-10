@@ -603,7 +603,10 @@ namespace Coopfall.Lockstep
             if (TraceTicks && Active) TraceTick(tick);
             if (TraceTicks && Active && tick % (tick < 1000 ? 10 : 100) == 0) Log.Info("lockstep: job lists at tick " + tick + ": " + LockstepClock.ListSignature());
             if (Active && DumpAt > 0 && (tick == 1 || (tick % DumpAt == 0 && tick <= 2000))) DumpMeta(tick);
-            if (Active && !TraceTicks) WatchTick(tick);
+            // diagnostics must never stop the checksum below (a guest that stops sending them stalls the room)
+            if (Active && !TraceTicks)
+                try { WatchTick(tick); }
+                catch (Exception e) { if (!_watchFailed) { _watchFailed = true; Log.Error("lockstep: drift watch failed (checks go on): " + e); } }
             if (!Active || tick % HashEvery != 0 || tick == _lastHashTick) return;
             _lastHashTick = tick;
             TickHash th = StateHash.Compute(tick, !TraceTicks);
@@ -622,6 +625,8 @@ namespace Coopfall.Lockstep
         private readonly List<Vector2> _bodies = new List<Vector2>();
         private const float WatchRadius = 25f;
         private static readonly bool WatchAll = Array.Exists(Environment.GetCommandLineArgs(), x => x == "-coopfall-lockstep-watchall");
+
+        private bool _watchFailed;
 
         private void WatchTick(long tick)
         {
@@ -652,7 +657,9 @@ namespace Coopfall.Lockstep
             foreach (WorldTile t in _tilesList(World.world))
             {
                 Actor a = _targetedBy(t);
-                if (a != null) sb.Append(t.tile_id).Append(':').Append(a.getID()).Append(a.isAlive() ? "" : "d").Append(' ');
+                if (a == null) continue;
+                try { sb.Append(t.tile_id).Append(':').Append(a.getID()).Append(a.isAlive() ? "" : "d").Append(' '); }
+                catch (NullReferenceException) { sb.Append(t.tile_id).Append(":removed "); }
             }
             return sb.ToString();
         }

@@ -111,6 +111,10 @@ namespace Coopfall.Lockstep
                 else Log.Error("lockstep: Actor.setupRandomDecisionCooldowns not found: loading will roll different timers on each PC");
                 if (register != null) h.Patch(register, postfix: new HarmonyMethod(typeof(LockstepClock), nameof(RegisterPostfix)));
                 else Log.Error("lockstep: Actor.registerDecisions not found: decision order may differ between PCs");
+                FarmsInTick.Install(h);
+                MethodInfo loadFire = AccessTools.Method(typeof(SaveManager), "loadFire");
+                if (loadFire != null) h.Patch(loadFire, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(LoadFirePrefix)));
+                else Log.Error("lockstep: SaveManager.loadFire not found: fires of the previous world may block plants on one PC");
                 _behTimer = AccessTools.FieldRefAccess<WorldBehaviour, float>("_timer");
                 _behAsset = AccessTools.FieldRefAccess<WorldBehaviour, WorldBehaviourAsset>("_asset");
                 if (worldBeh != null) h.Patch(worldBeh, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(WorldBehaviourPrefix)));
@@ -588,6 +592,19 @@ namespace Coopfall.Lockstep
             return false;
         }
 
+        /// <summary>
+        /// Burning tiles (tile_manager.fires and the fire behaviour's set) aren't cleared by a load
+        /// of a world of the same size: a re-sync after a split kept the split world's fires on
+        /// one PC, where plants then couldn't grow (the plant drift at tick ~30 after loads).
+        /// </summary>
+        private static void LoadFirePrefix()
+        {
+            bool[] fires = World.world?.tile_manager?.fires;
+            if (fires != null) Array.Clear(fires, 0, fires.Length);
+            WorldBehaviourActionFire.clear();
+            WorldBehaviourActionFire.clearFires();
+        }
+
         private static bool DelayedPrefix() => !Active || _inTick;
 
         private static MethodInfo _updateDirty;
@@ -776,6 +793,9 @@ namespace Coopfall.Lockstep
             WorldTimeScaleAsset speed = Config.time_scale_asset;
             WorldTimeScaleAsset x1 = AssetManager.time_scales?.get("x1");
             int n = 0;
+            // Unity's global generator: frame code (effects, UI) draws from it on each PC, and some
+            // Worldfall code in ticks does too (war flags' torches, raid aims): seeded per tick
+            UnityEngine.Random.State unityDice = UnityEngine.Random.state;
             try
             {
                 while (Active && Tick < Granted && n < MaxPerFrame)
@@ -785,6 +805,7 @@ namespace Coopfall.Lockstep
                     if (quality != null) _lowRes(quality) = false;
                     if (x1 != null) Config.time_scale_asset = x1;
                     Randy.resetSeed(TickSeed(Seed, Tick));
+                    UnityEngine.Random.InitState(TickSeed(Seed ^ 0x0D1CE5, Tick));
                     ReseedBatches(map);
                     _isPaused(map) = false;   // local windows/pause must not change the shared world
                     // much of the simulation reads these instead of its argument
@@ -817,7 +838,7 @@ namespace Coopfall.Lockstep
                     AfterTick?.Invoke(Tick);
                 }
             }
-            finally { LockstepControl.TickEnd(); WorldfallInTick.PutCollidersBack(); Config.time_scale_asset = speed; if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
+            finally { if (n > 0) UnityEngine.Random.state = unityDice; LockstepControl.TickEnd(); WorldfallInTick.PutCollidersBack(); Config.time_scale_asset = speed; if (quality != null) _lowRes(quality) = lowRes; _inTickAll = false; _isPaused(map) = paused; _elapsed(map) = elapsed; _deltaTime(map) = delta; _fixedDeltaTime(map) = fixedDelta; stats.gameTime = SessionTime; }
         }
 
         private static List<object> _batchLists;

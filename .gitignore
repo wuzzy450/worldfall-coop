@@ -13,6 +13,8 @@ server/cuberite/logs/
 server/cuberite/*.sqlite
 server/cuberite/console.log
 server/cuberite/console.err
+server/cuberite/relay.log
+server/cuberite/worldfall_rooms.bak-*/
 
 # python
 __pycache__/

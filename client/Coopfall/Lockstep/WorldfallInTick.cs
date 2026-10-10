@@ -50,6 +50,9 @@ namespace Coopfall.Lockstep
             catch (Exception e) { Log.Error("lockstep: Worldfall's figures not on the world's clock: " + e); }
             try { EffectSeeds.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall's effects not on the world's dice: " + e); }
+            WorldfallAudioGuard.Install(h, wf);
+            try { RendererWrites.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's renderer writes not held back: " + e); }
             try { OwnMindInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall OwnMind in ticks not available: " + e); }
             try { ClimbingInTick.Install(h, wf); }

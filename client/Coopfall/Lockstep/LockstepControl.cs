@@ -340,6 +340,12 @@ namespace Coopfall.Lockstep
                 _wfFields = l.ToArray();
                 _wfPulse = new bool[_wfFields.Length];
                 for (int i = 0; i < _wfFields.Length; i++) { _wfPulse[i] = WfPulses.Contains(_wfFields[i].Name); if (_wfFields[i].Name == "Active") _wfActive = i; if (_wfFields[i].Name == "Yaw") _wfYaw = i; }
+                Type scene = wf.GetType("FirstPerson.SceneCollector", false), heading = scene?.GetNestedType("Heading", BindingFlags.NonPublic | BindingFlags.Public);
+                MethodInfo track = scene == null ? null : AccessTools.Method(scene, "Track");
+                if (heading != null) { _hAngle = AccessTools.Field(heading, "Angle"); _hTurnRate = AccessTools.Field(heading, "TurnRate"); _hLooking = AccessTools.Field(heading, "Looking"); }
+                if (track != null && _hAngle != null && _hTurnRate != null && _hLooking != null && track.GetParameters().Length >= 3 && track.GetParameters()[2].Name == "dt")
+                    h.Patch(track, postfix: new HarmonyMethod(typeof(LockstepControl), nameof(TrackPostfix)));
+                else { _hAngle = null; Log.Warn("lockstep: Worldfall's SceneCollector.Track changed: other players' bodies face the way they walk"); }
                 MethodInfo rt = AccessTools.Method(hooks, "RealTime");
                 if (rt != null) h.Patch(rt, prefix: new HarmonyMethod(typeof(LockstepControl), nameof(RealTimePrefix)));
                 else Log.Warn("lockstep: Worldfall's RealTime not found: a controlled creature's pace may follow the frame rate");
@@ -429,6 +435,25 @@ namespace Coopfall.Lockstep
             // some of those run inside ticks instead
             try { WorldfallInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall features in ticks not available: " + e); }
+        }
+
+        private static FieldInfo _hAngle, _hTurnRate, _hLooking;
+
+        /// <summary>
+        /// Worldfall draws every creature but this PC's own body facing the way it moves, so
+        /// another player's body stood with its back to whoever it looked at. Turn it to the
+        /// way its player looks (their first-person yaw, part of the controls).
+        /// </summary>
+        private static void TrackPostfix(Actor a, float dt, object __result)
+        {
+            if (!LockstepClock.Active || a == null || __result == null || _hAngle == null || _main == null || a == _main()) return;
+            float? yaw = YawOf(a.getID());
+            if (!yaw.HasValue || float.IsNaN(yaw.Value)) return;
+            float angle = (float)_hAngle.GetValue(__result);
+            float delta = Mathf.DeltaAngle(angle * Mathf.Rad2Deg, yaw.Value * Mathf.Rad2Deg) * Mathf.Deg2Rad;
+            _hAngle.SetValue(__result, angle + delta * Mathf.Clamp01(dt * 12f));
+            _hTurnRate.SetValue(__result, 0f);
+            _hLooking.SetValue(__result, true);
         }
 
         private static bool FacingPrefix(Actor you, ref float __result)

@@ -47,9 +47,20 @@ local g_ClockMs = 0
 local g_NextSweepMs = 1000
 local g_IdCounter = 0
 local g_NextPingBroadcastMs = 0
+local g_SweepDue = false
+local Sweep   -- defined after the handlers; run from network callbacks only
 
-local function Log(a_Msg)  LOG("[" .. PLUGIN_NAME .. "] " .. a_Msg) end
-local function Warn(a_Msg) LOGWARNING("[" .. PLUGIN_NAME .. "] " .. a_Msg) end
+-- Cuberite's own log may never reach the disk when the server is killed: every line also goes to
+-- relay.log (opened, written and closed each time)
+local function FileLog(a_Level, a_Msg)
+	local f = io.open("relay.log", "a")
+	if f then
+		f:write(os.date("%H:%M:%S") .. " " .. a_Level .. " " .. a_Msg .. "\n")
+		f:close()
+	end
+end
+local function Log(a_Msg)  LOG("[" .. PLUGIN_NAME .. "] " .. a_Msg); FileLog("INFO", a_Msg) end
+local function Warn(a_Msg) LOGWARNING("[" .. PLUGIN_NAME .. "] " .. a_Msg); FileLog("WARN", a_Msg) end
 
 ---------------------------------------------------------------------
 -- JSON (Cuberite's built-in cJson)
@@ -1326,6 +1337,12 @@ local function MakeLinkCallbacks(a_Client)
 		OnConnected = function(a_Link)
 		end,
 		OnReceivedData = function(a_Link, a_Data)
+			if g_SweepDue then
+				local ok, err = pcall(Sweep)
+				if not ok then
+					Warn("sweep failed: " .. tostring(err))
+				end
+			end
 			if a_Client.Removed then
 				return
 			end
@@ -1341,6 +1358,7 @@ local function MakeLinkCallbacks(a_Client)
 				local line = string.sub(a_Client.Buffer, start, nl - 1)
 				start = nl + 1
 				line = string.gsub(line, "\r$", "")
+				a_Client.Lines = (a_Client.Lines or 0) + 1
 				ProcessLine(a_Client, line)
 				if a_Client.Removed then
 					return
@@ -1363,12 +1381,32 @@ local function MakeLinkCallbacks(a_Client)
 	}
 end
 
+-- Cuberite's tick hook holds the plugin's lock; sending on (or closing) a link from it while the
+-- network thread holds that link's lock and waits for the plugin's lock deadlocks the whole server
+-- (the relay "hang": both games connected, nothing forwarded, the tick frozen). So the tick only
+-- advances the clock; the once-a-second sweep runs on the network thread, on the next data in.
 local function OnTick(a_DeltaMs)
 	g_ClockMs = g_ClockMs + (a_DeltaMs or 50)
-	if g_ClockMs < g_NextSweepMs then
+	if g_ClockMs >= g_NextSweepMs then
+		g_SweepDue = true
+	end
+end
+
+Sweep = function()
+	if (not g_SweepDue) or (g_ClockMs < g_NextSweepMs) then
 		return
 	end
+	g_SweepDue = false
 	g_NextSweepMs = g_ClockMs + 1000
+	if (g_ClockMs % 10000) < 1000 then
+		local n, linked, lines = 0, 0, 0
+		for _, c in ipairs(g_Clients) do
+			n = n + 1
+			if c.Link then linked = linked + 1 end
+			lines = lines + (c.Lines or 0)
+		end
+		FileLog("BEAT", string.format("clock %d s, %d clients (%d linked), %d lines in", math.floor(g_ClockMs / 1000), n, linked, lines))
+	end
 
 	local dead = {}
 	for _, c in ipairs(g_Clients) do
@@ -1441,6 +1479,7 @@ function Initialize(a_Plugin)
 	g_Server = cNetwork:Listen(CFG.PORT,
 	{
 		OnIncomingConnection = function(a_RemoteIP, a_RemotePort, a_LocalPort)
+			FileLog("INFO", "incoming connection from " .. tostring(a_RemoteIP) .. ":" .. tostring(a_RemotePort))
 			local client =
 			{
 				Addr = tostring(a_RemoteIP) .. ":" .. tostring(a_RemotePort),

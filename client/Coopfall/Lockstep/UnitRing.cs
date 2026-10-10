@@ -75,10 +75,17 @@ namespace Coopfall.Lockstep
                 case KEnum: return (ulong)Convert.ToInt64(v);
                 case KV2: { var x = (Vector2)v; return (ulong)(uint)BitConverter.SingleToInt32Bits(x.x) << 32 | (uint)BitConverter.SingleToInt32Bits(x.y); }
                 case KV3: { var x = (Vector3)v; return ((ulong)(uint)BitConverter.SingleToInt32Bits(x.x) << 32 | (uint)BitConverter.SingleToInt32Bits(x.y)) ^ (ulong)(uint)BitConverter.SingleToInt32Bits(x.z) * 0x9E3779B97F4A7C15UL; }
-                case KSim: return v is BaseSimObject so && so != null ? (ulong)so.getID() + 1 : 0;
+                case KSim: return v is BaseSimObject so && so != null ? SimId(so) : 0;
                 case KAsset: return v is Asset a ? (ulong)(uint)(a.id?.GetHashCode() ?? 1) : 0;
             }
             return 0;
+        }
+
+        /// <summary>A removed object (its data already released) still referenced by a field: 0, like null.</summary>
+        private static ulong SimId(BaseSimObject so)
+        {
+            try { return (ulong)so.getID() + 1; }
+            catch (NullReferenceException) { return 0; }
         }
 
         private static string Show(Fld d, ulong b)
