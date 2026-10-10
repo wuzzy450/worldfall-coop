@@ -43,6 +43,8 @@ namespace Coopfall.Lockstep
             // buildings, cities, kingdoms, wars
             "extractResources", "addResourcesToRandomStockpile", "takeResource", "makeWarrior", "startFire", "stopFire",
             "endWar", "leaveWar", "setCaptain", "setLeader",
+            // Worldfall's shops, conversations, towns: paying, crowning, raising a house on a plot
+            "spendMoney", "setKing", "setKingdom", "setUnderConstruction", "listBuilding", "tryToPutItem",
         };
 
         private static readonly Type[] Owners =
@@ -63,6 +65,8 @@ namespace Coopfall.Lockstep
 
         /// <summary>Where calls are sent (set by LockstepSession).</summary>
         public static Func<string, bool> Submit;
+        /// <summary>The next call is sent even if the same one is still on its way (DataCalls checks itself).</summary>
+        public static bool SuppressDedupe;
         public static int Sent, Replayed, Refused;
 
         public static void Install(Harmony h)
@@ -85,6 +89,9 @@ namespace Coopfall.Lockstep
                 }
             Log.Info("lockstep: " + n + " world-changing game methods travel as inputs when called outside a tick");
         }
+
+        /// <summary>Calls to this method made outside a tick travel as inputs.</summary>
+        public static bool IsRelayed(MethodBase m) => m != null && _keyOf.ContainsKey(m);
 
         /// <summary>One of Coopfall's own methods travels too (its arguments must be ones Value can name).</summary>
         public static bool Register(Harmony h, MethodInfo m)
@@ -114,6 +121,36 @@ namespace Coopfall.Lockstep
             _keyOf[m] = key;
             _standIns[m] = standIn;
             return true;
+        }
+
+        private static readonly Dictionary<MethodBase, Func<object, object[], bool>> _guesses = new Dictionary<MethodBase, Func<object, object[], bool>>();
+
+        /// <summary>
+        /// A method that answers yes or no: when it is sent, the caller gets guess(instance, args)
+        /// (what it will most likely answer when it runs in the tick).
+        /// </summary>
+        public static bool RegisterGuess(Harmony h, MethodInfo m, Func<object, object[], bool> guess)
+        {
+            if (m == null || m.ReturnType != typeof(bool)) return false;
+            string key = Key(m);
+            if (_byKey.ContainsKey(key)) return true;
+            try { h.Patch(m, prefix: new HarmonyMethod(typeof(WorldCalls), nameof(CallPrefixGuess))); }
+            catch (Exception e) { Log.Warn("lockstep: couldn't relay " + key + ": " + e.Message); return false; }
+            _byKey[key] = m;
+            _keyOf[m] = key;
+            _guesses[m] = guess;
+            return true;
+        }
+
+        private static bool CallPrefixGuess(MethodBase __originalMethod, object __instance, object[] __args, ref bool __result)
+        {
+            if (_replaying || !LockstepControl.Running || !LockstepClock.Active || LockstepClock.InTick) return true;
+            bool guess = false;
+            try { guess = _guesses[__originalMethod](__instance, __args); }
+            catch (Exception e) { Log.Warn("lockstep: guess for " + __originalMethod.Name + " failed: " + e.Message); }
+            if (CallPrefix(__originalMethod, __instance, __args)) return true;
+            __result = guess;
+            return false;
         }
 
         private static bool CallPrefixWithResult(MethodBase __originalMethod, object __instance, object[] __args, ref object __result)
@@ -161,7 +198,7 @@ namespace Coopfall.Lockstep
             if (enc == null || Submit == null) { Refuse(key, "its object or arguments can't be named on the other PCs"); return false; }
             float now = Time.unscaledTime;
             // per-frame code repeats itself: one copy until it has been applied
-            if (_inFlight.TryGetValue(enc, out float at) && now - at < 2f) return false;
+            if (!SuppressDedupe && _inFlight.TryGetValue(enc, out float at) && now - at < 2f) return false;
             if (now - _second > 1f) { _second = now; _sentThisSecond = 0; }
             if (++_sentThisSecond > 200) { Refuse(key, "more than 200 calls a second"); return false; }
             if (!Submit(enc)) return false;

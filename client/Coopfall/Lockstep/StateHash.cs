@@ -49,7 +49,7 @@ namespace Coopfall.Lockstep
     public class TickHash
     {
         public long tick;
-        public ulong units, buildings, meta, rng, tiles;
+        public ulong units, buildings, meta, rng, tiles, wfdata;
         /// <summary>UnityEngine.Random's state (only informative: little simulation code uses it).</summary>
         public uint urng;
         public int unitCount, buildingCount;
@@ -65,11 +65,12 @@ namespace Coopfall.Lockstep
             if (tiles != o.tiles) return "tiles";
             if (meta != o.meta) return "world time / kingdoms / cities";
             if (rng != o.rng) return "random number state";
+            if (wfdata != o.wfdata) return "Worldfall data";
             return null;
         }
 
-        public string Line() => tick + "\t" + units.ToString("x16") + "\t" + unitCount + "\t" + buildings.ToString("x16") + "\t" + buildingCount + "\t" + tiles.ToString("x16") + "\t" + meta.ToString("x16") + "\t" + rng.ToString("x16");
-        public const string Header = "tick\tunits\tunit_count\tbuildings\tbuilding_count\ttiles\tmeta\trng";
+        public string Line() => tick + "\t" + units.ToString("x16") + "\t" + unitCount + "\t" + buildings.ToString("x16") + "\t" + buildingCount + "\t" + tiles.ToString("x16") + "\t" + meta.ToString("x16") + "\t" + rng.ToString("x16") + "\t" + wfdata.ToString("x16");
+        public const string Header = "tick\tunits\tunit_count\tbuildings\tbuilding_count\ttiles\tmeta\trng\twfdata";
     }
 
     /// <summary>
@@ -216,6 +217,9 @@ namespace Coopfall.Lockstep
                 t.rng = Mix(r.state) ^ Mix((ulong)Dice.Fingerprint(false) << 32);
                 t.urng = Dice.UnityState();
             }
+
+            // Worldfall's own state kept in the world objects' data (gear, reputation, plots, shops, ...)
+            if (tick % 10 == 0) t.wfdata = DataCalls.Hash();
 
             if (TileEvery > 0 && tick % TileEvery == 0)
             {

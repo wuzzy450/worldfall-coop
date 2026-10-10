@@ -135,6 +135,10 @@ namespace Coopfall.Lockstep
             var wle = new JObject { ["e"] = _epoch, ["seed"] = _seed, ["sha"] = _sha, ["mods"] = ModFingerprint(), ["reason"] = reason };
             JObject wfs = WorldfallSettings.Capture();
             if (wfs != null) wle["wfs"] = wfs;
+            // the time of day is part of the shared world (Worldfall's calendar follows it)
+            float tod = TownsInTick.CaptureTod();
+            if (tod >= 0f) wle["tod"] = tod;
+            _epochTod = tod;
             // every player's Worldfall campaign (armies, flags, bounties, ...) goes on into the new epoch;
             // the host rebuilds it from the same JSON the guests get
             JObject wps = _epoch > 1 && LockstepControl.Running ? PlayerScope.Save() : null;
@@ -202,6 +206,9 @@ namespace Coopfall.Lockstep
             }
             FastLoad.On = false;
             LockstepClock.NormalizeAfterLoad();
+            WorldfallSettings.Lock();
+            TownsInTick.SetTod(_epochTod);
+            _settingsTold = false;
             _loaded = true;
             LockstepControl.Running = true;
             // the world right after loading: a guest whose load went wrong is told to load again
@@ -237,6 +244,7 @@ namespace Coopfall.Lockstep
             FastLoad.On = false;
             LockstepClock.Stop();
             WorldfallSettings.Restore();
+            TownsInTick.Stop();
             LockstepInput.Clear();
             LockstepControl.Reset();
             _owners.Clear();
@@ -263,9 +271,41 @@ namespace Coopfall.Lockstep
             Log.Warn(sb.ToString());
         }
 
+        private bool _settingsTold;
+        /// <summary>The time of day this epoch starts at (every load of it starts there).</summary>
+        private float _epochTod = -1f;
+        private float _settingsSeenAt = -1f;
+
+        /// <summary>A shared Worldfall setting changed in this PC's menu: the host re-syncs everyone with it; a guest is told.</summary>
+        private void CheckSettings()
+        {
+            if (!Active || !LockstepControl.Running) return;
+            string changed = WorldfallSettings.Changed();
+            if (changed == null) { _settingsSeenAt = -1f; return; }
+            if (_s.IsHost)
+            {
+                // wait until the menu has been left alone a moment (a slider moves through many values)
+                if (_settingsSeenAt < 0f) { _settingsSeenAt = Time.unscaledTime; return; }
+                if (Time.unscaledTime - _settingsSeenAt < 2f || _waitingReady || Time.unscaledTime - _epochAt < MinSecondsBetweenEpochs) return;
+                _settingsSeenAt = -1f;
+                Log.Info("lockstep: the host changed " + changed + ": everyone takes it at a new epoch");
+                _s.AddChat(null, "Lockstep: the host changed a Worldfall setting (" + changed + "); re-syncing everyone", true);
+                StartEpoch("settings");
+            }
+            else if (!_settingsTold)
+            {
+                _settingsTold = true;
+                Log.Info("lockstep: this PC changed " + changed + "; the shared world keeps the host's value");
+                _s.AddChat(null, "Lockstep: " + changed + " is the host's setting while you play together; yours comes back when you leave", true);
+            }
+        }
+
         public void Tick()
         {
             Watchdog();
+            CheckSettings();
+            TalkInTick.Frame();
+            InputPointer.Frame(this);
             if (_epoch > 0 && (!_s.Online || _s.RoomId == null || !_s.Cfg.lockstep)) { Stop(!_s.Cfg.lockstep ? "switched off" : "left the world"); return; }
             if (!_s.IsHost)
             {
@@ -609,6 +649,7 @@ namespace Coopfall.Lockstep
                     Epochs++;
                     Log.Info("lockstep: host started epoch " + e + " (" + (string)p["reason"] + ")");
                     WorldfallSettings.Apply(p["wfs"] as JObject);
+                    _epochTod = (float?)p["tod"] ?? -1f;
                     PlayerScope.Carry(p["wps"] as JObject);
                     _loadAskedAt = Time.unscaledTime;
                     BeginEpochLoad(null);

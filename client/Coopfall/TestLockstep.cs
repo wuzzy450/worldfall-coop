@@ -255,7 +255,7 @@ namespace Coopfall
             }
             if (_lsDone || !_s.Online || !_s.InWorld || _s.OthersInRoom() == 0 || !ls.Active || Lockstep.LockstepClock.Granted < 100) return;
             if (_lsStart < 0f) { _s.ChatFrom += (id, text) => { LockstepNote(text); FeaturesNote(text); }; _lsStart = now; _lsNextPower = now + (_s.IsHost ? 5f : 6.5f); Log.Info("TEST lockstep: running as " + (_s.IsHost ? "host" : "guest")); }
-            if (now - _lsStart > (_fxMode ? FeaturesSeconds : _lkMode ? LooksSeconds : LockstepSeconds))
+            if (now - _lsStart > (_fxMode ? FeaturesSeconds : _lkMode ? LooksSeconds : _cpMode ? CoopSeconds : LockstepSeconds))
             {
                 _lsDone = true;
                 Log.Info("TEST lockstep: done - " + ls.StatusLine() + ", powers used " + _lsUsed + ", checks ok " + ls.Checked + ", desyncs " + ls.Desyncs + (ls.LastDesync != null ? " (last: " + ls.LastDesync + ")" : ""));
@@ -263,6 +263,7 @@ namespace Coopfall
             }
             if (_fxMode) { FeaturesTick(now); return; }
             if (_lkMode) { LooksTick(now); return; }
+            if (_cpMode) { CoopTick(now); return; }
             LockstepPossessTick(now);
             LockstepHouseTick(now);
             LockstepCallsTick(now);

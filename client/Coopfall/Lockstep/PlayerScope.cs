@@ -209,6 +209,17 @@ namespace Coopfall.Lockstep
             // quests and trials, naming newborns, kin tracking
             try { CivilInTick.Install(h, wf, _features); }
             catch (Exception e) { Log.Error("lockstep: Worldfall's civil life (quests, births, kin) not per player: " + e); }
+            // conversations keep per-player memory (petitions, refusals, small talk turns): per player
+            Type dialogue = wf.GetType("FirstPerson.Dialogue", false);
+            if (dialogue != null && Statics(h, dialogue)) _features.Add("conversation memory");
+            try { TownsInTick.Install(h, wf, _features); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's towns and day clock not shared: " + e); }
+            try { BelongingsInTick.Install(h, wf, _features); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's bag and gear not shared: " + e); }
+            try { TalkInTick.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's conversation choices not shared: " + e); }
+            try { TickRandom.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's random generators not tied to the tick: " + e); }
             foreach (string f in new[] { "Orders", "Charge" })
             {
                 FieldInfo fi = AccessTools.Field(_mod, f);
@@ -245,6 +256,13 @@ namespace Coopfall.Lockstep
             LockstepClock.BeforeTick += t => { if (LockstepControl.Running) RestoreShared(); };
             LockstepClock.AfterTick += t => { if (LockstepControl.Running) SnapShared(); };
             Log.Info("lockstep: Worldfall per player: " + (_features.Count > 0 ? string.Join(", ", _features.ToArray()) : "nothing") + " (" + _parts.Count + " values per player)");
+        }
+
+        /// <summary>This static field is kept per player.</summary>
+        public static bool IsPart(FieldInfo f)
+        {
+            foreach (Part p in _parts) if (p.f == f) return true;
+            return false;
         }
 
         /// <summary>A feature's static fields become per player; its clock reads become the tick clock.</summary>
@@ -457,6 +475,20 @@ namespace Coopfall.Lockstep
                 return false;
             }
             return false;
+        }
+
+        /// <summary>Test log: one per-player static field's value for every player this PC knows, in player order.</summary>
+        public static SortedDictionary<int, object> PeekAll(FieldInfo f)
+        {
+            var byPlayer = new SortedDictionary<int, object>();
+            int idx = -1;
+            for (int i = 0; i < _parts.Count; i++) if (_parts[i].f == f) { idx = i; break; }
+            if (idx < 0) return byPlayer;
+            object live = f.GetValue(_parts[idx].instance ? Mod() : null);
+            byPlayer[_live == 0 ? LockstepSession.MyPlayer : _live] = _parts[idx].content ? Clone(live) : live;
+            foreach (KeyValuePair<int, object[]> kv in _store)
+                if (kv.Value != null) byPlayer[kv.Key == 0 ? LockstepSession.MyPlayer : kv.Key] = kv.Value[idx];
+            return byPlayer;
         }
 
         /// <summary>Test log: every player's council and war map, as this PC has them.</summary>
@@ -889,6 +921,8 @@ namespace Coopfall.Lockstep
             float dt = LockstepClock.DefaultStep;
             if (_butcheryTick != null && !OffButchery) Try("butchery", () => _butcheryTick.Invoke(null, new object[] { dt }));
             if (_royalUpdate != null && !OffPeace) Try("peace", () => _peaceUpdate.Invoke(null, new object[] { dt }));
+            Try("towns", TownsInTick.RunTick);
+            Try("bundles", BelongingsInTick.RunTick);
             var players = new SortedSet<int>(LockstepControl.Players());
             players.UnionWith(_seen);
             foreach (int p in players)

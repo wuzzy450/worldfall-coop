@@ -46,6 +46,8 @@ namespace Coopfall.Lockstep
             InstallFirstPersonChecks(h, wf);
             try { SteeringInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall steering in ticks not available: " + e); }
+            try { VisualClock.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall's figures not on the world's clock: " + e); }
             try { ClimbingInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall climbing in ticks not available: " + e); }
             try { PlayerScope.Install(h, wf); }
@@ -309,6 +311,10 @@ namespace Coopfall.Lockstep
         {
             _abilityTimer = 0f;
             AddLazyAssets();
+            DataCalls.Reset();
+            TalkInTick.Reset();
+            TownsInTick.Reset();
+            BelongingsInTick.Reset();
             PlayerScope.Reset();
             SteeringInTick.Reset();
             ClimbingInTick.Reset();

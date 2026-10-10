@@ -236,6 +236,8 @@ namespace Coopfall.Lockstep
                 h.Patch(AccessTools.Method(cu, "clear"), prefix: new HarmonyMethod(typeof(LockstepControl), nameof(ClearPrefix)));
                 InstallWorldfall(h);
                 WorldCalls.Install(h);   // (was the core gate: those calls now travel as inputs)
+                DataCalls.Install(h);
+                MadeOutsideTicks.Install(h);
                 _ready = true;
                 Log.Info("lockstep: possession controls ready" + (_wfFields != null ? " (with Worldfall, " + _wfFields.Length + " first-person values)" : ""));
             }

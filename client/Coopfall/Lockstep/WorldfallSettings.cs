@@ -24,6 +24,64 @@ namespace Coopfall.Lockstep
 
         private static Dictionary<FieldInfo, object> _own;   // the guest's values while the host's are in use
         private static bool _hooked;
+        /// <summary>The values this epoch's ticks use (the host's, as sent with the epoch).</summary>
+        private static Dictionary<FieldInfo, object> _epoch;
+        private static readonly Dictionary<FieldInfo, object> _held = new Dictionary<FieldInfo, object>();
+        private static bool _ticksHooked;
+
+        /// <summary>
+        /// Every PC, when an epoch is loaded: the shared settings are fixed for its ticks. A value
+        /// changed in a menu meanwhile only shows outside ticks (drawing); the host's change starts
+        /// a new epoch (LockstepSession), a guest's waits until lockstep stops.
+        /// </summary>
+        public static void Lock()
+        {
+            object s = Settings();
+            if (s == null) { _epoch = null; return; }
+            _epoch = new Dictionary<FieldInfo, object>();
+            foreach (FieldInfo f in Fields(s)) _epoch[f] = f.GetValue(s);
+            if (_ticksHooked) return;
+            _ticksHooked = true;
+            LockstepClock.BeforeTick += t => Swap(true);
+            LockstepClock.AfterTick += t => Swap(false);
+        }
+
+        public static void Unlock() { Swap(false); _epoch = null; }
+
+        private static void Swap(bool toEpoch)
+        {
+            if (_epoch == null) return;
+            object s = Settings();
+            if (s == null) return;
+            if (toEpoch)
+            {
+                if (!LockstepControl.Running) return;
+                _held.Clear();
+                foreach (KeyValuePair<FieldInfo, object> kv in _epoch)
+                {
+                    object now = kv.Key.GetValue(s);
+                    if (Equals(now, kv.Value)) continue;
+                    _held[kv.Key] = now;
+                    kv.Key.SetValue(s, kv.Value);
+                }
+            }
+            else
+            {
+                foreach (KeyValuePair<FieldInfo, object> kv in _held) kv.Key.SetValue(s, kv.Value);
+                _held.Clear();
+            }
+        }
+
+        /// <summary>The shared settings this PC's menus now hold differ from the epoch's (names), or null.</summary>
+        public static string Changed()
+        {
+            if (_epoch == null || _held.Count > 0) return null;
+            object s = Settings();
+            if (s == null) return null;
+            var l = new List<string>();
+            foreach (KeyValuePair<FieldInfo, object> kv in _epoch) if (!Equals(kv.Key.GetValue(s), kv.Value)) l.Add(kv.Key.Name);
+            return l.Count == 0 ? null : string.Join(", ", l.ToArray());
+        }
 
         private static object Settings()
         {
@@ -83,6 +141,7 @@ namespace Coopfall.Lockstep
         /// <summary>Lockstep stopped: the guest's own values again.</summary>
         public static void Restore()
         {
+            Unlock();
             if (_own == null) return;
             try
             {
