@@ -382,7 +382,7 @@ namespace Coopfall.Lockstep
                 // them out of your body
                 "Steering.Steer",
                 // creatures winding up an attack in first person get their attack timer set
-                "Law.SendGuards", "Law.Update", "WindUps.Update", "SwingState.KeepBodyClear", "Wind.Look", "StormRun.Board", "StormRun.Hold", "StormRun.March",
+                "Law.SendGuards", "Law.Update", "Economy.Update", "WindUps.Update", "SwingState.KeepBodyClear", "Wind.Look", "StormRun.Board", "StormRun.Hold", "StormRun.March",
             };
             foreach (string g in gated)
             {

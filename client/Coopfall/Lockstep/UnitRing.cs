@@ -96,7 +96,7 @@ namespace Coopfall.Lockstep
 
         private static ulong[] Values(Actor a)
         {
-            var v = new ulong[_actorFields.Length + _aiFields.Length + 9];
+            var v = new ulong[_actorFields.Length + _aiFields.Length + 11];
             int x = _actorFields.Length + _aiFields.Length;
             v[x] = (uint)StateHash.Gear(a);
             v[x + 1] = (uint)a.getHealth();
@@ -108,13 +108,15 @@ namespace Coopfall.Lockstep
             v[x + 6] = IdSetHash(_ignore?.GetValue(a));
             try { v[x + 7] = a.isInsideSomething() ? 1UL : 0UL; } catch { v[x + 7] = 0xDEAD; }
             try { v[x + 8] = (_inMagnet != null && (bool)_inMagnet.Invoke(a, null)) ? 1UL : 0UL; } catch { v[x + 8] = 0xDEAD; }
+            try { v[x + 9] = R.CallN(a, "isFlying", 0) is bool fl && fl ? 1UL : 0UL; } catch { v[x + 9] = 0xDEAD; }
+            try { object act = R.Get(R.Get(a, "ai"), "action"); v[x + 10] = act != null && R.Get(act, "special_prevent_can_be_attacked") is bool sp && sp ? 1UL : 0UL; } catch { v[x + 10] = 0xDEAD; }
             for (int i = 0; i < _actorFields.Length; i++) v[i] = Bits(_actorFields[i], a);
             object ai = _ai?.GetValue(a);
             if (ai != null) for (int i = 0; i < _aiFields.Length; i++) v[_actorFields.Length + i] = Bits(_aiFields[i], ai);
             return v;
         }
 
-        private static readonly string[] Extra = { "equipment", "health", "decision cooldowns (hash)", "path (hash)", "task (hash)", "aggression targets (hash)", "ignored targets (hash)", "inside something", "in magnet" };
+        private static readonly string[] Extra = { "equipment", "health", "decision cooldowns (hash)", "path (hash)", "task (hash)", "aggression targets (hash)", "ignored targets (hash)", "inside something", "in magnet", "flying", "can't be attacked (action)" };
         private static readonly FieldInfo _aggro = typeof(Actor).GetField("_aggression_targets", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic), _ignore = typeof(BaseSimObject).GetField("_targets_to_ignore", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         private static readonly MethodInfo _inMagnet = typeof(Actor).GetMethod("isInMagnet", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
 

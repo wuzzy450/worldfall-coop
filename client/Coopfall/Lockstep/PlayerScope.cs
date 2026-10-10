@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using Newtonsoft.Json.Linq;
@@ -94,6 +95,7 @@ namespace Coopfall.Lockstep
         // per-tick drivers
         private static MethodInfo _royalUpdate, _peaceUpdate;
         private static FieldInfo _peaceWatch;
+        private static MethodInfo _economyUpdate;
         private static MethodInfo _lawUpdate, _familyUpdate, _serviceUpdate, _serviceReset, _butcheryTick, _toast, _horn, _windUps;
         private static FieldInfo _settings, _familyFollows, _enemyWindups, _serviceFor, _royal, _warMap;
         private static readonly List<BaseSimObject> _attackers = new List<BaseSimObject>();
@@ -140,6 +142,22 @@ namespace Coopfall.Lockstep
                     _features.Add("law");
                 }
                 else Log.Warn("lockstep: Worldfall's Law.Update not found: crimes and guards stay off in lockstep");
+            }
+            // hired guards and kingdoms' protection: Worldfall's frame update sends them at whoever
+            // threatens you (a grudge and a fight), on the owner's PC only; in ticks, per player
+            Type economy = wf.GetType("FirstPerson.Economy", false), hireling = wf.GetType("FirstPerson.Hireling", false);
+            if (economy != null)
+            {
+                _economyUpdate = AccessTools.Method(economy, "Update", new[] { typeof(Actor), typeof(float), typeof(Action<string>) });
+                MethodInfo hirelingOf = AccessTools.Method(economy, "HirelingOf", new[] { typeof(Actor) });
+                FieldInfo hid = hireling == null ? null : AccessTools.Field(hireling, "Id");
+                if (_economyUpdate != null && hirelingOf != null && hid != null && Statics(h, economy))
+                {
+                    WorldCalls.Codec(hireling, o => (long)hid.GetValue(o), v => hirelingOf.Invoke(null, new object[] { World.world.units.get(v) }));
+                    Relay(h, economy, "Hire", "Dismiss", "Protect", "SetProtection");
+                    _features.Add("hired guards and protection");
+                }
+                else { _economyUpdate = null; Log.Warn("lockstep: Worldfall's Economy.Update not found: hired guards stay off in lockstep"); }
             }
             if (family != null)
             {
@@ -314,6 +332,13 @@ namespace Coopfall.Lockstep
                 return;
             }
             WorldfallInTick.SwapClockOf(h, warMapT);
+            // a flag's band picks the nearest foe from lists filled chunk by chunk out of a
+            // HashSet<MapChunk>: chunks hash by object identity, so the order (and which of two
+            // foes at the same distance wins) differed between PCs (the war-flag drift, t3982)
+            MethodInfo gather = AccessTools.Method(warMapT, "Gather");
+            _gathered = new[] { "_fighters", "_others", "_houses" }.Select(n => AccessTools.Field(warMapT, n)).ToArray();
+            if (gather != null && _gathered.All(f => f != null)) h.Patch(gather, postfix: new HarmonyMethod(typeof(PlayerScope), nameof(GatherPostfix)));
+            else Log.Warn("lockstep: Worldfall's WarMap.Gather not found: a flag's band may pick different foes on each PC");
             WorldCalls.Codec(_flagType, FlagId, FlagById);
             h.Patch(ordered, prefix: new HarmonyMethod(typeof(PlayerScope), nameof(OrderedPrefix)));
             h.Patch(post, prefix: new HarmonyMethod(typeof(PlayerScope), nameof(PostCountPrefix)), postfix: new HarmonyMethod(typeof(PlayerScope), nameof(PostCountPostfix)));
@@ -321,6 +346,19 @@ namespace Coopfall.Lockstep
             WorldCalls.Register(h, post, PostStandIn);
             Relay(h, warMapT, "PullUp", "Move", "StandDown", "Assign", "Board", "Ferry", "LandAt", "SailTo", "Bombard", "CeaseFire", "ClearFleet", "ClearFlags", "ClearLifts");
             _features.Add("war flags and fleets");
+        }
+
+        private static FieldInfo[] _gathered;
+        private static readonly Comparison<BaseSimObject> ById = (x, y) => x.getID().CompareTo(y.getID());
+
+        private static void GatherPostfix(object __instance)
+        {
+            if (!LockstepClock.Active) return;
+            foreach (FieldInfo f in _gathered)
+            {
+                if (f.GetValue(__instance) is List<Actor> actors) actors.Sort(ById);
+                else if (f.GetValue(__instance) is List<Building> houses) houses.Sort(ById);
+            }
         }
 
         private static object LiveMap() => _warMap?.GetValue(Mod());
@@ -870,6 +908,7 @@ namespace Coopfall.Lockstep
                         }
                     }
                     if (_lawUpdate != null) Try("law", () => _lawUpdate.Invoke(null, new object[] { you, dt, toast }));
+                    if (_economyUpdate != null) Try("hired guards", () => _economyUpdate.Invoke(null, new object[] { you, dt, toast }));
                     if (_familyUpdate != null)
                     {
                         object settings = _settings.GetValue(Mod());
