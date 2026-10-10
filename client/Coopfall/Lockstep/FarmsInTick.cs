@@ -44,6 +44,20 @@ namespace Coopfall.Lockstep
             MethodInfo ono = AccessTools.Method(typeof(Culture), "getOnomasticData");
             if (ono != null && _onoData != null) h.Patch(ono, prefix: new HarmonyMethod(typeof(FarmsInTick), nameof(OnoPrefix)), finalizer: new HarmonyMethod(typeof(FarmsInTick), nameof(OnoFinalizer)));
             else Log.Warn("lockstep: Culture.getOnomasticData not found: names may differ between PCs");
+            // the culture's name set (data.name_template_set) is picked the same way on its first use, and
+            // getNameTemplate is also asked directly (kingdom/city names, windows): kingdom "Montiolth" on the
+            // host, "Kashiardia" on the guest (unlocker map, t1460)
+            // a name from a template without onomastics ignores its seed and draws from the shared dice:
+            // kingdom #3 'Vysuzan' on the host, 'Sotor' on the guest (same tick, same founder, no culture).
+            // In lockstep every generated name rolls its own dice, seeded from its seed.
+            MethodInfo gen = AccessTools.Method(typeof(NameGenerator), "generateName", new[] { typeof(Actor), typeof(MetaType), typeof(long), typeof(ActorSex) });
+            if (gen != null) h.Patch(gen, prefix: new HarmonyMethod(typeof(FarmsInTick), nameof(GenNamePrefix)), finalizer: new HarmonyMethod(typeof(FarmsInTick), nameof(OnoFinalizer)));
+            else Log.Warn("lockstep: NameGenerator.generateName not found: kingdom names may differ between PCs");
+            MethodInfo nck = AccessTools.Method(typeof(Kingdom), "newCivKingdom");
+            if (nck != null) h.Patch(nck, postfix: new HarmonyMethod(typeof(FarmsInTick), nameof(NewKingdomPostfix)));
+            MethodInfo tpl = AccessTools.Method(typeof(Culture), "getNameTemplate");
+            if (tpl != null) h.Patch(tpl, prefix: new HarmonyMethod(typeof(FarmsInTick), nameof(TemplatePrefix)), finalizer: new HarmonyMethod(typeof(FarmsInTick), nameof(OnoFinalizer)));
+            else Log.Warn("lockstep: Culture.getNameTemplate not found: names may differ between PCs");
             foreach (Type t in new[] { typeof(BehFindFarmField), typeof(BehFindWheat), typeof(BehFindTileForFarm), typeof(BehCityActorFindUngrownCrop) })
             {
                 try
@@ -125,6 +139,63 @@ namespace Coopfall.Lockstep
             if (!pReset && _onoData.GetValue(__instance) is System.Collections.IDictionary d && d.Contains(pType)) return;
             __state = Dice.Isolate();
             Randy.resetSeed(LockstepClock.TickSeed((int)__instance.getID() * 31 + (int)pType, 0x0A0A));
+        }
+
+        private static readonly FieldInfo _nameSet = AccessTools.Field(typeof(Culture), "_name_set_asset");
+
+        /// <summary>
+        /// After an epoch load: every culture's cached name lists and name set dropped, so they are
+        /// rolled again from the culture (seeded) on every PC; caches kept from before the load (pooled
+        /// objects, frame code) named a new kingdom differently on the guest (unlocker map, t1460/t2490).
+        /// </summary>
+        public static void ResetNameCaches()
+        {
+            int n = 0;
+            try
+            {
+                foreach (Culture c in World.world.cultures.list)
+                {
+                    if (c == null) continue;
+                    (_onoData?.GetValue(c) as System.Collections.IDictionary)?.Clear();
+                    _nameSet?.SetValue(c, null);
+                    n++;
+                }
+            }
+            catch (Exception e) { Log.Warn("lockstep: resetting culture name caches: " + e.Message); }
+        }
+
+        private static void GenNamePrefix(long pSeed, out Dice.Snapshot? __state)
+        {
+            __state = null;
+            if (!LockstepClock.Active) return;
+            __state = Dice.Isolate();
+            Randy.resetSeed(LockstepClock.TickSeed((int)(pSeed ^ (pSeed >> 32)), 0x0C0C));
+        }
+
+        private static int _kingdomLogs;
+
+        /// <summary>Diagnostic: every new kingdom's name and what it was made from (compare between PCs).</summary>
+        private static void NewKingdomPostfix(Kingdom __instance, Actor pActor)
+        {
+            if (!LockstepClock.Active || _kingdomLogs++ > 60) return;
+            try
+            {
+                Culture c = pActor?.culture;
+                string ono = "";
+                if (c != null && _onoData.GetValue(c) is System.Collections.IDictionary d)
+                    foreach (System.Collections.DictionaryEntry e in d) ono += e.Key + " ";
+                Log.Info("lockstep: tick " + LockstepClock.Tick + (LockstepClock.InTick ? "" : " OUTSIDE") + " kingdom #" + __instance.getID() + " '" + __instance.data.name + "' by #" + pActor?.getID() + " " + pActor?.asset?.id +
+                         " culture " + (c == null ? "none" : "#" + c.getID() + " set=" + c.data.name_template_set + " tpl=" + c.getNameTemplate(MetaType.Kingdom) + " cached " + ono) + " dna " + R.MapStats?.life_dna);
+            }
+            catch (Exception e) { Log.Warn("lockstep: kingdom log: " + e.Message); }
+        }
+
+        private static void TemplatePrefix(Culture __instance, MetaType pType, out Dice.Snapshot? __state)
+        {
+            __state = null;
+            if (!LockstepClock.Active || !string.IsNullOrEmpty(__instance.data?.name_template_set)) return;
+            __state = Dice.Isolate();
+            Randy.resetSeed(LockstepClock.TickSeed((int)__instance.getID() * 37 + 7, 0x0B0B));
         }
 
         private static Exception OnoFinalizer(Exception __exception, Dice.Snapshot? __state)
