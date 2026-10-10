@@ -25,7 +25,21 @@ namespace Coopfall.Lockstep
             if (update != null && _timer != null)
                 h.Patch(update, transpiler: new HarmonyMethod(typeof(FastLoad), nameof(BudgetTranspiler)), postfix: new HarmonyMethod(typeof(FastLoad), nameof(UpdatePostfix)));
             else Log.Warn("lockstep: SmoothLoader.update not found: re-syncs load at normal speed");
+            var prepare = AccessTools.Method(typeof(SmoothLoader), "prepare");
+            _lastI = AccessTools.Field(typeof(SmoothLoader), "_last_i");
+            if (prepare != null && _lastI != null) h.Patch(prepare, postfix: new HarmonyMethod(typeof(FastLoad), nameof(PreparePostfix)));
+            else Log.Warn("lockstep: SmoothLoader._last_i not found: a small world's next load may hang");
         }
+
+        private static System.Reflection.FieldInfo _lastI;
+
+        /// <summary>
+        /// SmoothLoader takes "the step index didn't move since the last update" for a stuck load and starts
+        /// the game over, which starts the load over. Its last index isn't reset between loads: a small world
+        /// loaded fast (all steps in one update) leaves it at 0, the next load starts at 0 and restarts every
+        /// frame for good (host hung "loading epoch 2" on a 4x4-chunk map, 2026-10-10).
+        /// </summary>
+        private static void PreparePostfix() => _lastI.SetValue(null, -1);
 
         private static System.Reflection.FieldInfo _timer;
 
