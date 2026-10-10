@@ -156,7 +156,19 @@ namespace Coopfall.Lockstep
                 foreach (Culture c in World.world.cultures.list)
                 {
                     if (c == null) continue;
-                    (_onoData?.GetValue(c) as System.Collections.IDictionary)?.Clear();
+                    // rebuild from the save like Culture.loadData does: wiping them made every culture
+                    // roll new name styles after a re-sync ("Framald" vs "Holy Aphaphe")
+                    if (_onoData?.GetValue(c) is Dictionary<MetaType, OnomasticsData> d)
+                    {
+                        d.Clear();
+                        if (c.data?.onomastics != null)
+                            foreach (KeyValuePair<MetaType, string> kv in c.data.onomastics)
+                            {
+                                var o = new OnomasticsData();
+                                o.loadFromShortTemplate(kv.Value);
+                                d[kv.Key] = o;
+                            }
+                    }
                     _nameSet?.SetValue(c, null);
                     n++;
                 }
