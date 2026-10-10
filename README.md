@@ -98,6 +98,17 @@ answered, turn UPnP on in your router's settings or forward TCP 25598 by hand (s
 the internet"). Worlds are saved in `%USERPROFILE%\AppData\LocalLow\mkarpenko\WorldBox\coopfall\relay`.
 The server stops when you close the game; for an always-on server use the standalone relay below.
 
+### Join via Steam (no UPnP or port forwarding needed)
+
+If UPnP doesn't work and you can't forward a port, play over Steam's relay network instead:
+
+1. The host ticks **Host the server on this PC** and presses **Connect**. The menu shows a line
+   like `Over Steam (no port forwarding): friends type steam:7656119...`; press **Copy**.
+2. Friends paste that `steam:...` address into **Server IP** and press **Connect**.
+
+Steam must be running for everyone (WorldBox needs it anyway). This is new and has only been
+tested from the host's side so far; please report how it goes.
+
 ### Standalone relay
 
 The server is a small relay. It does not simulate anything: one player's game (the **host** of
