@@ -24,7 +24,7 @@ namespace Coopfall.Lockstep
     public static class TownsInTick
     {
         private static FieldInfo _dayTime, _settings, _dayMinutes, _slept, _sleepStart, _sleptToDay;
-        private static MethodInfo _calendarTick, _skipToDawn, _calendarDay, _assign, _place, _sleeping, _restore;
+        private static MethodInfo _calendarTick, _skipToDawn, _calendarDay, _assign, _place, _sleeping;
         private static FieldInfo _town, _race, _tier, _paid, _for, _aiming;
         private static PropertyInfo _modInstance;
         private static Type _mod;
@@ -124,11 +124,9 @@ namespace Coopfall.Lockstep
             catch (Exception e) { Fail("calendar", e); }
         }
 
-        private static bool _dawning;
-
         private static bool SkipToDawnPrefix(ref int __result)
         {
-            if (!Shared || _dawning) return true;
+            if (!Shared) return true;
             if (LockstepClock.InTick) { Tod = 0.255f; return true; }
             Dawn();   // caught by WorldCalls and sent
             int day = 0;

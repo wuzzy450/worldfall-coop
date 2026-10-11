@@ -16,7 +16,7 @@ namespace Coopfall.Lockstep
     /// </summary>
     public static class PerPlayerMemory
     {
-        private sealed class Kept { public readonly Dictionary<string, string> s = new Dictionary<string, string>(); public long t; public bool hasT; }
+        private sealed class Kept { public readonly Dictionary<string, string> s = new Dictionary<string, string>(); }
 
         private static readonly AccessTools.FieldRef<Actor, ActorData> _data = AccessTools.FieldRefAccess<Actor, ActorData>("data");
         private static Dictionary<long, Kept> _kept;

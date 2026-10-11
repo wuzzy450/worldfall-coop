@@ -129,6 +129,12 @@ namespace Coopfall.Lockstep
                 else Log.Error("lockstep: MapLayer.draw not found: explosions and tile flashes may follow what's on screen");
                 if (chunks != null) h.Patch(chunks, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(ChunksPrefix)), postfix: new HarmonyMethod(typeof(LockstepClock), nameof(ChunksPostfix)));
                 else Log.Error("lockstep: MapChunkManager.update not found: pathfinding may differ between PCs");
+                MethodInfo calcNeighbours = AccessTools.Method(typeof(MapRegion), "calculateNeighbours");
+                if (calcNeighbours != null) h.Patch(calcNeighbours, postfix: new HarmonyMethod(typeof(LockstepClock), nameof(CalculateNeighboursPostfix)));
+                else Log.Error("lockstep: MapRegion.calculateNeighbours not found: animal wandering may differ between PCs");
+                MethodInfo calcEdges = AccessTools.Method(typeof(MapRegion), "calculateTileEdges");
+                if (calcEdges != null) h.Patch(calcEdges, postfix: new HarmonyMethod(typeof(LockstepClock), nameof(CalculateTileEdgesPostfix)));
+                else Log.Error("lockstep: MapRegion.calculateTileEdges not found: edge tile order may differ between PCs");
                 if (firstLoad != null) h.Patch(firstLoad, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(FreshObjectsPrefix)));
                 else Log.Error("lockstep: SaveManager.loadSubspecies not found: loaded objects may carry state from the previous world");
                 // Objects compare by a hash handed out from a counter that runs across worlds (and
@@ -262,6 +268,8 @@ namespace Coopfall.Lockstep
             else Log.Error("lockstep: ZoneCalculator.zones not found: random zones may differ between PCs");
             foreach (MapChunk c in ((MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world)).chunks)
                 SortChunkObjects(c.objects);
+            MapChunkManager mcm = (MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world);
+            if (mcm != null) SortRegionNeighbours(mcm);
             // world behaviour timers aren't in the save and carry over from the previous world
             if (_behTimer != null)
                 foreach (WorldBehaviourAsset b in AssetManager.world_behaviours.list)
@@ -627,9 +635,35 @@ namespace Coopfall.Lockstep
 
         private static readonly Comparison<MapRegion> _regionOrder = (x, y) =>
         {
-            int a = x.tiles.Count > 0 ? x.tiles[0].tile_id : int.MaxValue, b = y.tiles.Count > 0 ? y.tiles[0].tile_id : int.MaxValue;
-            return a.CompareTo(b);
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return -1;
+            if (y == null) return 1;
+            int a = x.tiles.Count > 0 ? x.tiles[0].tile_id : int.MaxValue;
+            int b = y.tiles.Count > 0 ? y.tiles[0].tile_id : int.MaxValue;
+            int cmp = a.CompareTo(b);
+            return cmp != 0 ? cmp : x.id.CompareTo(y.id);
         };
+
+        private static readonly Comparison<WorldTile> _tileOrder = (x, y) =>
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return -1;
+            if (y == null) return 1;
+            return x.tile_id.CompareTo(y.tile_id);
+        };
+
+        private static void CalculateNeighboursPostfix(MapRegion __instance)
+        {
+            if (__instance?.neighbours != null && __instance.neighbours.Count > 1)
+                __instance.neighbours.Sort(_regionOrder);
+        }
+
+        private static void CalculateTileEdgesPostfix(MapRegion __instance)
+        {
+            List<WorldTile> edges = __instance?.getEdgeTiles();
+            if (edges != null && edges.Count > 1)
+                edges.Sort(_tileOrder);
+        }
 
         /// <summary>
         /// Pathfinding breaks ties between equally good regions by their order in each region's
@@ -655,12 +689,20 @@ namespace Coopfall.Lockstep
 
         public static void SortRegionNeighbours(MapChunkManager m)
         {
+            if (m?.chunks == null) return;
             MapChunk[] all = m.chunks;
             for (int i = 0; i < all.Length; i++)
             {
-                List<MapRegion> regions = all[i].regions;
+                List<MapRegion> regions = all[i]?.regions;
+                if (regions == null) continue;
                 for (int j = 0; j < regions.Count; j++)
-                    if (regions[j].neighbours.Count > 1) regions[j].neighbours.Sort(_regionOrder);
+                {
+                    MapRegion r = regions[j];
+                    if (r == null) continue;
+                    if (r.neighbours != null && r.neighbours.Count > 1) r.neighbours.Sort(_regionOrder);
+                    List<WorldTile> edges = r.getEdgeTiles();
+                    if (edges != null && edges.Count > 1) edges.Sort(_tileOrder);
+                }
             }
         }
 

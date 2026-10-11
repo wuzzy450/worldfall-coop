@@ -21,7 +21,7 @@ namespace Coopfall
         private bool _focusChat;
         private string _nameEdit, _hostEdit, _portEdit, _newWorldName = "";
         private Vector2 _mapScroll, _playersScroll, _menuScroll, _modsScroll;
-        private string _pwEdit = "", _joinPw = "", _setPw = "";
+        private string _joinPw = "", _setPw = "";
         private string _confirmKick;
         private string _confirmDelete;
         private readonly List<Rect> _blockRects = new List<Rect>();

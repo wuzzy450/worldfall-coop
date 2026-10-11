@@ -18,7 +18,6 @@ namespace Coopfall
     {
         private int _pStep;
         private bool _pChecking;
-        private string _hostId;
         private long _houseId, _treeId, _kingId, _innerId;
         private int _baseCount;
         private float _floodUntil, _nextFlood;
