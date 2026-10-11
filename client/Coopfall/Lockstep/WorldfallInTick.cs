@@ -290,8 +290,28 @@ namespace Coopfall.Lockstep
                 else h.Patch(emit, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(EmitTrailsPrefix)));
                 MethodInfo baseZ = shots == null ? null : AccessTools.Method(shots, "BaseZ");
                 if (baseZ != null) h.Patch(baseZ, postfix: new HarmonyMethod(typeof(WorldfallInTick), nameof(BaseZPostfix)));
+                MethodInfo tryAttack = AccessTools.Method(typeof(Actor), "tryToAttack");
+                if (tryAttack != null) h.Patch(tryAttack, postfix: new HarmonyMethod(typeof(WorldfallInTick), nameof(TryToAttackPostfix)));
+                else Log.Warn("lockstep: Actor.tryToAttack not found for Worldfall tracer hook");
             }
             catch (Exception e) { Log.Warn("lockstep: tracer hook: " + e.Message); }
+        }
+
+        private static bool IsLocalPlayerActor(Actor a)
+        {
+            if (a == null) return false;
+            if (LockstepClock.Active) return LockstepControl.OwnerOf(a.getID()) == LockstepSession.MyPlayer;
+            return ReferenceEquals(a, _mainUnit?.GetValue(null));
+        }
+
+        private static void TryToAttackPostfix(Actor __instance)
+        {
+            if (!LockstepClock.InTick || __instance == null) return;
+            if (IsLocalPlayerActor(__instance))
+            {
+                TraceOwnPellets(__instance);
+                try { _releaseShot?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: aim release: " + e.Message); }
+            }
         }
 
         private static MethodInfo _all;
@@ -301,6 +321,7 @@ namespace Coopfall.Lockstep
         private static PropertyInfo _eye, _terrainP;
         private static Type _trailType, _vecType;
         private const float TracerSpeed = 58f;   // Worldfall's pellet speed
+        private static readonly HashSet<Projectile> _handledShots = new HashSet<Projectile>();
 
         private sealed class OwnTracer { public object Trail; public float Head, Length; }
         private static readonly List<OwnTracer> _ownTracers = new List<OwnTracer>();
@@ -308,30 +329,29 @@ namespace Coopfall.Lockstep
         /// <summary>Visual only: a tracer for each new pellet this PC's player fired in the tick.</summary>
         private static void TraceOwnPellets(Actor owner)
         {
-            if (_trailType == null || _all == null || owner == null || !ReferenceEquals(owner, _mainUnit?.GetValue(null))) return;
+            if (_trailType == null || _all == null || owner == null || !IsLocalPlayerActor(owner)) return;
             try
             {
-                var before = _before.GetValue(null) as IEnumerable;
-                var seen = new HashSet<object>();
-                if (before != null) foreach (object o in before) seen.Add(o);
-                AccessTools.Method(_before.FieldType, "Clear")?.Invoke(_before.GetValue(null), null);
                 if (!(_all.Invoke(null, null) is IEnumerable all)) return;
-                var list = _tracers.GetValue(null) as IList;
+                var list = _tracers?.GetValue(null) as IList;
                 if (list == null) return;
-                object eye = _eye.GetValue(null);
+                object eye = _eye?.GetValue(null);
+                if (eye == null) return;
                 float ex = (float)AccessTools.Field(_vecType, "X").GetValue(eye), ey = (float)AccessTools.Field(_vecType, "Y").GetValue(eye), ez = (float)AccessTools.Field(_vecType, "Z").GetValue(eye);
                 object terrain = _terrainP?.GetValue(null);
                 MethodInfo height = terrain == null ? null : AccessTools.Method(terrain.GetType(), "SampleHeight");
+                if (_handledShots.Count > 128) _handledShots.Clear();
                 foreach (object o in all)
                 {
-                    if (!(o is Projectile p) || seen.Contains(p) || !ReferenceEquals(_byWho?.GetValue(p), owner)) continue;
+                    if (!(o is Projectile p) || _handledShots.Contains(p) || !ReferenceEquals(_byWho?.GetValue(p), owner)) continue;
+                    _handledShots.Add(p);
                     if (!(_target?.GetValue(p) is Vector2 to)) continue;
                     if (p.asset?.id != "shotgun_bullet")
                     {
                         // drawn by Worldfall as a sprite at the game's own (ground) height, under the
                         // camera: draw it from the eye down to the target instead (drawing only)
                         if (_lifted.Count > 64) _lifted.Clear();
-                        if (_start?.GetValue(p) is Vector2 st) _lifted[p] = new Lift { From = st, To = to, Z = ez - 0.15f, Born = Time.unscaledTime };
+                        if (_start?.GetValue(p) is Vector2 st) { _lifted[p] = new Lift { From = st, To = to, Z = ez - 0.15f, Born = Time.unscaledTime }; if (_liftLogs++ < 5) Log.Info("lockstep: own shot " + p.asset?.id + " drawn from eye height " + ez); }
                         continue;
                     }
                     float dx = to.x - ex, dy = to.y - ey, d = Mathf.Sqrt(dx * dx + dy * dy);
@@ -346,11 +366,13 @@ namespace Coopfall.Lockstep
                     _trailType.GetField("Flat").SetValue(t, TracerSpeed);
                     list.Add(t);
                     _ownTracers.Add(new OwnTracer { Trail = t, Length = d });
+                    if (_tracerLogs++ < 5) Log.Info("lockstep: own shotgun tracer added (" + list.Count + " tracers)");
                 }
             }
             catch (Exception e) { Log.Warn("lockstep: own tracer: " + e.Message); }
         }
 
+        private static int _liftLogs, _tracerLogs;
         private struct Lift { public Vector2 From, To; public float Z, Born; }
         private static readonly Dictionary<Projectile, Lift> _lifted = new Dictionary<Projectile, Lift>();
         private static readonly FieldInfo _start = AccessTools.Field(typeof(Projectile), "_vector_start"), _pos3 = AccessTools.Field(typeof(Projectile), "_current_position_3d");
@@ -464,6 +486,9 @@ namespace Coopfall.Lockstep
             ClimbingInTick.Reset();
             EffectSeeds.Reset();
             ZeroHpWatch.Reset();
+            _handledShots.Clear();
+            _lifted.Clear();
+            _ownTracers.Clear();
             foreach (KeyValuePair<FieldInfo, object> kv in _statics)
             {
                 object v = kv.Key.GetValue(null);

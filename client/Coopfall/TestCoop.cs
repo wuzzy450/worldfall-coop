@@ -156,7 +156,7 @@ namespace Coopfall
                     _cpStep = 5;
                     if (!_s.IsHost)
                     {
-                        EquipmentAsset w = CpWeapon();
+                        EquipmentAsset w = CpGun();
                         _cpPieceId = w?.id;
                         object piece = w == null ? null : ((IList)CpCall(gear, null, "Parse", w.id + ",,0,Coop Test,"))[0];
                         bool ok = piece != null && (bool)CpCall(gear, null, "Add", me, piece);
@@ -173,6 +173,25 @@ namespace Coopfall
                     }
                 }
                 if (_cpStep == 6 && t > 42f) { _cpStep = 7; CpShot("step-geared"); }
+                // the guest fires the worn blaster for 2s through the player's attack buttons (missing-ray check)
+                if (_cpStep == 7 && !_s.IsHost)
+                {
+                    if (t > 42.5f && t < 44.5f)
+                    {
+                        Vector2 aim = new Vector2(5f, 0f);
+                        Lockstep.LockstepControl.BeforeSample = () =>
+                        {
+                            Lockstep.LockstepControl.Script(aim, true, false);
+                        };
+                        if (!_cpFired) { _cpFired = true; Log.Info("TEST coop: guest fires " + R.CallN(me, "getWeaponAsset", 0)); }
+                        if (t > 43.3f && !_cpShotA) { _cpShotA = true; CpShot("step-fire-a"); }
+                        if (t > 43.9f && !_cpShotB) { _cpShotB = true; CpShot("step-fire-b"); }
+                    }
+                    else if (t >= 44.5f)
+                    {
+                        Lockstep.LockstepControl.BeforeSample = null;
+                    }
+                }
                 if (_cpStep == 7 && t > 45f)
                 {
                     _cpStep = 8;
@@ -412,12 +431,23 @@ namespace Coopfall
             return sb.ToString();
         }
 
+        private bool _cpFired, _cpShotA, _cpShotB;
+
         private static EquipmentAsset CpWeapon()
         {
             EquipmentAsset best = null;
             foreach (EquipmentAsset a in AssetManager.items.list)
                 if (a != null && a.equipment_type == EquipmentType.Weapon && a.id != null && a.id.StartsWith("sword", StringComparison.Ordinal) && (best == null || string.CompareOrdinal(a.id, best.id) < 0)) best = a;
             return best;
+        }
+
+        private static EquipmentAsset CpGun()
+        {
+            EquipmentAsset blaster = AssetManager.items.get("alien_blaster");
+            if (blaster != null) return blaster;
+            EquipmentAsset shotgun = AssetManager.items.get("shotgun");
+            if (shotgun != null) return shotgun;
+            return CpWeapon();
         }
 
         /// <summary>H talks to the smith, opens the forge's wares and buys the first one (a real choice).</summary>

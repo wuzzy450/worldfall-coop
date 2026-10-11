@@ -29,6 +29,7 @@ namespace Coopfall.Lockstep
         private static readonly HashSet<string> DrawingOnly = new HashSet<string>
         {
             "is_visible", "timestamp_session_ate_food", "cur_transform_position", "current_rotation", "current_scale", "m_CachedPtr",
+            "_has_animated_item",
         };
 
         private class Snap { public long tick; public Dictionary<long, ulong[]> units = new Dictionary<long, ulong[]>(); }
