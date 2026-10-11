@@ -40,3 +40,9 @@ server/test_client.py
 NEXT-STEPS.md
 TESTSCENARIO.md
 SYNC-ISSUES-*.md
+
+# local decompile scratch (game source dumps for bug hunting)
+decomp-game/
+decomp-tmp/
+run-coop.out
+run-coop.err

@@ -52,6 +52,15 @@ namespace Coopfall.Lockstep
     /// 39. DiplomacyManager.startWar & DiplomacyHelpersRebellion.startRebellion: deterministic allied war joining in kingdom.id order.
     /// 40. BehGoToStablePlace.execute: deterministic island landfall and region tie-breaking.
     /// 41. DropsLibrary.action_paint: deterministic candidate zone selection.
+    /// 42. Actor.checkEnemyTargets & BaseSimObject.findEnemyObjectTarget: no shared PRNG draws from
+    ///     parallel job threads - deterministic per-actor re-search timeout, deterministic enemy list
+    ///     order instead of LoopRandom, aggression targets sorted by actor id.
+    /// 43. ActorManager.checkSleepingUnits: sleeping candidates gathered and sorted by actor id (was statuses.list.LoopRandom).
+    /// 44. ai.ActorTool.getDockTradeTarget: island docks sorted by building id before selection.
+    /// 45. BehFindNearbyPotentialCivCityToJoin.getPotentialCityNearby: candidate cities sorted by city id (was cities.list.LoopRandom).
+    /// 46. BuildingHelper.tryToPlaceBuilding: candidate tiles sorted by tile_id before placement (was pList.LoopRandom).
+    /// 47. BabyHelper.traitsInherit: inherited trait pool built from parents' traits sorted by trait id before GetRandom draws.
+    /// 48. SubspeciesTraitLibrary.getRandomMutationTraitToAdd/Remove: mutation pots sorted by trait id before GetRandom draws.
     /// </summary>
     public static class SimulationInTick
     {
@@ -159,6 +168,26 @@ namespace Coopfall.Lockstep
         // 9. Controllable unit field refs
         private static AccessTools.FieldRef<HashSet<Actor>> _controllableUnitsRef;
         private static AccessTools.FieldRef<Actor> _unitMainRef;
+
+        // 42-48 Internal field refs & delegates
+        private delegate EnemyFinderData FindEnemiesDelegate(WorldTile pTile, Kingdom pKingdom, int pChunkRange);
+        private delegate BaseSimObject CheckObjectListDelegate(BaseSimObject pSelf, IEnumerable<BaseSimObject> pList, bool pAttackBuildings, bool pFindClosest, bool pIgnoreStunned, int pMaxDist);
+        private static AccessTools.FieldRef<Actor, bool> _strangeUrgeRef;
+        private static AccessTools.FieldRef<Actor, bool> _hasAttackTargetRef;
+        private static AccessTools.FieldRef<Actor, float> _timeoutTargetsRef;
+        private static AccessTools.FieldRef<Actor, HashSet<long>> _aggressionTargetsRef;
+        private static AccessTools.FieldRef<Actor, AiSystemActor> _aiActorRef;
+        private static AccessTools.FieldRef<AiSystemActor, BehaviourTaskActor> _aiTaskRef;
+        private static MethodInfo _findEnemiesFromMethod;
+        private static FindEnemiesDelegate _findEnemiesDel;
+        private static MethodInfo _checkObjectListMethod;
+        private static CheckObjectListDelegate _checkObjectListDel;
+        private static AccessTools.FieldRef<ActorManager, double> _sleepTimestampRef;
+        private static AccessTools.FieldRef<Docks, Building> _docksBuildingRef;
+        private static MethodInfo _addBuildingMethod;
+        private static Func<BuildingManager, BuildingAsset, WorldTile, bool, bool, BuildPlacingType, Building> _addBuildingFunc;
+        private static AccessTools.FieldRef<SubspeciesTraitLibrary, List<SubspeciesTrait>> _potMutationAddRef;
+        private static AccessTools.FieldRef<SubspeciesTraitLibrary, List<SubspeciesTrait>> _potMutationRemoveRef;
 
         public static void Install(Harmony h)
         {
@@ -508,6 +537,63 @@ namespace Coopfall.Lockstep
                 // 41. City territory paint drop zone selection over hashset order
                 MethodInfo actPaint = AccessTools.Method(typeof(DropsLibrary), "action_paint", new[] { typeof(WorldTile), typeof(string) });
                 if (actPaint != null) h.Patch(actPaint, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ActionPaintPrefix)));
+
+                // 42. Enemy target search PRNG race on parallel job threads
+                MethodInfo findEnemyObjTgt = AccessTools.Method(typeof(BaseSimObject), "findEnemyObjectTarget", new[] { typeof(bool) });
+                if (findEnemyObjTgt != null) h.Patch(findEnemyObjTgt, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(FindEnemyObjectTargetPrefix)));
+                else Log.Warn("lockstep: BaseSimObject.findEnemyObjectTarget not found");
+                MethodInfo checkEnemyTgts = AccessTools.Method(typeof(Actor), "checkEnemyTargets");
+                if (checkEnemyTgts != null) h.Patch(checkEnemyTgts, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CheckEnemyTargetsPrefix)));
+                else Log.Warn("lockstep: Actor.checkEnemyTargets not found");
+                _strangeUrgeRef = AccessTools.FieldRefAccess<Actor, bool>("_has_status_strange_urge");
+                _hasAttackTargetRef = AccessTools.FieldRefAccess<Actor, bool>("has_attack_target");
+                _timeoutTargetsRef = AccessTools.FieldRefAccess<Actor, float>("_timeout_targets");
+                _aggressionTargetsRef = AccessTools.FieldRefAccess<Actor, HashSet<long>>("_aggression_targets");
+                _aiActorRef = AccessTools.FieldRefAccess<Actor, AiSystemActor>("ai");
+                _aiTaskRef = AccessTools.FieldRefAccess<AiSystemActor, BehaviourTaskActor>("task");
+                _findEnemiesFromMethod = AccessTools.Method(typeof(EnemiesFinder), "findEnemiesFrom", new[] { typeof(WorldTile), typeof(Kingdom), typeof(int) });
+                if (_findEnemiesFromMethod != null) _findEnemiesDel = (FindEnemiesDelegate)Delegate.CreateDelegate(typeof(FindEnemiesDelegate), _findEnemiesFromMethod);
+                _checkObjectListMethod = AccessTools.Method(typeof(BaseSimObject), "checkObjectList", new[] { typeof(IEnumerable<BaseSimObject>), typeof(bool), typeof(bool), typeof(bool), typeof(int) });
+                if (_checkObjectListMethod != null) _checkObjectListDel = (CheckObjectListDelegate)Delegate.CreateDelegate(typeof(CheckObjectListDelegate), _checkObjectListMethod);
+
+                // 43. Sleeping units status iteration order
+                MethodInfo checkSleepUnits = AccessTools.Method(typeof(ActorManager), "checkSleepingUnits");
+                if (checkSleepUnits != null) h.Patch(checkSleepUnits, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CheckSleepingUnitsPrefix)));
+                else Log.Warn("lockstep: ActorManager.checkSleepingUnits not found");
+                _sleepTimestampRef = AccessTools.FieldRefAccess<ActorManager, double>("_timestamp_sleeping_units");
+
+                // 44. Island docks trade target selection
+                MethodInfo dockTradeTgt = AccessTools.Method(typeof(ActorTool), "getDockTradeTarget", new[] { typeof(ListPool<Docks>), typeof(Actor) });
+                if (dockTradeTgt != null) h.Patch(dockTradeTgt, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetDockTradeTargetPrefix)));
+                else Log.Warn("lockstep: ai.ActorTool.getDockTradeTarget(ListPool<Docks>) not found");
+                _docksBuildingRef = AccessTools.FieldRefAccess<Docks, Building>("building");
+
+                // 45. Civ city migration candidate cities
+                MethodInfo cityNearby = AccessTools.Method(typeof(BehFindNearbyPotentialCivCityToJoin), "getPotentialCityNearby", new[] { typeof(WorldTile), typeof(Actor) });
+                if (cityNearby != null) h.Patch(cityNearby, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetPotentialCityNearbyPrefix)));
+                else Log.Warn("lockstep: BehFindNearbyPotentialCivCityToJoin.getPotentialCityNearby not found");
+
+                // 46. Building placement candidate tiles
+                MethodInfo tryPlaceBldg = AccessTools.Method(typeof(BuildingHelper), "tryToPlaceBuilding", new[] { typeof(BuildingAsset), typeof(List<WorldTile>) });
+                if (tryPlaceBldg != null) h.Patch(tryPlaceBldg, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TryToPlaceBuildingPrefix)));
+                else Log.Warn("lockstep: BuildingHelper.tryToPlaceBuilding not found");
+                _addBuildingMethod = AccessTools.Method(typeof(BuildingManager), "addBuilding", new[] { typeof(BuildingAsset), typeof(WorldTile), typeof(bool), typeof(bool), typeof(BuildPlacingType) });
+                if (_addBuildingMethod != null) _addBuildingFunc = (Func<BuildingManager, BuildingAsset, WorldTile, bool, bool, BuildPlacingType, Building>)Delegate.CreateDelegate(typeof(Func<BuildingManager, BuildingAsset, WorldTile, bool, bool, BuildPlacingType, Building>), _addBuildingMethod);
+
+                // 47. Newborn trait inheritance candidate order
+                MethodInfo traitsInheritM = AccessTools.Method(typeof(BabyHelper), "traitsInherit", new[] { typeof(Actor), typeof(Actor), typeof(Actor) });
+                if (traitsInheritM != null) h.Patch(traitsInheritM, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TraitsInheritPrefix)));
+                else Log.Warn("lockstep: BabyHelper.traitsInherit not found");
+
+                // 48. Subspecies mutation trait selection
+                MethodInfo mutAdd = AccessTools.Method(typeof(SubspeciesTraitLibrary), "getRandomMutationTraitToAdd");
+                if (mutAdd != null) h.Patch(mutAdd, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetRandomMutationTraitToAddPrefix)));
+                else Log.Warn("lockstep: SubspeciesTraitLibrary.getRandomMutationTraitToAdd not found");
+                MethodInfo mutRemove = AccessTools.Method(typeof(SubspeciesTraitLibrary), "getRandomMutationTraitToRemove");
+                if (mutRemove != null) h.Patch(mutRemove, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetRandomMutationTraitToRemovePrefix)));
+                else Log.Warn("lockstep: SubspeciesTraitLibrary.getRandomMutationTraitToRemove not found");
+                _potMutationAddRef = AccessTools.FieldRefAccess<SubspeciesTraitLibrary, List<SubspeciesTrait>>("_pot_mutation_traits_add");
+                _potMutationRemoveRef = AccessTools.FieldRefAccess<SubspeciesTraitLibrary, List<SubspeciesTrait>>("_pot_mutation_traits_remove");
 
                 _warManagerEndWarsRef = AccessTools.FieldRefAccess<WarManager, List<War>>("_end_wars");
                 _cityStockpilesRef = AccessTools.FieldRefAccess<City, List<Building>>("stockpiles");
@@ -3890,6 +3976,293 @@ namespace Coopfall.Lockstep
                 city.setAbandonedZonesDirty();
             }
             return false;
+        }
+
+        // ==========================================
+        // 42. Enemy Target Search PRNG Race on Parallel Job Threads
+        // ==========================================
+        /// <summary>A stable draw per object, independent of the shared PRNG and of the tick: parallel
+        /// job threads can't race it, and both PCs draw the same value even between ticks.</summary>
+        private static float Det01(long pId, int pSalt)
+        {
+            ulong x = (ulong)(uint)(pSalt ^ unchecked((int)pId)) * 0x9E3779B97F4A7C15UL ^ (ulong)(uint)(pId >> 32) * 0xC2B2AE3D27D4EB4FUL;
+            x ^= x >> 33; x *= 0xFF51AFD7ED558CCDUL; x ^= x >> 33;
+            return (x & 0xFFFFFF) / 16777216f;
+        }
+
+        private static bool FindEnemyObjectTargetPrefix(BaseSimObject __instance, bool pAttackBuildings, ref BaseSimObject __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null) { __result = null; return false; }
+            if (_findEnemiesDel == null || _checkObjectListDel == null) return true;
+            __result = FindEnemyTargetDeterministic(__instance, pAttackBuildings);
+            return false;
+        }
+
+        private static BaseSimObject FindEnemyTargetDeterministic(BaseSimObject pSelf, bool pAttackBuildings)
+        {
+            if (pSelf == null || pSelf.current_tile == null) return null;
+            EnemyFinderData data = _findEnemiesDel(pSelf.current_tile, pSelf.kingdom, -1);
+            if (data == null || data.isEmpty()) return null;
+            bool flag = true;
+            if (data.list.Count > 50)
+            {
+                // was Randy.randomChance(0.6f): the shared PRNG can't be drawn from parallel job threads
+                flag = Det01(pSelf.getID(), 0xF1AC50) < 0.6f;
+            }
+            // fixed order instead of LoopRandom (which also draws the shared PRNG from job threads)
+            return _checkObjectListDel(pSelf, data.list, pAttackBuildings, flag, false, int.MaxValue);
+        }
+
+        private static bool CheckEnemyTargetsPrefix(Actor __instance, ref bool __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null) { __result = false; return false; }
+            if (_timeoutTargetsRef == null || _aggressionTargetsRef == null) return true;
+            if (!__instance.isAllowedToLookForEnemies()) { __result = false; return false; }
+            if (__instance.isInWaterAndCantAttack()) { __result = false; return false; }
+            if (_strangeUrgeRef != null && _strangeUrgeRef(__instance)) { __result = false; return false; }
+            if (_hasAttackTargetRef != null && _hasAttackTargetRef(__instance))
+            {
+                bool inCombat = false;
+                if (_aiActorRef != null && _aiTaskRef != null)
+                {
+                    AiSystemActor ai = _aiActorRef(__instance);
+                    BehaviourTaskActor task = ai != null ? _aiTaskRef(ai) : null;
+                    inCombat = task != null && task.in_combat;
+                }
+                if (!__instance.hasTask() || !inCombat) __instance.setTask("fighting", true, true);
+                __result = false;
+                return false;
+            }
+            if (_timeoutTargetsRef(__instance) > 0f) { __result = false; return false; }
+            // was 0.1f + Randy.randomFloat(0f, 1f): drawn from parallel job threads, the thread
+            // completion order swapped the PRNG sequence between Host and Guest (creature desyncs)
+            _timeoutTargetsRef(__instance) = 0.1f + Det01(__instance.getID(), 0x716E7);
+            bool canAttackBuildings = __instance.asset != null && __instance.asset.can_attack_buildings;
+            BaseSimObject target = _findEnemiesDel != null && _checkObjectListDel != null
+                ? FindEnemyTargetDeterministic(__instance, canAttackBuildings)
+                : null;
+            HashSet<long> aggression = _aggressionTargetsRef(__instance);
+            if (target == null && aggression.Count > 0)
+            {
+                List<Actor> candidates = new List<Actor>(aggression.Count);
+                foreach (long aggressionId in aggression)
+                {
+                    Actor a = World.world.units.get(aggressionId);
+                    if (a != null && !a.isRekt()) candidates.Add(a);
+                }
+                if (candidates.Count > 0)
+                {
+                    // the hashset's order can differ per PC: sort by actor id before the closest check
+                    candidates.Sort((a, b) => a.id.CompareTo(b.id));
+                    using ListPool<Actor> listPool = new ListPool<Actor>(candidates.Count);
+                    foreach (Actor a in candidates) listPool.Add(a);
+                    if (_checkObjectListDel != null)
+                    {
+                        target = _checkObjectListDel(__instance, listPool, canAttackBuildings, true, true, 30);
+                    }
+                }
+                else
+                {
+                    aggression.Clear();
+                }
+            }
+            if (target == null) { __result = false; return false; }
+            __instance.startFightingWith(target);
+            __result = true;
+            return false;
+        }
+
+        // ==========================================
+        // 43. Sleeping Units Status Iteration Order
+        // ==========================================
+        private static bool CheckSleepingUnitsPrefix(ActorManager __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || _sleepTimestampRef == null) return true;
+            if (World.world.getWorldTimeElapsedSince(_sleepTimestampRef(__instance)) < 10.0) return false;
+            __instance.cached_sleeping_units.Clear();
+            _sleepTimestampRef(__instance) = World.world.getCurWorldTime();
+            // was World.world.statuses.list.LoopRandom(): the statuses list is rebuilt from a hashset,
+            // so its order (and which sleeping units were cached first) differed per PC
+            List<Actor> candidates = new List<Actor>();
+            foreach (Status item in World.world.statuses.list)
+            {
+                if (item == null || item.is_finished || item.asset == null || item.asset.id != "sleeping") continue;
+                if (item.sim_object is Actor a && a.isAlive()) candidates.Add(a);
+            }
+            candidates.Sort((x, y) => x.id.CompareTo(y.id));
+            List<Actor> cached = __instance.cached_sleeping_units;
+            for (int i = 0; i < candidates.Count && cached.Count <= 10; i++) cached.Add(candidates[i]);
+            return false;
+        }
+
+        // ==========================================
+        // 44. Island Docks Trade Target Selection
+        // ==========================================
+        private static bool GetDockTradeTargetPrefix(ListPool<Docks> pList, Actor pActor, ref Docks __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pList == null || pList.Count == 0) { __result = null; return false; }
+            if (pActor == null || _docksBuildingRef == null) return true;
+            // was pList.LoopRandom(): the docks pool order (and the first usable dock) differed per PC
+            List<Docks> candidates = new List<Docks>(pList.Count);
+            foreach (Docks item in pList) if (item != null) candidates.Add(item);
+            candidates.Sort((a, b) =>
+            {
+                Building ba = _docksBuildingRef(a);
+                Building bb = _docksBuildingRef(b);
+                return (ba != null ? ba.id : long.MaxValue).CompareTo(bb != null ? bb.id : long.MaxValue);
+            });
+            foreach (Docks item in candidates)
+            {
+                Building building = _docksBuildingRef(item);
+                if (building == null) continue;
+                if (building.hasCity() && pActor.getHomeBuilding() != building && building.isUsable() && !building.isAbandoned()
+                    && building.city != null && _cityKingdomRef != null && _cityKingdomRef(building.city) != null && !_cityKingdomRef(building.city).isEnemy(pActor.kingdom)
+                    && (item.isDockGood() || item.hasOceanTiles()))
+                {
+                    __result = item;
+                    return false;
+                }
+            }
+            __result = null;
+            return false;
+        }
+
+        // ==========================================
+        // 45. Civ City Migration Candidate Cities
+        // ==========================================
+        private static bool GetPotentialCityNearbyPrefix(WorldTile pFromTile, Actor pActor, ref City __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pFromTile == null || pActor == null) { __result = null; return false; }
+            // was World.world.cities.list.LoopRandom(): the first matching city (and the one a nomad
+            // joins) depended on the shuffled draw order; iterate cities sorted by city id instead
+            List<City> cities = new List<City>(World.world.cities.list.Count);
+            foreach (City c in World.world.cities.list) if (c != null) cities.Add(c);
+            cities.Sort((a, b) => a.id.CompareTo(b.id));
+            City best = null;
+            foreach (City item in cities)
+            {
+                WorldTile tile = item.getTile();
+                if (tile == null || item.isNeutral()) continue;
+                float range = SimGlobals.m.nomad_check_far_city_range;
+                if (!pActor.isNomad() && _cityKingdomRef != null && _cityKingdomRef(item) != pActor.kingdom) range *= 3f;
+                if (Toolbox.DistVec3(pFromTile.posV, _cityCenterRef != null ? _cityCenterRef(item) : tile.posV) > range
+                    || !item.isWelcomedToJoin(pActor) || !tile.isSameIsland(pFromTile)) continue;
+                if (best != null)
+                {
+                    if (_cityKingdomRef != null && _cityKingdomRef(item) == pActor.kingdom && _cityKingdomRef(best) != pActor.kingdom) best = item;
+                }
+                else
+                {
+                    best = item;
+                }
+            }
+            __result = best;
+            return false;
+        }
+
+        // ==========================================
+        // 46. Building Placement Candidate Tiles
+        // ==========================================
+        private static bool TryToPlaceBuildingPrefix(BuildingAsset pAsset, List<WorldTile> pList, ref bool __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pAsset == null || pList == null || pList.Count == 0) { __result = false; return false; }
+            if (_canBuildFromFunc == null || _addBuildingFunc == null) return true;
+            // was pList.LoopRandom(): the first buildable tile depended on the shuffled draw order
+            List<WorldTile> tiles = new List<WorldTile>(pList.Count);
+            foreach (WorldTile t in pList) if (t != null) tiles.Add(t);
+            tiles.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            foreach (WorldTile item in tiles)
+            {
+                if (_canBuildFromFunc(World.world.buildings, item, pAsset, null, BuildPlacingType.New, false))
+                {
+                    if (_addBuildingFunc(World.world.buildings, pAsset, item, false, false, BuildPlacingType.New) != null)
+                    {
+                        __result = true;
+                        return false;
+                    }
+                    break;
+                }
+            }
+            __result = false;
+            return false;
+        }
+
+        // ==========================================
+        // 47. Newborn Trait Inheritance Candidate Order
+        // ==========================================
+        private static bool TraitsInheritPrefix(Actor pActorTarget, Actor pParent1, Actor pParent2)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActorTarget == null || pParent1 == null) return true;
+            // was getTraits() iteration order (an IReadOnlyCollection whose order can differ per PC)
+            // feeding GetRandom() draws: sort the inherited trait pool by trait id instead
+            using ListPool<ActorTrait> pool = new ListPool<ActorTrait>(128);
+            int counter = AddParentTraitsSorted(pParent1, pool);
+            int counter2 = pParent2 != null ? AddParentTraitsSorted(pParent2, pool) : 0;
+            if (pool.Count != 0)
+            {
+                int amount = Mathf.Max(1, (int)((counter + counter2) * 0.25f));
+                for (int i = 0; i < amount; i++)
+                {
+                    ActorTrait random = pool.GetRandom();
+                    pActorTarget.addTrait(random.id);
+                }
+            }
+            return false;
+        }
+
+        private static int AddParentTraitsSorted(Actor pParent, ListPool<ActorTrait> pList)
+        {
+            List<ActorTrait> traits = new List<ActorTrait>();
+            foreach (ActorTrait trait in pParent.getTraits())
+            {
+                if (trait != null && (trait.rate_inherit != 0 || trait.rate_birth != 0)) traits.Add(trait);
+            }
+            traits.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+            int num = 0;
+            foreach (ActorTrait trait in traits)
+            {
+                num++;
+                pList.AddTimes(trait.rate_birth, trait);
+                pList.AddTimes(trait.rate_inherit, trait);
+            }
+            return num;
+        }
+
+        // ==========================================
+        // 48. Subspecies Mutation Trait Selection
+        // ==========================================
+        private static bool GetRandomMutationTraitToAddPrefix(SubspeciesTraitLibrary __instance, ref SubspeciesTrait __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = PickMutationTraitSorted(__instance, _potMutationAddRef);
+            return __result != null;
+        }
+
+        private static bool GetRandomMutationTraitToRemovePrefix(SubspeciesTraitLibrary __instance, ref SubspeciesTrait __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = PickMutationTraitSorted(__instance, _potMutationRemoveRef);
+            return __result != null;
+        }
+
+        private static SubspeciesTrait PickMutationTraitSorted(SubspeciesTraitLibrary pLibrary, AccessTools.FieldRef<SubspeciesTraitLibrary, List<SubspeciesTrait>> pPoolRef)
+        {
+            if (pLibrary == null || pPoolRef == null) return null;
+            List<SubspeciesTrait> pool = pPoolRef(pLibrary);
+            if (pool == null || pool.Count == 0) return null; // let the original run (it fails the same way on an empty pot)
+            // the pot's order comes from the library list's build order: sort a copy by trait id so the
+            // GetRandom() index picks the same trait on every PC
+            List<SubspeciesTrait> candidates = new List<SubspeciesTrait>(pool.Count);
+            foreach (SubspeciesTrait t in pool) if (t != null) candidates.Add(t);
+            candidates.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+            return candidates.GetRandom();
         }
     }
 }

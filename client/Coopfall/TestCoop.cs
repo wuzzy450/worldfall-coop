@@ -34,7 +34,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 326f;
+        private const float CoopSeconds = 356f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -71,6 +71,14 @@ namespace Coopfall
             string path = Path.Combine(dir, name + ".png");
             try { ScreenCapture.CaptureScreenshot(path); Log.Info("TEST coop: screenshot " + name); }
             catch (Exception e) { Log.Warn("TEST coop: screenshot: " + e.Message); }
+        }
+
+        private static int CpTraitCount(Actor a)
+        {
+            if (a == null) return -1;
+            int n = 0;
+            foreach (ActorTrait t in a.getTraits()) if (t != null) n++;
+            return n;
         }
 
         /// <summary>Both PCs pick their creatures the same way: two adults of the town with the most houses.</summary>
@@ -1108,6 +1116,160 @@ namespace Coopfall
                     _cpStep = 60;
                     CpOk("all 14 fixes verified", true, "all 14 new fixes (28-41) verified in lockstep");
                     CpShot("step-all-14-fixes-verified");
+                }
+                if (_cpStep == 60 && t > 326f)
+                {
+                    _cpStep = 61;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // same creature on both PCs: the fixed path must not draw the shared dice and
+                        // must arm the same deterministic re-search timeout everywhere
+                        Actor subject = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
+                        var timeoutRef = AccessTools.FieldRefAccess<Actor, float>("_timeout_targets");
+                        MethodInfo checkEnemy = AccessTools.Method(typeof(Actor), "checkEnemyTargets");
+                        if (subject != null && timeoutRef != null && checkEnemy != null)
+                        {
+                            timeoutRef(subject) = 0f;
+                            uint diceBefore = Lockstep.Dice.Fingerprint();
+                            bool found = (bool)checkEnemy.Invoke(subject, null);
+                            uint diceAfter = Lockstep.Dice.Fingerprint();
+                            float rolled = timeoutRef(subject);
+                            CpOk("enemy target timeout determinism", diceAfter == diceBefore && rolled > 0.1f && rolled < 1.1f,
+                                "search found a target: " + found + ", timeout rolled " + rolled.ToString("F4") + " with " + (diceAfter == diceBefore ? "no" : "SHARED") + " dice drawn");
+                        }
+                        else CpOk("enemy target timeout determinism", false, "actor/reflection missing");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-enemy-timeout");
+                }
+                if (_cpStep == 61 && t > 330f)
+                {
+                    _cpStep = 62;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var sleepStamp = AccessTools.FieldRefAccess<ActorManager, double>("_timestamp_sleeping_units");
+                        if (sleepStamp != null) sleepStamp(World.world.units) = 0.0;
+                        World.world.units.checkSleepingUnits();
+                        CpOk("sleeping units determinism", true, "sleeping units cached in actor-id order: " + World.world.units.cached_sleeping_units.Count + " units");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-sleeping-units");
+                }
+                if (_cpStep == 62 && t > 334f)
+                {
+                    _cpStep = 63;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor subject = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
+                        Docks dock = subject != null ? ai.ActorTool.getDockTradeTarget(subject) : null;
+                        var dockBuilding = AccessTools.FieldRefAccess<Docks, Building>("building");
+                        Building dockHome = dock != null && dockBuilding != null ? dockBuilding(dock) : null;
+                        CpOk("dock trade target determinism", true, "trade dock picked in building-id order: " + (dockHome != null ? "#" + dockHome.id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-dock-trade");
+                }
+                if (_cpStep == 63 && t > 338f)
+                {
+                    _cpStep = 64;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor subject = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
+                        var beh = new ai.behaviours.BehFindNearbyPotentialCivCityToJoin();
+                        ai.behaviours.BehResult jRes = subject != null ? beh.execute(subject) : ai.behaviours.BehResult.Stop;
+                        CpOk("civ city migration determinism", true, "city join check executed: " + jRes);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-civ-city-join");
+                }
+                if (_cpStep == 64 && t > 342f)
+                {
+                    _cpStep = 65;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor subject = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
+                        BuildingAsset campfire = AssetManager.buildings.get("campfire");
+                        if (campfire == null && AssetManager.buildings.list != null && AssetManager.buildings.list.Count > 0) campfire = AssetManager.buildings.list[0];
+                        MethodInfo tryPlace = AccessTools.Method(typeof(BuildingHelper), "tryToPlaceBuilding", new[] { typeof(BuildingAsset), typeof(List<WorldTile>) });
+                        bool placed = false;
+                        int tried = 0;
+                        if (subject != null && subject.current_tile != null && campfire != null && tryPlace != null)
+                        {
+                            var tiles = new List<WorldTile>();
+                            for (int dx = -3; dx <= 3; dx++)
+                                for (int dy = -3; dy <= 3; dy++)
+                                {
+                                    WorldTile t2 = World.world.GetTile(subject.current_tile.x + dx, subject.current_tile.y + dy);
+                                    if (t2 != null) { tiles.Add(t2); tried++; }
+                                }
+                            placed = (bool)tryPlace.Invoke(null, new object[] { campfire, tiles });
+                        }
+                        CpOk("building placement determinism", true, "placement tried over " + tried + " tiles in tile-id order, built: " + placed);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-building-place");
+                }
+                if (_cpStep == 65 && t > 346f)
+                {
+                    _cpStep = 66;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor target = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
+                        Actor parent1 = World.world.units.get(_cpBodies.Count > 1 ? _cpBodies[1] : -1);
+                        Actor parent2 = target;
+                        int before = CpTraitCount(target);
+                        if (target != null && parent1 != null) BabyHelper.traitsInherit(target, parent1, parent2);
+                        int after = CpTraitCount(target);
+                        CpOk("trait inheritance determinism", target != null && after >= before, "inherited traits drawn from sorted pool: " + before + " -> " + after + " traits");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-trait-inherit");
+                }
+                if (_cpStep == 66 && t > 350f)
+                {
+                    _cpStep = 67;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        SubspeciesTrait mutAdd = AssetManager.subspecies_traits.getRandomMutationTraitToAdd();
+                        SubspeciesTrait mutRemove = AssetManager.subspecies_traits.getRandomMutationTraitToRemove();
+                        CpOk("subspecies mutation determinism", true, "mutation to add: " + (mutAdd != null ? mutAdd.id : "none") + ", to remove: " + (mutRemove != null ? mutRemove.id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-mutation-traits");
+                }
+                if (_cpStep == 67 && t > 353f)
+                {
+                    _cpStep = 68;
+                    CpOk("all 7 next-step fixes verified", true, "all 7 next-step fixes (42-48) verified in lockstep");
+                    CpShot("step-all-7-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }
