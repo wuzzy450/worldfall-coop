@@ -55,6 +55,8 @@ namespace Coopfall.Lockstep
             else Log.Warn("lockstep: NameGenerator.generateName not found: kingdom names may differ between PCs");
             MethodInfo nck = AccessTools.Method(typeof(Kingdom), "newCivKingdom");
             if (nck != null) h.Patch(nck, postfix: new HarmonyMethod(typeof(FarmsInTick), nameof(NewKingdomPostfix)));
+            MethodInfo nct = AccessTools.Method(typeof(City), "generateName", new[] { typeof(Actor) });
+            if (nct != null) h.Patch(nct, postfix: new HarmonyMethod(typeof(FarmsInTick), nameof(NewCityPostfix)));
             MethodInfo tpl = AccessTools.Method(typeof(Culture), "getNameTemplate");
             if (tpl != null) h.Patch(tpl, prefix: new HarmonyMethod(typeof(FarmsInTick), nameof(TemplatePrefix)), finalizer: new HarmonyMethod(typeof(FarmsInTick), nameof(OnoFinalizer)));
             else Log.Warn("lockstep: Culture.getNameTemplate not found: names may differ between PCs");
@@ -176,15 +178,16 @@ namespace Coopfall.Lockstep
             catch (Exception e) { Log.Warn("lockstep: resetting culture name caches: " + e.Message); }
         }
 
-        private static void GenNamePrefix(long pSeed, out Dice.Snapshot? __state)
+        private static void GenNamePrefix(MetaType pType, long pSeed, out Dice.Snapshot? __state)
         {
             __state = null;
             if (!LockstepClock.Active) return;
             __state = Dice.Isolate();
-            Randy.resetSeed(LockstepClock.TickSeed((int)(pSeed ^ (pSeed >> 32)), 0x0C0C));
+            long s = pSeed + (long)pType.GetHashCode();
+            Randy.resetSeed(LockstepClock.TickSeed((int)(s ^ (s >> 32)), 0x0C0C));
         }
 
-        private static int _kingdomLogs;
+        private static int _kingdomLogs, _cityLogs;
 
         /// <summary>Diagnostic: every new kingdom's name and what it was made from (compare between PCs).</summary>
         private static void NewKingdomPostfix(Kingdom __instance, Actor pActor)
@@ -200,6 +203,19 @@ namespace Coopfall.Lockstep
                          " culture " + (c == null ? "none" : "#" + c.getID() + " set=" + c.data.name_template_set + " tpl=" + c.getNameTemplate(MetaType.Kingdom) + " cached " + ono) + " dna " + R.MapStats?.life_dna);
             }
             catch (Exception e) { Log.Warn("lockstep: kingdom log: " + e.Message); }
+        }
+
+        /// <summary>Diagnostic: every new city's name and founder (compare between PCs).</summary>
+        private static void NewCityPostfix(City __instance, Actor pActor)
+        {
+            if (!LockstepClock.Active || _cityLogs++ > 60) return;
+            try
+            {
+                Culture c = pActor?.culture;
+                Log.Info("lockstep: tick " + LockstepClock.Tick + (LockstepClock.InTick ? "" : " OUTSIDE") + " city #" + __instance.getID() + " '" + __instance.data.name + "' by #" + pActor?.getID() + " " + pActor?.asset?.id +
+                         " culture " + (c == null ? "none" : "#" + c.getID()) + " dna " + R.MapStats?.life_dna);
+            }
+            catch (Exception e) { Log.Warn("lockstep: city log: " + e.Message); }
         }
 
         private static void TemplatePrefix(Culture __instance, MetaType pType, out Dice.Snapshot? __state)
