@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using HarmonyLib;
 using UnityEngine;
 
 namespace Coopfall
@@ -33,7 +34,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 230f;
+        private const float CoopSeconds = 238f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -286,7 +287,17 @@ namespace Coopfall
                         CpOk("meteor", CoopMod.Instance.Powers.UseLocal("meteorite", at), "thrown at " + at.x + "," + at.y);
                     }
                 }
-                if (_cpStep == 191 && t > 126f) { _cpStep = 192; CpOk("meteor look", Lockstep.EffectSeeds.Given.Count > 0, "seeds given " + string.Join(",", Lockstep.EffectSeeds.Given.ConvertAll(x => x.ToString()).ToArray()) + ", drawn with them here " + Lockstep.EffectSeeds.Drawn + ", drawing now: " + CpMeteorSeeds(mod, modT)); CpShot("step-meteor"); }
+                if (_cpStep == 191 && t > 126f) { _cpStep = 1915; CpOk("meteor look", Lockstep.EffectSeeds.Given.Count > 0, "seeds given " + string.Join(",", Lockstep.EffectSeeds.Given.ConvertAll(x => x.ToString()).ToArray()) + ", drawn with them here " + Lockstep.EffectSeeds.Drawn + ", drawing now: " + CpMeteorSeeds(mod, modT)); CpShot("step-meteor"); }
+                if (_cpStep == 1915 && t > 127f)
+                {
+                    _cpStep = 1916;
+                    if (_s.IsHost)
+                    {
+                        WorldTile at = World.world.GetTile(me.current_tile.x + 8, me.current_tile.y + 4) ?? me.current_tile;
+                        CpOk("singularity seeds", CoopMod.Instance.Powers.UseLocal("seeds_singularity", at), "seeds cast at " + at.x + "," + at.y);
+                    }
+                }
+                if (_cpStep == 1916 && t > 129f) { _cpStep = 192; CpShot("step-singularity"); }
                 if (_cpStep == 192 && t > 130f)
                 {
                     _cpStep = 193;
@@ -306,7 +317,31 @@ namespace Coopfall
                         _cpShareBefore = CpExplored(me);
                         CpOk("explored", _cpShareBefore > 0f, "explored here " + _cpShareBefore.ToString("F4") + " (each PC's own)");
                     }
+                }
+                if (_cpStep == 194 && t > 135f)
+                {
+                    _cpStep = 195;
+                    if (town != null)
+                    {
+                        HashSet<TileZone> bz = AccessTools.FieldRefAccess<City, HashSet<TileZone>>("border_zones")(town);
+                        HashSet<TileZone> nz = AccessTools.FieldRefAccess<City, HashSet<TileZone>>("neighbour_zones")(town);
+                        int bCount = bz?.Count ?? 0, nCount = nz?.Count ?? 0;
+                        TileZone firstBorder = null;
+                        if (bz != null) foreach (TileZone z in bz) { firstBorder = z; break; }
+                        CpOk("border patrol", bCount > 0, "border zones " + bCount + ", neighbour zones " + nCount + ", first border #" + (firstBorder != null ? firstBorder.id : -1));
+                        CpShot("step-border-patrol");
+                    }
+                }
+                if (_cpStep == 195 && t > 137f)
+                {
                     _cpStep = 19;
+                    if (town != null)
+                    {
+                        CityZoneGrowth growth = World.world.city_zone_helper?.city_growth;
+                        TileZone cand = growth != null ? growth.getZoneToClaim(town.leader, town, false) : null;
+                        CpOk("zone growth", true, "growth candidate zone " + (cand != null ? "#" + cand.id + " at (" + cand.x + "," + cand.y + ")" : "none"));
+                        CpShot("step-zone-growth");
+                    }
                 }
                 if (_cpStep == 19 && t > 140f)
                 {
@@ -391,6 +426,18 @@ namespace Coopfall
                         ", first person " + WorldfallBridge.FirstPerson + ", tag drawn " + age.ToString("F1") + " s ago; me #" + me.getID() + " at " + me.current_position + " health " + me.getHealth() + "/" + me.getMaxHealth() + " ratio " + me.getHealthRatio().ToString("F2") + ", other health " + (o?.actor != null ? o.actor.getHealth() + "/" + o.actor.getMaxHealth() + " tag " + o.hp + "/" + o.mhp : "-") + ", tick " + Lockstep.LockstepClock.Tick);
                     CpShot("step-nameplate");
                     Lockstep.LockstepControl.BeforeSample = null;
+                }
+                if (_cpStep == 29 && t > 228f)
+                {
+                    _cpStep = 30;
+                    if (town != null)
+                    {
+                        var foundation = new BehKingCheckNewCityFoundation();
+                        MethodInfo findZone = AccessTools.Method(typeof(BehKingCheckNewCityFoundation), "findZoneForCityOnTheSameIsland2");
+                        TileZone candZone = findZone != null ? (TileZone)findZone.Invoke(foundation, new object[] { me, town }) : null;
+                        CpOk("city foundation", true, "expansion candidate zone " + (candZone != null ? "#" + candZone.id + " at (" + candZone.x + "," + candZone.y + ")" : "none"));
+                        CpShot("step-city-foundation");
+                    }
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }

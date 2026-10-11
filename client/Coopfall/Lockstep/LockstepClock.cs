@@ -113,6 +113,7 @@ namespace Coopfall.Lockstep
                 if (register != null) h.Patch(register, postfix: new HarmonyMethod(typeof(LockstepClock), nameof(RegisterPostfix)));
                 else Log.Error("lockstep: Actor.registerDecisions not found: decision order may differ between PCs");
                 FarmsInTick.Install(h);
+                ZonesInTick.Install(h);
                 MethodInfo loadFire = AccessTools.Method(typeof(SaveManager), "loadFire");
                 if (loadFire != null) h.Patch(loadFire, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(LoadFirePrefix)));
                 else Log.Error("lockstep: SaveManager.loadFire not found: fires of the previous world may block plants on one PC");
@@ -270,6 +271,7 @@ namespace Coopfall.Lockstep
                 SortChunkObjects(c.objects);
             MapChunkManager mcm = (MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world);
             if (mcm != null) SortRegionNeighbours(mcm);
+            ZonesInTick.Normalize(World.world);
             // world behaviour timers aren't in the save and carry over from the previous world
             if (_behTimer != null)
                 foreach (WorldBehaviourAsset b in AssetManager.world_behaviours.list)
