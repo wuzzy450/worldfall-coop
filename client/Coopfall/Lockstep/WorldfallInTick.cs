@@ -273,14 +273,119 @@ namespace Coopfall.Lockstep
                 n++;
             }
             if (n < 3) Log.Warn("lockstep: Worldfall's first-person shots not all found (" + n + "/3): a player's shots may land differently between PCs");
+            // Worldfall hides this PC's own gun pellets and draws them as its tracers instead; with its
+            // flight skipped in ticks the shot was invisible. Draw a tracer along the game's own path.
+            try
+            {
+                Type trail = wf.GetType("FirstPerson.Core.PelletTrail", false), vec = wf.GetType("FirstPerson.Core.Vec3", false);
+                _all = shots == null ? null : AccessTools.Method(shots, "All");
+                _before = shots == null ? null : AccessTools.Field(shots, "Before");
+                _tracers = shots == null ? null : AccessTools.Field(shots, "Tracers");
+                _eye = aim == null ? null : AccessTools.Property(aim, "Eye");
+                _terrainP = aim == null ? null : AccessTools.Property(aim, "Terrain");
+                _trailType = trail; _vecType = vec;
+                MethodInfo emit = shots == null ? null : AccessTools.Method(shots, "EmitTrails");
+                if (trail == null || vec == null || _all == null || _before == null || _tracers == null || _eye == null || emit == null)
+                    Log.Warn("lockstep: Worldfall tracers not found: your own gun shots won't show a ray in co-op");
+                else h.Patch(emit, prefix: new HarmonyMethod(typeof(WorldfallInTick), nameof(EmitTrailsPrefix)));
+                MethodInfo baseZ = shots == null ? null : AccessTools.Method(shots, "BaseZ");
+                if (baseZ != null) h.Patch(baseZ, postfix: new HarmonyMethod(typeof(WorldfallInTick), nameof(BaseZPostfix)));
+            }
+            catch (Exception e) { Log.Warn("lockstep: tracer hook: " + e.Message); }
+        }
+
+        private static MethodInfo _all;
+        private static readonly FieldInfo _mainUnit = AccessTools.Field(typeof(ControllableUnit), "_unit_main"),
+            _byWho = AccessTools.Field(typeof(Projectile), "by_who"), _target = AccessTools.Field(typeof(Projectile), "_vector_target");
+        private static FieldInfo _before, _tracers;
+        private static PropertyInfo _eye, _terrainP;
+        private static Type _trailType, _vecType;
+        private const float TracerSpeed = 58f;   // Worldfall's pellet speed
+
+        private sealed class OwnTracer { public object Trail; public float Head, Length; }
+        private static readonly List<OwnTracer> _ownTracers = new List<OwnTracer>();
+
+        /// <summary>Visual only: a tracer for each new pellet this PC's player fired in the tick.</summary>
+        private static void TraceOwnPellets(Actor owner)
+        {
+            if (_trailType == null || _all == null || owner == null || !ReferenceEquals(owner, _mainUnit?.GetValue(null))) return;
+            try
+            {
+                var before = _before.GetValue(null) as IEnumerable;
+                var seen = new HashSet<object>();
+                if (before != null) foreach (object o in before) seen.Add(o);
+                AccessTools.Method(_before.FieldType, "Clear")?.Invoke(_before.GetValue(null), null);
+                if (!(_all.Invoke(null, null) is IEnumerable all)) return;
+                var list = _tracers.GetValue(null) as IList;
+                if (list == null) return;
+                object eye = _eye.GetValue(null);
+                float ex = (float)AccessTools.Field(_vecType, "X").GetValue(eye), ey = (float)AccessTools.Field(_vecType, "Y").GetValue(eye), ez = (float)AccessTools.Field(_vecType, "Z").GetValue(eye);
+                object terrain = _terrainP?.GetValue(null);
+                MethodInfo height = terrain == null ? null : AccessTools.Method(terrain.GetType(), "SampleHeight");
+                foreach (object o in all)
+                {
+                    if (!(o is Projectile p) || seen.Contains(p) || !ReferenceEquals(_byWho?.GetValue(p), owner)) continue;
+                    if (!(_target?.GetValue(p) is Vector2 to)) continue;
+                    if (p.asset?.id != "shotgun_bullet")
+                    {
+                        // drawn by Worldfall as a sprite at the game's own (ground) height, under the
+                        // camera: draw it from the eye down to the target instead (drawing only)
+                        if (_lifted.Count > 64) _lifted.Clear();
+                        if (_start?.GetValue(p) is Vector2 st) _lifted[p] = new Lift { From = st, To = to, Z = ez - 0.15f, Born = Time.unscaledTime };
+                        continue;
+                    }
+                    float dx = to.x - ex, dy = to.y - ey, d = Mathf.Sqrt(dx * dx + dy * dy);
+                    if (d < 0.05f) continue;
+                    float fz = ez - 0.1f;
+                    float tz = (height == null ? fz : (float)height.Invoke(terrain, new object[] { to.x, to.y }) + 0.35f);
+                    object t = Activator.CreateInstance(_trailType);
+                    _trailType.GetField("From").SetValue(t, Activator.CreateInstance(_vecType, ex + dx / d * 0.3f, ey + dy / d * 0.3f, fz));
+                    _trailType.GetField("DirX").SetValue(t, dx / d);
+                    _trailType.GetField("DirY").SetValue(t, dy / d);
+                    _trailType.GetField("Rise").SetValue(t, (tz - fz) / d);
+                    _trailType.GetField("Flat").SetValue(t, TracerSpeed);
+                    list.Add(t);
+                    _ownTracers.Add(new OwnTracer { Trail = t, Length = d });
+                }
+            }
+            catch (Exception e) { Log.Warn("lockstep: own tracer: " + e.Message); }
+        }
+
+        private struct Lift { public Vector2 From, To; public float Z, Born; }
+        private static readonly Dictionary<Projectile, Lift> _lifted = new Dictionary<Projectile, Lift>();
+        private static readonly FieldInfo _start = AccessTools.Field(typeof(Projectile), "_vector_start"), _pos3 = AccessTools.Field(typeof(Projectile), "_current_position_3d");
+
+        private static void BaseZPostfix(Projectile p, float ground, ref float __result)
+        {
+            if (p == null || _lifted.Count == 0 || !_lifted.TryGetValue(p, out Lift l)) return;
+            if (Time.unscaledTime - l.Born > 6f || !(_pos3?.GetValue(p) is Vector3 at)) { _lifted.Remove(p); return; }
+            float total = Mathf.Max(0.01f, (l.To - l.From).magnitude);
+            float f = Mathf.Clamp01(((Vector2)at - l.From).magnitude / total);
+            __result = Mathf.Max(__result, Mathf.Lerp(l.Z, ground + 0.35f, f) - at.z);
+        }
+
+        private static void EmitTrailsPrefix(float dt)
+        {
+            for (int i = _ownTracers.Count - 1; i >= 0; i--)
+            {
+                OwnTracer o = _ownTracers[i];
+                o.Head = Math.Min(o.Length, o.Head + TracerSpeed * dt);
+                try
+                {
+                    if (o.Head >= o.Length) { _trailType.GetMethod("End").Invoke(o.Trail, new object[] { o.Length, false }); _ownTracers.RemoveAt(i); }
+                    else _trailType.GetMethod("Reach").Invoke(o.Trail, new object[] { o.Head });
+                }
+                catch { _ownTracers.RemoveAt(i); }
+            }
         }
 
         private static MethodInfo _releaseShot;
         private static bool NotInTicks() => !LockstepClock.InTick;
 
-        private static bool AfterAttackPrefix()
+        private static bool AfterAttackPrefix(Actor owner)
         {
             if (!LockstepClock.InTick) return true;
+            TraceOwnPellets(owner);
             try { _releaseShot?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: aim release: " + e.Message); }
             return false;
         }
