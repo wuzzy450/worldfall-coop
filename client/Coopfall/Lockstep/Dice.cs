@@ -26,17 +26,20 @@ namespace Coopfall.Lockstep
         private static readonly FieldInfo _seeds = AccessTools.Field(typeof(System.Random), "SeedArray") ?? AccessTools.Field(typeof(System.Random), "_seedArray");
         /// <summary>Visual code draws from this instead of the shared System.Random.</summary>
         private static readonly System.Random _scratch = new System.Random(1);
+        private static Unity.Mathematics.Random _randScratch = new Unity.Mathematics.Random(1);
 
-        /// <summary>Save all three and point `rnd` at a scratch generator (put back by Restore).</summary>
+        /// <summary>Save all three and point `rand` and `rnd` at scratch generators (put back by Restore).</summary>
         public static Snapshot Isolate()
         {
             var s = new Snapshot { rand = _rand(), rnd = _rnd(), unity = UnityEngine.Random.state };
+            _rand() = _randScratch;
             _rnd() = _scratch;
             return s;
         }
 
         public static void Restore(Snapshot s)
         {
+            _randScratch = _rand();
             _rand() = s.rand;
             _rnd() = s.rnd;
             UnityEngine.Random.state = s.unity;

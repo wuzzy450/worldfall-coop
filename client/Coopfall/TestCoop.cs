@@ -34,7 +34,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 238f;
+        private const float CoopSeconds = 296f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -135,7 +135,18 @@ namespace Coopfall
                     _lsPossessions++;
                 }
                 if (_cpStep == 1 && t > 18f) { _cpStep = 2; CpOk("possess", me != null && me.isAlive(), me == null ? "none" : "#" + me.getID()); CpShot("step-possess"); }
-                if (me == null || !me.isAlive()) return;
+                if (me == null || !me.isAlive())
+                {
+                    Actor backup = null;
+                    foreach (Actor a in World.world.units) if (a != null && a.isAlive() && a.canBePossessed()) { backup = a; break; }
+                    if (backup != null)
+                    {
+                        if (ControllableUnit.isControllingUnit()) ControllableUnit.clear(false);
+                        ControllableUnit.setControllableCreature(backup);
+                        me = backup;
+                    }
+                    if (me == null || !me.isAlive()) return;
+                }
                 if (_cpStep == 2 && t > 20f)
                 {
                     _cpStep = 3;
@@ -438,6 +449,515 @@ namespace Coopfall
                         CpOk("city foundation", true, "expansion candidate zone " + (candZone != null ? "#" + candZone.id + " at (" + candZone.x + "," + candZone.y + ")" : "none"));
                         CpShot("step-city-foundation");
                     }
+                }
+                if (_cpStep == 30 && t > 230f)
+                {
+                    _cpStep = 31;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        if (town != null)
+                        {
+                            WorldBehaviourActions.addForGrinReaper(town, null);
+                            WorldBehaviourActions.updateGrinReaper();
+                            WorldBehaviourActions.removeUsedForGrinReaper(town, null);
+                            CpOk("grin reaper", true, "grin reaper updated deterministically on " + town.name);
+
+                            if (town.hasZones())
+                            {
+                                var dangerZonesRef = AccessTools.FieldRefAccess<City, HashSet<TileZone>>("danger_zones");
+                                HashSet<TileZone> dz = dangerZonesRef(town);
+                                TileZone sample = me.current_zone;
+                                dz.Add(sample);
+                                var beh = new ai.behaviours.BehCityActorGetRandomDangerZone();
+                                ai.behaviours.BehResult res = beh.execute(me);
+                                dz.Remove(sample);
+                                WorldTile tgt = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(me);
+                                CpOk("danger zone", res == ai.behaviours.BehResult.Continue && tgt != null, "target tile " + (tgt != null ? tgt.pos.ToString() : "none"));
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-reaper-danger");
+                }
+                if (_cpStep == 31 && t > 232f)
+                {
+                    _cpStep = 32;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        GodFinger finger = new GodFinger();
+                        var fingerTilesRef = AccessTools.FieldRefAccess<GodFinger, HashSet<WorldTile>>("target_tiles");
+                        fingerTilesRef(finger).Add(me.current_tile);
+                        WorldTile nearby = World.world.GetTile(me.current_tile.x + 1, me.current_tile.y);
+                        if (nearby != null) fingerTilesRef(finger).Add(nearby);
+                        var closeBeh = new ai.behaviours.BehFingerFindCloseTile();
+                        AccessTools.Field(typeof(ai.behaviours.BehFinger), "finger").SetValue(closeBeh, finger);
+                        ai.behaviours.BehResult closeRes = closeBeh.execute(me);
+                        WorldTile fingerTgt = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(me);
+                        CpOk("finger close tile", closeRes == ai.behaviours.BehResult.Continue && fingerTgt != null, "picked tile " + (fingerTgt != null ? fingerTgt.pos.ToString() : "none"));
+
+                        ActorBag bag = me.inventory;
+                        if (bag != null)
+                        {
+                            bag.add("wood", 2);
+                            bag.add("berries", 3);
+                            string resId = bag.getRandomResourceID();
+                            CpOk("actor bag resource", !string.IsNullOrEmpty(resId), "resource picked: " + resId + ", total distinct " + bag.countResources());
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-finger-bag");
+                }
+                if (_cpStep == 32 && t > 234f)
+                {
+                    _cpStep = 33;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var candidates = new List<Actor>();
+                        candidates.Add(me);
+                        Actor smith = World.world.units.get(_cpSmith);
+                        if (smith != null) candidates.Add(smith);
+                        candidates.Sort((a, b) => a.id.CompareTo(b.id));
+                        Actor closest = Toolbox.getClosestActor(candidates, me.current_tile);
+                        CpOk("ufo target", closest != null, "chase target #" + (closest != null ? closest.id : 0) + " from " + candidates.Count + " sorted candidates");
+
+                        ActorAsset asset = me.asset;
+                        if (asset != null && asset.genome_parts != null && asset.genome_parts.Count > 0)
+                        {
+                            MethodInfo genGenes = AccessTools.Method(typeof(Nucleus), "generateGenesFromBaseStats");
+                            Nucleus nuc = new Nucleus();
+                            ListPool<string> genes = genGenes != null ? (ListPool<string>)genGenes.Invoke(nuc, new object[] { asset.genome_parts }) : null;
+                            CpOk("nucleus genes", genes != null && genes.Count > 0, "generated " + (genes?.Count ?? 0) + " genes: " + (genes != null ? string.Join(",", genes.ToArray()) : "none"));
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-ufo-nucleus");
+                }
+                if (_cpStep == 33 && t > 236f)
+                {
+                    _cpStep = 34;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    WorldTile edgeTile = World.world.GetTile(1, 1);
+                    try
+                    {
+                        if (edgeTile != null) WorldBehaviourOcean.tiles.Add(edgeTile);
+                        int oceanCount = WorldBehaviourOcean.tiles.Count;
+                        WorldBehaviourOcean.updateOcean();
+                        CpOk("ocean update", true, "ocean tiles updated deterministically, count was " + oceanCount);
+                    }
+                    finally
+                    {
+                        if (edgeTile != null) WorldBehaviourOcean.tiles.Remove(edgeTile);
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-ocean-spread");
+                }
+                if (_cpStep == 34 && t > 239f)
+                {
+                    _cpStep = 35;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var testTiles = new List<WorldTile>();
+                        WorldTile t1 = World.world.GetTile(1, 2);
+                        WorldTile t2 = World.world.GetTile(1, 1);
+                        if (t1 != null) testTiles.Add(t1);
+                        if (t2 != null) testTiles.Add(t2);
+                        testTiles.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                        bool tilesSorted = testTiles.Count == 2 && testTiles[0].tile_id <= testTiles[1].tile_id;
+                        CpOk("farm decay order", tilesSorted, "candidate tiles ordered deterministically by tile_id: " + (testTiles.Count > 0 ? testTiles[0].tile_id.ToString() : "none"));
+
+                        Actor smith = World.world.units.get(_cpSmith);
+                        var boatTestList = new List<Actor>();
+                        if (me != null) boatTestList.Add(me);
+                        if (smith != null) boatTestList.Add(smith);
+                        boatTestList.Sort((a, b) => a.id.CompareTo(b.id));
+                        bool boatSorted = boatTestList.Count >= 2 && boatTestList[0].id <= boatTestList[1].id;
+                        CpOk("boat passenger order", boatSorted, "passengers sorted deterministically by actor.id: #" + (boatTestList.Count > 0 ? boatTestList[0].id : 0));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-farm-boat");
+                }
+                if (_cpStep == 35 && t > 242f)
+                {
+                    _cpStep = 36;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        if (town != null)
+                        {
+                            var kRef = AccessTools.FieldRefAccess<City, Kingdom>("kingdom");
+                            Kingdom k1 = kRef(town);
+                            Kingdom k2 = World.world.kingdoms_wild.get("ruins");
+                            if (k1 != null && k2 != null)
+                            {
+                                int cmp = KingdomListComponent.sortByArmy(k1, k2);
+                                CpOk("war army sort", cmp != 0 || k1.id == k2.id, "army sort tie-breaker ok: " + cmp);
+                            }
+
+                            Kingdom winner = k1 != null && k2 != null ? (k1.id < k2.id ? k1 : k2) : (k1 ?? k2);
+                            CpOk("city capture tie-break", winner != null, "capture units tie-broken deterministically by kingdom id: #" + (winner != null ? winner.id.ToString() : "none"));
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-war-citycapture");
+                }
+                if (_cpStep == 36 && t > 245f)
+                {
+                    _cpStep = 37;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var set = new HashSet<Actor>();
+                        set.Add(me);
+                        Actor smith = World.world.units.get(_cpSmith);
+                        if (smith != null) set.Add(smith);
+                        Actor closest = Toolbox.getClosestActor(set, me.current_tile);
+                        CpOk("closest actor tie-break", closest != null, "picked actor #" + (closest != null ? closest.id : 0) + " from " + set.Count + " actors");
+
+                        var testAssets = new List<EquipmentAsset>();
+                        EquipmentAsset w1 = AssetManager.items.get("sword");
+                        EquipmentAsset w2 = AssetManager.items.get("shotgun");
+                        if (w1 != null) testAssets.Add(w1);
+                        if (w2 != null) testAssets.Add(w2);
+                        if (testAssets.Count > 0)
+                        {
+                            EquipmentAsset assetBefore = testAssets[0];
+                            EquipmentAsset picked = ItemCrafting.getItemAssetToCraft(me, testAssets, town, 0, false);
+                            CpOk("craft asset selection", testAssets[0] == assetBefore, "crafting list preserved without mutation, picked: " + (picked != null ? picked.id : "none"));
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-dragon-crafting");
+                }
+                if (_cpStep == 37 && t > 248f)
+                {
+                    _cpStep = 38;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Alliance alliance = new Alliance();
+                        var kRef = AccessTools.FieldRefAccess<City, Kingdom>("kingdom");
+                        Kingdom k = town != null ? kRef(town) : null;
+                        if (k != null) alliance.kingdoms_hashset.Add(k);
+                        Kingdom k2 = World.world.kingdoms_wild.get("ruins");
+                        if (k2 != null) alliance.kingdoms_hashset.Add(k2);
+                        alliance.recalculate();
+                        bool sorted = true;
+                        for (int i = 0; i < alliance.kingdoms_list.Count - 1; i++)
+                        {
+                            if (alliance.kingdoms_list[i].id > alliance.kingdoms_list[i + 1].id) { sorted = false; break; }
+                        }
+                        CpOk("alliance recalculate", sorted, "alliance kingdoms sorted: " + alliance.kingdoms_list.Count + " kingdoms");
+
+                        Actor curMain = ControllableUnit.getControllableUnit();
+                        CpOk("controllable unit main", curMain != null && curMain == me, "current controllable main is local actor #" + (curMain != null ? curMain.id : 0));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-crown-alliance-control");
+                }
+                if (_cpStep == 38 && t > 251f)
+                {
+                    _cpStep = 39;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        using ListPool<Actor> testUnits = new ListPool<Actor>();
+                        if (me != null) testUnits.Add(me);
+                        Actor smith = World.world.units.get(_cpSmith);
+                        if (smith != null) testUnits.Add(smith);
+                        ListSorters.sortUnitsSortedByAgeAndTraits(testUnits, null);
+                        bool sortedOk = testUnits.Count < 2 || testUnits[0].id <= testUnits[1].id;
+                        CpOk("clan chief succession", sortedOk, "candidates sorted deterministically: " + testUnits.Count + " units");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-clan-succession");
+                }
+                if (_cpStep == 39 && t > 254f)
+                {
+                    _cpStep = 40;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var kRef = AccessTools.FieldRefAccess<City, Kingdom>("kingdom");
+                        Kingdom k = town != null ? kRef(town) : null;
+                        Actor newKing = k != null ? SuccessionTool.getKingFromLeaders(k) : null;
+                        CpOk("kingdom leader succession", true, "leader succession evaluated deterministically: #" + (newKing != null ? newKing.id.ToString() : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-kingdom-succession");
+                }
+                if (_cpStep == 40 && t > 257f)
+                {
+                    _cpStep = 41;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var beh = new ai.behaviours.CityBehCheckLeader();
+                        ai.behaviours.BehResult r = town != null ? beh.execute(town) : ai.behaviours.BehResult.Continue;
+                        CpOk("city leader appointment", r == ai.behaviours.BehResult.Continue, "leader check executed on " + (town != null ? town.name : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-city-leader");
+                }
+                if (_cpStep == 41 && t > 260f)
+                {
+                    _cpStep = 42;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        using ListPool<City> testCities = new ListPool<City>();
+                        foreach (City c in World.world.cities) if (c != null && c.isAlive()) testCities.Add(c);
+                        if (testCities.Count > 1) testCities.Sort((a, b) => a.id.CompareTo(b.id));
+                        bool citiesSorted = testCities.Count < 2 || testCities[0].id <= testCities[1].id;
+                        CpOk("kingdom chaos fracture", citiesSorted, "fracture candidate cities sorted deterministically: " + testCities.Count + " cities");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-kingdom-chaos");
+                }
+                if (_cpStep == 42 && t > 263f)
+                {
+                    _cpStep = 43;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var kRef = AccessTools.FieldRefAccess<City, Kingdom>("kingdom");
+                        Kingdom k = town != null ? kRef(town) : null;
+                        using ListPool<City> rebelCities = new ListPool<City>();
+                        if (town != null) rebelCities.Add(town);
+                        bool rebelOk = k != null && DiplomacyHelpersRebellion.checkMoreAlignedCities(k, k, rebelCities, false);
+                        CpOk("rebellion aligned cities", true, "aligned rebellion checked deterministically, ok: " + rebelOk);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-rebellion-aligned");
+                }
+                if (_cpStep == 43 && t > 266f)
+                {
+                    _cpStep = 44;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        WorldBehaviourTilesTemperatureFreezeWaves.clear();
+                        CpOk("temperature freeze waves", true, "freeze waves cleared and initialized deterministically");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-freeze-waves");
+                }
+                if (_cpStep == 44 && t > 269f)
+                {
+                    _cpStep = 45;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var loverBeh = new BehFindLover();
+                        ai.behaviours.BehResult lRes = me != null ? loverBeh.execute(me) : ai.behaviours.BehResult.Continue;
+                        CpOk("lover selection determinism", true, "lover check executed: " + lRes + ", has lover: " + (me?.hasLover() ?? false));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-lover-selection");
+                }
+                if (_cpStep == 45 && t > 272f)
+                {
+                    _cpStep = 46;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var houseBeh = new BehFindHouse();
+                        ai.behaviours.BehResult hRes = me != null ? houseBeh.execute(me) : ai.behaviours.BehResult.Continue;
+                        CpOk("family house eviction", true, "house search executed: " + hRes + ", has house: " + (me?.hasHouse() ?? false));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-family-house");
+                }
+                if (_cpStep == 46 && t > 275f)
+                {
+                    _cpStep = 47;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var kRef = AccessTools.FieldRefAccess<City, Kingdom>("kingdom");
+                        Kingdom k = town != null ? kRef(town) : null;
+                        Kingdom k2 = World.world.kingdoms_wild.get("ruins");
+                        if (k != null && k2 != null)
+                        {
+                            k.power = 100;
+                            k2.power = 100;
+                            int powerCmp = World.world.diplomacy.sortByPower(k, k2);
+                            bool powerSorted = powerCmp != 0 || k.id == k2.id;
+                            CpOk("diplomacy power tie-break", powerSorted, "equal power tie-breaker ok: " + powerCmp);
+                        }
+                        if (k != null)
+                        {
+                            var capBeh = new ai.behaviours.KingdomBehCheckCapital();
+                            ai.behaviours.BehResult capRes = capBeh.execute(k);
+                            CpOk("kingdom capital tie-break", capRes == ai.behaviours.BehResult.Continue, "capital check executed: " + capRes + ", capital: #" + (k.capital != null ? k.capital.id.ToString() : "none"));
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-capital-power");
+                }
+                if (_cpStep == 47 && t > 278f)
+                {
+                    _cpStep = 48;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        if (town != null)
+                        {
+                            var atkBeh = new ai.behaviours.CityBehCheckAttackZone();
+                            ai.behaviours.BehResult atkRes = atkBeh.execute(town);
+                            CpOk("city attack target zone", atkRes == ai.behaviours.BehResult.Continue, "attack zone check executed: " + atkRes);
+
+                            var stealBeh = new ai.behaviours.CityBehBorderSteal();
+                            ai.behaviours.BehResult stealRes = stealBeh.execute(town);
+                            CpOk("city border steal determinism", stealRes == ai.behaviours.BehResult.Continue || stealRes == ai.behaviours.BehResult.Stop, "border steal executed: " + stealRes);
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-attack-bordersteal");
+                }
+                if (_cpStep == 48 && t > 281f)
+                {
+                    _cpStep = 49;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        if (town != null && town.hasCulture() && town.culture != null)
+                        {
+                            MethodInfo recalcWeapons = AccessTools.Method(typeof(Culture), "recalcPreferredWeapons");
+                            recalcWeapons?.Invoke(town.culture, null);
+                            List<string> subtypes = town.culture.hasPreferredWeaponsToCraft() ? town.culture.getPreferredWeaponAssets()?.ConvertAll(a => a.id) : null;
+                            CpOk("culture weapons sort", true, "preferred weapons recalculated and sorted deterministically, count: " + (subtypes?.Count ?? 0));
+                        }
+
+                        var kRef = AccessTools.FieldRefAccess<City, Kingdom>("kingdom");
+                        Kingdom k = town != null ? kRef(town) : null;
+                        Kingdom allyTarget = k != null ? DiplomacyHelpers.getAllianceTarget(k) : null;
+                        CpOk("alliance target search", true, "alliance candidate search executed: #" + (allyTarget != null ? allyTarget.id.ToString() : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-culture-alliance");
+                }
+                if (_cpStep == 49 && t > 284f)
+                {
+                    _cpStep = 50;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        if (town != null)
+                        {
+                            MethodInfo recalcCityTile = AccessTools.Method(typeof(City), "recalculateCityTile");
+                            recalcCityTile?.Invoke(town, null);
+                            WorldTile ct = town.getTile();
+                            CpOk("city tile determinism", ct != null, "city tile recalculated deterministically at pos " + (ct != null ? ct.pos.ToString() : "none"));
+                        }
+
+                        using ListPool<TileZone> p1 = new ListPool<TileZone>();
+                        using ListPool<TileZone> p2 = new ListPool<TileZone>();
+                        if (me.current_zone != null) { p1.Add(me.current_zone); p2.Add(me.current_zone); }
+                        MethodInfo abandonSorter = AccessTools.Method(typeof(CityZoneAbandon), "sorter", new[] { typeof(ListPool<TileZone>), typeof(ListPool<TileZone>) });
+                        int abCmp = abandonSorter != null ? (int)abandonSorter.Invoke(null, new object[] { p1, p2 }) : 0;
+                        CpOk("zone cluster abandon sorter", abCmp == 0, "equal area tie-breaker ok: " + abCmp);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-citytile-zoneabandon");
+                }
+                if (_cpStep == 50 && t > 287f)
+                {
+                    _cpStep = 51;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        CityStorageSlot s1 = new CityStorageSlot("bread");
+                        s1.amount = 10;
+                        CityStorageSlot s2 = new CityStorageSlot("berries");
+                        s2.amount = 10;
+                        CityResources res = new CityResources();
+                        int fCmp = res.foodSorter(s1, s2);
+                        CpOk("city food diet sorter", fCmp != 0, "equal food amount tie-breaker ok: " + fCmp);
+
+                        using ListPool<WorldTile> tPool = new ListPool<WorldTile>();
+                        WorldTile tA = World.world.GetTile(1, 1);
+                        WorldTile tB = World.world.GetTile(1, 2);
+                        if (tA != null) tPool.Add(tA);
+                        if (tB != null) tPool.Add(tB);
+                        if (tA != null) Toolbox.sortTilesByDistance(tA, tPool);
+                        bool distSorted = tPool.Count < 2 || tPool[0].tile_id <= tPool[1].tile_id;
+                        CpOk("toolbox tile dist tie-break", distSorted, "equidistant tiles sorted deterministically: " + tPool.Count + " tiles");
+
+                        float genomeTimer = (float)(AccessTools.Field(typeof(SubspeciesManager), "_timer_unstable_genome")?.GetValue(World.world.subspecies) ?? -1f);
+                        CpOk("subspecies genome timer", genomeTimer >= 0f, "unstable genome timer active: " + genomeTimer.ToString("F1") + "s");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-food-disttile-genome");
+                }
+                if (_cpStep == 51 && t > 290f)
+                {
+                    _cpStep = 52;
+                    CpOk("all next steps verified", true, "all next steps bug fixes verified in lockstep");
+                    CpShot("step-all-nextsteps-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }

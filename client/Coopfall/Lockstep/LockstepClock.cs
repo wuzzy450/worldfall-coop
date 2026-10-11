@@ -114,6 +114,8 @@ namespace Coopfall.Lockstep
                 else Log.Error("lockstep: Actor.registerDecisions not found: decision order may differ between PCs");
                 FarmsInTick.Install(h);
                 ZonesInTick.Install(h);
+                BehavioursInTick.Install(h);
+                SimulationInTick.Install(h);
                 MethodInfo loadFire = AccessTools.Method(typeof(SaveManager), "loadFire");
                 if (loadFire != null) h.Patch(loadFire, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(LoadFirePrefix)));
                 else Log.Error("lockstep: SaveManager.loadFire not found: fires of the previous world may block plants on one PC");
@@ -272,6 +274,7 @@ namespace Coopfall.Lockstep
             MapChunkManager mcm = (MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world);
             if (mcm != null) SortRegionNeighbours(mcm);
             ZonesInTick.Normalize(World.world);
+            WorldBehaviourTilesTemperatureFreezeWaves.clear();
             // world behaviour timers aren't in the save and carry over from the previous world
             if (_behTimer != null)
                 foreach (WorldBehaviourAsset b in AssetManager.world_behaviours.list)
@@ -378,6 +381,11 @@ namespace Coopfall.Lockstep
             else Log.Error("lockstep: GeneLibrary._cached_stat_genes_dictionary not found: new subspecies may differ between PCs");
             // freeze waves (cold eras) keep their tiles in static lists
             AccessTools.Method(AccessTools.TypeByName("WorldBehaviourTilesTemperatureFreezeWaves"), "clear")?.Invoke(null, null);
+            // unstable genome timer reset to fixed interval across epochs
+            if (w.subspecies != null)
+            {
+                SetField(w.subspecies, "_timer_unstable_genome", 300f);
+            }
         }
 
         /// <summary>
