@@ -274,6 +274,7 @@ namespace Coopfall.Lockstep
             MapChunkManager mcm = (MapChunkManager)AccessTools.Field(typeof(MapBox), "map_chunk_manager").GetValue(World.world);
             if (mcm != null) SortRegionNeighbours(mcm);
             ZonesInTick.Normalize(World.world);
+            SimulationInTick.Normalize(World.world);
             WorldBehaviourTilesTemperatureFreezeWaves.clear();
             // world behaviour timers aren't in the save and carry over from the previous world
             if (_behTimer != null)

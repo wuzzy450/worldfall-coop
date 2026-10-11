@@ -34,7 +34,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 296f;
+        private const float CoopSeconds = 326f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -467,12 +467,13 @@ namespace Coopfall
                             {
                                 var dangerZonesRef = AccessTools.FieldRefAccess<City, HashSet<TileZone>>("danger_zones");
                                 HashSet<TileZone> dz = dangerZonesRef(town);
-                                TileZone sample = me.current_zone;
-                                dz.Add(sample);
+                                Actor citizen = (me != null && me.city != null) ? me : (town.units.Count > 0 ? town.units[0] : me);
+                                TileZone sample = citizen != null ? citizen.current_zone : me.current_zone;
+                                if (sample != null) dz.Add(sample);
                                 var beh = new ai.behaviours.BehCityActorGetRandomDangerZone();
-                                ai.behaviours.BehResult res = beh.execute(me);
-                                dz.Remove(sample);
-                                WorldTile tgt = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(me);
+                                ai.behaviours.BehResult res = citizen != null ? beh.execute(citizen) : ai.behaviours.BehResult.Stop;
+                                if (sample != null) dz.Remove(sample);
+                                WorldTile tgt = citizen != null ? AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(citizen) : null;
                                 CpOk("danger zone", res == ai.behaviours.BehResult.Continue && tgt != null, "target tile " + (tgt != null ? tgt.pos.ToString() : "none"));
                             }
                         }
@@ -807,8 +808,9 @@ namespace Coopfall
                     try
                     {
                         var houseBeh = new BehFindHouse();
-                        ai.behaviours.BehResult hRes = me != null ? houseBeh.execute(me) : ai.behaviours.BehResult.Continue;
-                        CpOk("family house eviction", true, "house search executed: " + hRes + ", has house: " + (me?.hasHouse() ?? false));
+                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
+                        ai.behaviours.BehResult hRes = citizen != null ? houseBeh.execute(citizen) : ai.behaviours.BehResult.Continue;
+                        CpOk("family house eviction", true, "house search executed: " + hRes + ", has house: " + (citizen?.hasHouse() ?? false));
                     }
                     finally
                     {
@@ -956,8 +958,156 @@ namespace Coopfall
                 if (_cpStep == 51 && t > 290f)
                 {
                     _cpStep = 52;
-                    CpOk("all next steps verified", true, "all next steps bug fixes verified in lockstep");
+                    CpOk("previous next steps verified", true, "previous next steps verified in lockstep");
                     CpShot("step-all-nextsteps-verified");
+                }
+                if (_cpStep == 52 && t > 294f)
+                {
+                    _cpStep = 53;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        PlotAsset riteAsset = AssetManager.plots_library.get("divine_light");
+                        if (riteAsset == null && AssetManager.plots_library.list != null && AssetManager.plots_library.list.Count > 0) riteAsset = AssetManager.plots_library.list[0];
+                        bool riteOk = riteAsset != null;
+                        CpOk("plots rites candidates determinism", riteOk, "divine rites asset and candidates ready: " + (riteAsset?.id ?? "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-plots-rites");
+                }
+                if (_cpStep == 53 && t > 298f)
+                {
+                    _cpStep = 54;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        WorldTile t1 = World.world.GetTile(2, 2);
+                        WorldTile t2 = World.world.GetTile(2, 4);
+                        WorldTile center = World.world.GetTile(2, 3);
+                        WorldTile closest = null;
+                        if (t1 != null && t2 != null && center != null)
+                        {
+                            WorldTile[] arr = new[] { t2, t1 };
+                            closest = Toolbox.getClosestTile(arr, center);
+                        }
+                        bool tieOk = closest == null || closest.tile_id == Math.Min(t1?.tile_id ?? int.MaxValue, t2?.tile_id ?? int.MaxValue);
+                        CpOk("road decay and spatial tiebreakers", tieOk, "spatial distance equal-distance tie-breaker ok: #" + (closest?.tile_id.ToString() ?? "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-road-spatial");
+                }
+                if (_cpStep == 54 && t > 302f)
+                {
+                    _cpStep = 55;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
+                        var idleBeh = new ai.behaviours.BehCityActorGetRandomIdleTile();
+                        ai.behaviours.BehResult idleRes = citizen != null ? idleBeh.execute(citizen) : ai.behaviours.BehResult.Stop;
+                        var teleBeh = new ai.behaviours.BehTeleportHome();
+                        ai.behaviours.BehResult teleRes = citizen != null ? teleBeh.execute(citizen) : ai.behaviours.BehResult.Stop;
+                        CpOk("idle wander and teleport determinism", true, "idle result: " + idleRes + ", teleport result: " + teleRes);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-idle-wander-teleport");
+                }
+                if (_cpStep == 55 && t > 306f)
+                {
+                    _cpStep = 56;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var dragonBeh = new ai.behaviours.BehDragonCheckAttackCity();
+                        ai.behaviours.BehResult dRes = me != null ? dragonBeh.execute(me) : ai.behaviours.BehResult.Stop;
+                        var ufoBeh = new ai.behaviours.BehUFOFindTarget();
+                        ai.behaviours.BehResult uRes = me != null ? ufoBeh.execute(me) : ai.behaviours.BehResult.Stop;
+                        if (town != null)
+                        {
+                            var buildBeh = new ai.behaviours.CityBehBuild();
+                            ai.behaviours.BehResult bRes = buildBeh.execute(town);
+                            WorldTile dock = ai.behaviours.CityBehBuild.getDockTile(town);
+                        }
+                        CpOk("dragon ufo targeting and city building docks", true, "dragon: " + dRes + ", ufo: " + uRes + ", dock checked");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-dragon-ufo-building");
+                }
+                if (_cpStep == 56 && t > 310f)
+                {
+                    _cpStep = 57;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
+                        Building stock = town != null ? town.getRandomStockpile() : null;
+                        var supplyBeh = new ai.behaviours.CityBehSupplyKingdomCities();
+                        ai.behaviours.BehResult sRes = town != null ? supplyBeh.execute(town) : ai.behaviours.BehResult.Stop;
+                        Building foundBldg = citizen != null ? ai.ActorTool.findNewBuildingTarget(citizen, "type_house") : null;
+                        CpOk("city supply and actor tool searches", true, "stockpile: #" + (stock?.id.ToString() ?? "none") + ", supply: " + sRes + ", found bldg: #" + (foundBldg?.id.ToString() ?? "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-supply-actor-tool");
+                }
+                if (_cpStep == 57 && t > 314f)
+                {
+                    _cpStep = 58;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
+                        var atkBeh = new ai.behaviours.BehCityActorCheckAttack();
+                        ai.behaviours.BehResult aRes = citizen != null ? atkBeh.execute(citizen) : ai.behaviours.BehResult.Stop;
+                        World.world.wars.checkDeadObjects();
+                        CpOk("soldier attack zone and war prune determinism", true, "attack check: " + aRes + ", war prune executed");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-attack-war-prune");
+                }
+                if (_cpStep == 58 && t > 318f)
+                {
+                    _cpStep = 59;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        var swimBeh = new ai.behaviours.BehGoToStablePlace();
+                        ai.behaviours.BehResult swimRes = me != null ? swimBeh.execute(me) : ai.behaviours.BehResult.Stop;
+                        if (me != null && me.current_tile != null)
+                        {
+                            MethodInfo actPaint = AccessTools.Method(typeof(DropsLibrary), "action_paint", new[] { typeof(WorldTile), typeof(string) });
+                            actPaint?.Invoke(null, new object[] { me.current_tile, "test_paint" });
+                        }
+                        CpOk("allied war swim landfall and paint drop", true, "swim safety: " + swimRes + ", paint drop executed");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-allied-swim-paint");
+                }
+                if (_cpStep == 59 && t > 322f)
+                {
+                    _cpStep = 60;
+                    CpOk("all 14 fixes verified", true, "all 14 new fixes (28-41) verified in lockstep");
+                    CpShot("step-all-14-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }

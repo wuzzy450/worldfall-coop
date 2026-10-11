@@ -4,6 +4,8 @@ using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 using ai.behaviours;
+using ai;
+using tools;
 
 namespace Coopfall.Lockstep
 {
@@ -36,6 +38,20 @@ namespace Coopfall.Lockstep
     /// 25. CityZoneAbandon.sorter: stable minimum zone.id tie-breaking on equal disconnected cluster zone counts.
     /// 26. CityResources.foodSorter: stable string ID tie-breaking on equal food storage quantities.
     /// 27. Toolbox.sortTilesByDistance: stable tile_id tie-breaking on equal squared tile distance.
+    /// 28. PlotsLibrary: deterministic candidate sorting for rites and rebellion.
+    /// 29. WorldBehaviourActions.updateRoadDecay: deterministic zone grid pick and tile iteration.
+    /// 30. Toolbox spatial distance tie-breakers: stable ID tie-breakers on getClosestTile, getClosestBuilding, getClosestRegion, sortRegionsByDistance, getClosestActor.
+    /// 31. BehCityActorGetRandomIdleTile & BehCityActorGetRandomZoneTile: deterministic candidate zone and tile selection.
+    /// 32. BehTeleportHome.execute: deterministic candidate zone and tile selection.
+    /// 33. BehDragonCheckAttackCity & BehUFOFindTarget: candidate buildings sorted by id before targeting.
+    /// 34. CityBehBuild: deterministic building upgrades, roads, docks, and building list tie-breaking.
+    /// 35. CityBehSupplyKingdomCities & City.getRandomStockpile: deterministic stockpile and sister city selection.
+    /// 36. ActorTool: deterministic candidate building and zone searches.
+    /// 37. BehCityActorCheckAttack.execute: deterministic soldier attack zone and neighbour selection.
+    /// 38. WarManager.checkDeadObjects: stable war.id tie-breaking on equal died_time.
+    /// 39. DiplomacyManager.startWar & DiplomacyHelpersRebellion.startRebellion: deterministic allied war joining in kingdom.id order.
+    /// 40. BehGoToStablePlace.execute: deterministic island landfall and region tie-breaking.
+    /// 41. DropsLibrary.action_paint: deterministic candidate zone selection.
     /// </summary>
     public static class SimulationInTick
     {
@@ -54,6 +70,30 @@ namespace Coopfall.Lockstep
         private static readonly List<TileZone> _attackZonesPool = new List<TileZone>();
         private static readonly List<Building> _stealBuildingsPool = new List<Building>();
         private static readonly List<TileZone> _stealZonesPool = new List<TileZone>();
+
+        // 28-41 Internal field refs & methods
+        private static AccessTools.FieldRef<WarManager, List<War>> _warManagerEndWarsRef;
+        private static AccessTools.FieldRef<City, List<Building>> _cityStockpilesRef;
+        private static AccessTools.FieldRef<City, List<WorldTile>> _cityRoadTilesRef;
+        private static AccessTools.FieldRef<MapBox, ZoneCalculator> _zoneCalculatorRef;
+        private static AccessTools.FieldRef<MapBox, IslandsCalculator> _islandsCalculatorRef;
+        private static MethodInfo _hasGroundMethod;
+        private static Func<IslandsCalculator, bool> _hasGroundFunc;
+        private static MethodInfo _getRandomIslandGroundMethod;
+        private static Func<IslandsCalculator, bool, TileIsland> _getRandomIslandGroundFunc;
+        private static MethodInfo _canBuildFromMethod;
+        private static Func<BuildingManager, WorldTile, BuildingAsset, City, BuildPlacingType, bool, bool> _canBuildFromFunc;
+        private static MethodInfo _canBeUpgradedMethod;
+        private static Func<Building, bool> _canBeUpgradedFunc;
+        private static MethodInfo _isGoodIslandMethod;
+        private static Func<TileIsland, Actor, bool> _isGoodIslandFunc;
+        private static MethodInfo _removeWarObjectMethod;
+        private static AccessTools.FieldRef<Building, List<WorldTile>> _buildingTilesRef;
+        private static MethodInfo _spawnOnMethod;
+        private static MethodInfo _getBuildingToBuildMethod;
+        private static MethodInfo _getBuildingOfTypeMethod;
+        private static MethodInfo _startWarMethod;
+        private static AccessTools.FieldRef<BaseSimObject, BaseStats> _baseStatsRef;
 
         // 18-27 Internal field refs
         private static AccessTools.FieldRef<City, WorldTile> _cityTileRef;
@@ -372,6 +412,121 @@ namespace Coopfall.Lockstep
                 if (sortTiles != null) h.Patch(sortTiles, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SortTilesByDistancePrefix)));
                 else Log.Warn("lockstep: Toolbox.sortTilesByDistance not found");
 
+                // 28. PlotsLibrary divine rites & rebellion determinism
+                MethodInfo plotsInit = AccessTools.Method(typeof(PlotsLibrary), "init");
+                if (plotsInit != null) h.Patch(plotsInit, postfix: new HarmonyMethod(typeof(SimulationInTick), nameof(PlotsLibraryInitPostfix)));
+                MethodInfo summonUnitsAction = AccessTools.Method(typeof(PlotsLibrary), "summonUnitsAction", new[] { typeof(Actor), typeof(string), typeof(int), typeof(int), typeof(bool) });
+                if (summonUnitsAction != null) h.Patch(summonUnitsAction, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SummonUnitsActionPrefix)));
+                MethodInfo tryStartReligionRite = AccessTools.Method(typeof(PlotsLibrary), "tryStartReligionRiteOnEnemyCity", new[] { typeof(Actor), typeof(PlotAsset), typeof(bool) });
+                if (tryStartReligionRite != null) h.Patch(tryStartReligionRite, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TryStartReligionRiteOnEnemyCityPrefix)));
+                MethodInfo tryStartCauseReb = AccessTools.Method(typeof(PlotsLibrary), "tryStartCauseRebellion", new[] { typeof(Actor), typeof(PlotAsset), typeof(bool) });
+                if (tryStartCauseReb != null) h.Patch(tryStartCauseReb, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TryStartCauseRebellionPrefix)));
+                HookPlotAssets();
+
+                // 29. World road decay determinism
+                MethodInfo updateRoadDecay = AccessTools.Method(typeof(WorldBehaviourActions), "updateRoadDecay");
+                if (updateRoadDecay != null) h.Patch(updateRoadDecay, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(UpdateRoadDecayPrefix)));
+
+                // 30. Spatial distance tie-breakers in Toolbox
+                MethodInfo getClosestTileArr = AccessTools.Method(typeof(Toolbox), "getClosestTile", new[] { typeof(WorldTile[]), typeof(WorldTile) });
+                if (getClosestTileArr != null) h.Patch(getClosestTileArr, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetClosestTileArrayPrefix)));
+                MethodInfo getClosestTileList = AccessTools.Method(typeof(Toolbox), "getClosestTile", new[] { typeof(List<WorldTile>), typeof(WorldTile) });
+                if (getClosestTileList != null) h.Patch(getClosestTileList, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetClosestTileListPrefix)));
+                MethodInfo getClosestTilePool = AccessTools.Method(typeof(Toolbox), "getClosestTile", new[] { typeof(ListPool<WorldTile>), typeof(WorldTile) });
+                if (getClosestTilePool != null) h.Patch(getClosestTilePool, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetClosestTileListPoolPrefix)));
+                MethodInfo getClosestBldg = AccessTools.Method(typeof(Toolbox), "getClosestBuilding", new[] { typeof(List<Building>), typeof(WorldTile) });
+                if (getClosestBldg != null) h.Patch(getClosestBldg, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetClosestBuildingPrefix)));
+                MethodInfo getClosestReg = AccessTools.Method(typeof(Toolbox), "getClosestRegion", new[] { typeof(List<MapRegion>), typeof(WorldTile) });
+                if (getClosestReg != null) h.Patch(getClosestReg, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetClosestRegionPrefix)));
+                MethodInfo sortRegs = AccessTools.Method(typeof(Toolbox), "sortRegionsByDistance", new[] { typeof(WorldTile), typeof(List<MapRegion>) });
+                if (sortRegs != null) h.Patch(sortRegs, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SortRegionsByDistancePrefix)));
+                MethodInfo getClosestActorPool = AccessTools.Method(typeof(Toolbox), "getClosestActor", new[] { typeof(ListPool<Actor>), typeof(WorldTile) });
+                if (getClosestActorPool != null) h.Patch(getClosestActorPool, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetClosestActorListPoolPrefix)));
+
+                // 31. City actor idle wandering zone selection
+                MethodInfo idleTileExec = AccessTools.Method(typeof(BehCityActorGetRandomIdleTile), "execute", new[] { typeof(Actor) });
+                if (idleTileExec != null) h.Patch(idleTileExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehCityActorGetRandomIdleTileExecutePrefix)));
+                MethodInfo zoneTileExec = AccessTools.Method(typeof(BehCityActorGetRandomZoneTile), "execute", new[] { typeof(Actor) });
+                if (zoneTileExec != null) h.Patch(zoneTileExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehCityActorGetRandomZoneTileExecutePrefix)));
+
+                // 32. Unit teleport home target zone determinism
+                MethodInfo teleHomeExec = AccessTools.Method(typeof(BehTeleportHome), "execute", new[] { typeof(Actor) });
+                if (teleHomeExec != null) h.Patch(teleHomeExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehTeleportHomeExecutePrefix)));
+
+                // 33. Dragon & UFO city target building selection
+                MethodInfo dragonAtkCityExec = AccessTools.Method(typeof(BehDragonCheckAttackCity), "execute", new[] { typeof(Actor) });
+                if (dragonAtkCityExec != null) h.Patch(dragonAtkCityExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehDragonCheckAttackCityExecutePrefix)));
+                MethodInfo ufoFindTgtExec = AccessTools.Method(typeof(BehUFOFindTarget), "execute", new[] { typeof(Actor) });
+                if (ufoFindTgtExec != null) h.Patch(ufoFindTgtExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehUFOFindTargetExecutePrefix)));
+
+                // 34. City building upgrades, roads & docks iteration
+                MethodInfo tryUpgradeBldgs = AccessTools.Method(typeof(CityBehBuild), "tryToUpgradeBuildings", new[] { typeof(City) });
+                if (tryUpgradeBldgs != null) h.Patch(tryUpgradeBldgs, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TryToUpgradeBuildingsPrefix)));
+                MethodInfo upgRandBldg = AccessTools.Method(typeof(CityBehBuild), "upgradeRandomBuilding", new[] { typeof(City) });
+                if (upgRandBldg != null) h.Patch(upgRandBldg, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(UpgradeRandomBuildingPrefix)));
+                MethodInfo getHouseTile = AccessTools.Method(typeof(CityBehBuild), "getOnHouseTile", new[] { typeof(City), typeof(BuildingAsset) });
+                if (getHouseTile != null) h.Patch(getHouseTile, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetOnHouseTilePrefix)));
+                MethodInfo getDockTile = AccessTools.Method(typeof(CityBehBuild), "getDockTile", new[] { typeof(City) });
+                if (getDockTile != null) h.Patch(getDockTile, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetDockTilePrefix)));
+                MethodInfo tryBuildZones = AccessTools.Method(typeof(CityBehBuild), "tryToBuildInZones", new[] { typeof(List<TileZone>), typeof(BuildingAsset), typeof(City), typeof(bool) });
+                if (tryBuildZones != null) h.Patch(tryBuildZones, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TryToBuildInZonesPrefix)));
+                MethodInfo getBldgListId = AccessTools.Method(typeof(City), "getBuildingListOfID", new[] { typeof(string) });
+                if (getBldgListId != null) h.Patch(getBldgListId, postfix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetBuildingListOfIDPostfix)));
+                MethodInfo makeRoads = AccessTools.Method(typeof(CityBehBuild), "makeRoadsBuildings", new[] { typeof(City), typeof(Building) });
+                if (makeRoads != null) h.Patch(makeRoads, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(MakeRoadsBuildingsPrefix)));
+
+                // 35. City resource supply sister city allocation
+                MethodInfo getRandStockpile = AccessTools.Method(typeof(City), "getRandomStockpile");
+                if (getRandStockpile != null) h.Patch(getRandStockpile, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetRandomStockpilePrefix)));
+                MethodInfo supplyKingdomCitiesExec = AccessTools.Method(typeof(CityBehSupplyKingdomCities), "execute", new[] { typeof(City) });
+                if (supplyKingdomCitiesExec != null) h.Patch(supplyKingdomCitiesExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CityBehSupplyKingdomCitiesExecutePrefix)));
+
+                // 36. Actor target search in city zones
+                MethodInfo findNewBldgTgt = AccessTools.Method(typeof(ActorTool), "findNewBuildingTarget", new[] { typeof(Actor), typeof(string), typeof(bool) });
+                if (findNewBldgTgt != null) h.Patch(findNewBldgTgt, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(FindNewBuildingTargetPrefix)));
+                MethodInfo findNewTgtZones = AccessTools.Method(typeof(ActorTool), "findNewTargetInZones", new[] { typeof(Actor), typeof(string), typeof(ListPool<Building>) });
+                if (findNewTgtZones != null) h.Patch(findNewTgtZones, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(FindNewTargetInZonesPrefix)));
+
+                // 37. City soldier attack zone selection
+                MethodInfo checkAttackExec = AccessTools.Method(typeof(BehCityActorCheckAttack), "execute", new[] { typeof(Actor) });
+                if (checkAttackExec != null) h.Patch(checkAttackExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehCityActorCheckAttackExecutePrefix)));
+
+                // 38. War history pruning equal died time tie-break
+                MethodInfo checkDeadObj = AccessTools.Method(typeof(WarManager), "checkDeadObjects");
+                if (checkDeadObj != null) h.Patch(checkDeadObj, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CheckDeadObjectsPrefix)));
+
+                // 39. Allied war entry unsorted hashset iteration
+                MethodInfo startWar = AccessTools.Method(typeof(DiplomacyManager), "startWar", new[] { typeof(Kingdom), typeof(Kingdom), typeof(WarTypeAsset), typeof(bool) });
+                if (startWar != null) h.Patch(startWar, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(StartWarPrefix)));
+                MethodInfo startRebellion = AccessTools.Method(typeof(DiplomacyHelpersRebellion), "startRebellion", new[] { typeof(Actor), typeof(Plot), typeof(bool) });
+                if (startRebellion != null) h.Patch(startRebellion, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(StartRebellionPrefix)));
+
+                // 40. Tile island swim to safety equal distance region tie-break
+                MethodInfo goToStableExec = AccessTools.Method(typeof(BehGoToStablePlace), "execute", new[] { typeof(Actor) });
+                if (goToStableExec != null) h.Patch(goToStableExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehGoToStablePlaceExecutePrefix)));
+
+                // 41. City territory paint drop zone selection over hashset order
+                MethodInfo actPaint = AccessTools.Method(typeof(DropsLibrary), "action_paint", new[] { typeof(WorldTile), typeof(string) });
+                if (actPaint != null) h.Patch(actPaint, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ActionPaintPrefix)));
+
+                _warManagerEndWarsRef = AccessTools.FieldRefAccess<WarManager, List<War>>("_end_wars");
+                _cityStockpilesRef = AccessTools.FieldRefAccess<City, List<Building>>("stockpiles");
+                _cityRoadTilesRef = AccessTools.FieldRefAccess<City, List<WorldTile>>("road_tiles_to_build");
+                _zoneCalculatorRef = AccessTools.FieldRefAccess<MapBox, ZoneCalculator>("zone_calculator");
+                _islandsCalculatorRef = AccessTools.FieldRefAccess<MapBox, IslandsCalculator>("islands_calculator");
+                _hasGroundMethod = AccessTools.Method(typeof(IslandsCalculator), "hasGround");
+                if (_hasGroundMethod != null) _hasGroundFunc = (Func<IslandsCalculator, bool>)Delegate.CreateDelegate(typeof(Func<IslandsCalculator, bool>), _hasGroundMethod);
+                _getRandomIslandGroundMethod = AccessTools.Method(typeof(IslandsCalculator), "getRandomIslandGround", new[] { typeof(bool) });
+                if (_getRandomIslandGroundMethod != null) _getRandomIslandGroundFunc = (Func<IslandsCalculator, bool, TileIsland>)Delegate.CreateDelegate(typeof(Func<IslandsCalculator, bool, TileIsland>), _getRandomIslandGroundMethod);
+                _canBuildFromMethod = AccessTools.Method(typeof(BuildingManager), "canBuildFrom", new[] { typeof(WorldTile), typeof(BuildingAsset), typeof(City), typeof(BuildPlacingType), typeof(bool) });
+                if (_canBuildFromMethod != null) _canBuildFromFunc = (Func<BuildingManager, WorldTile, BuildingAsset, City, BuildPlacingType, bool, bool>)Delegate.CreateDelegate(typeof(Func<BuildingManager, WorldTile, BuildingAsset, City, BuildPlacingType, bool, bool>), _canBuildFromMethod);
+                _canBeUpgradedMethod = AccessTools.Method(typeof(Building), "canBeUpgraded");
+                if (_canBeUpgradedMethod != null) _canBeUpgradedFunc = (Func<Building, bool>)Delegate.CreateDelegate(typeof(Func<Building, bool>), _canBeUpgradedMethod);
+                _isGoodIslandMethod = AccessTools.Method(typeof(TileIsland), "isGoodIslandForActor", new[] { typeof(Actor) });
+                if (_isGoodIslandMethod != null) _isGoodIslandFunc = (Func<TileIsland, Actor, bool>)Delegate.CreateDelegate(typeof(Func<TileIsland, Actor, bool>), _isGoodIslandMethod);
+                _removeWarObjectMethod = AccessTools.Method(typeof(WarManager), "removeObject", new[] { typeof(War) });
+                _buildingTilesRef = AccessTools.FieldRefAccess<Building, List<WorldTile>>("tiles");
+
                 _cityTileRef = AccessTools.FieldRefAccess<City, WorldTile>("_city_tile");
                 _targetAttackCityRef = AccessTools.FieldRefAccess<City, City>("target_attack_city");
                 _targetAttackZoneRef = AccessTools.FieldRefAccess<City, TileZone>("target_attack_zone");
@@ -381,6 +536,11 @@ namespace Coopfall.Lockstep
                 _cityZonesRef = AccessTools.FieldRefAccess<City, List<TileZone>>("zones");
                 _removeZoneMethod = AccessTools.Method(typeof(City), "removeZone", new[] { typeof(TileZone) });
                 _addZoneMethod = AccessTools.Method(typeof(City), "addZone", new[] { typeof(TileZone) });
+                _spawnOnMethod = AccessTools.Method(typeof(Actor), "spawnOn", new[] { typeof(WorldTile), typeof(float) });
+                _getBuildingToBuildMethod = AccessTools.Method(typeof(City), "getBuildingToBuild");
+                _getBuildingOfTypeMethod = AccessTools.Method(typeof(City), "getBuildingOfType", new[] { typeof(string), typeof(bool), typeof(bool), typeof(bool), typeof(TileIsland) });
+                _startWarMethod = AccessTools.Method(typeof(DiplomacyManager), "startWar", new[] { typeof(Kingdom), typeof(Kingdom), typeof(WarTypeAsset), typeof(bool) });
+                _baseStatsRef = AccessTools.FieldRefAccess<BaseSimObject, BaseStats>("stats");
             }
             catch (Exception e)
             {
@@ -2240,6 +2400,1495 @@ namespace Coopfall.Lockstep
                 if (cmp != 0) return cmp;
                 return x.tile_id.CompareTo(y.tile_id);
             });
+            return false;
+        }
+
+        public static void Normalize(MapBox world)
+        {
+            HookPlotAssets();
+        }
+
+        // ==========================================
+        // 28. Plots & Divine Rites Determinism
+        // ==========================================
+        public static void PlotsLibraryInitPostfix()
+        {
+            HookPlotAssets();
+        }
+
+        public static void HookPlotAssets()
+        {
+            try
+            {
+                if (AssetManager.plots_library == null) return;
+                PlotAsset reb = AssetManager.plots_library.get("cause_rebellion");
+                if (reb != null)
+                {
+                    reb.action = (Actor pActor) =>
+                    {
+                        if (pActor == null || pActor.plot == null) return false;
+                        City target_city = pActor.plot.target_city;
+                        if (target_city == null || target_city.isCapitalCity()) return false;
+                        if (target_city.units == null || target_city.units.Count == 0) return false;
+                        List<Actor> units = new List<Actor>(target_city.getUnits());
+                        units.Sort((a, b) => a.id.CompareTo(b.id));
+                        Actor random = units[Randy.randomInt(0, units.Count)];
+                        if (random == null || !random.isAlive()) return false;
+                        DiplomacyHelpersRebellion.startRebellion(random, pActor.plot, pCheckForHappiness: false);
+                        return true;
+                    };
+                }
+                PlotAsset meteor = AssetManager.plots_library.get("summon_meteor_rain");
+                if (meteor != null)
+                {
+                    meteor.action = (Actor pActor) =>
+                    {
+                        if (pActor == null || pActor.plot == null) return false;
+                        City target_city4 = pActor.plot.target_city;
+                        List<TileZone> cZones4 = target_city4 != null && _cityZonesRef != null ? _cityZonesRef(target_city4) : null;
+                        if (target_city4 == null || cZones4 == null || cZones4.Count == 0) return false;
+                        List<TileZone> zones = new List<TileZone>(cZones4);
+                        zones.Sort((a, b) => a.id.CompareTo(b.id));
+                        int num2 = 7;
+                        int num3 = Randy.randomInt(3, num2 + 1);
+                        for (int j = 0; j < num3; j++)
+                        {
+                            TileZone z = zones[Randy.randomInt(0, zones.Count)];
+                            Meteorite.spawnMeteoriteDisaster(z.getRandomTile(), pActor);
+                        }
+                        return true;
+                    };
+                }
+                PlotAsset quake = AssetManager.plots_library.get("summon_earthquake");
+                if (quake != null)
+                {
+                    quake.action = (Actor pActor) =>
+                    {
+                        if (pActor == null || pActor.plot == null) return false;
+                        City target_city = pActor.plot.target_city;
+                        List<TileZone> cZones = target_city != null && _cityZonesRef != null ? _cityZonesRef(target_city) : null;
+                        if (target_city == null || cZones == null || cZones.Count == 0) return false;
+                        List<TileZone> zones = new List<TileZone>(cZones);
+                        zones.Sort((a, b) => a.id.CompareTo(b.id));
+                        TileZone z = zones[Randy.randomInt(0, zones.Count)];
+                        Earthquake.startQuake(z.getRandomTile(), EarthquakeType.SmallDisaster);
+                        return true;
+                    };
+                }
+                PlotAsset storm = AssetManager.plots_library.get("summon_thunderstorm");
+                if (storm != null)
+                {
+                    storm.action = (Actor pActor) =>
+                    {
+                        if (pActor == null || pActor.plot == null) return false;
+                        City target_city3 = pActor.plot.target_city;
+                        List<TileZone> cZones3 = target_city3 != null && _cityZonesRef != null ? _cityZonesRef(target_city3) : null;
+                        if (target_city3 == null || cZones3 == null || cZones3.Count == 0) return false;
+                        List<TileZone> zones = new List<TileZone>(cZones3);
+                        zones.Sort((a, b) => a.id.CompareTo(b.id));
+                        TileZone z = zones[Randy.randomInt(0, zones.Count)];
+                        WorldTile randomTile = z.getRandomTile();
+                        MapBox.spawnLightningMedium(randomTile, 0.15f, pActor);
+                        int num = Randy.randomInt(5, 13);
+                        for (int i = 0; i < num; i++)
+                        {
+                            WorldTile tTargetTileL = Toolbox.getRandomTileWithinDistance(randomTile, 10);
+                            DelayedActionsManager.addAction(pDelay: Randy.randomFloat(0.1f, 0.75f) * (float)i, pAction: delegate
+                            {
+                                MapBox.spawnLightningMedium(tTargetTileL, 0.15f, pActor);
+                            });
+                        }
+                        return true;
+                    };
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warn("lockstep: HookPlotAssets error: " + e);
+            }
+        }
+
+        private static bool SummonUnitsActionPrefix(Actor pActor, string pActorAssetId, int pMin, int pMax, bool pJoinCasters, ref bool __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.plot == null) { __result = false; return false; }
+            City target_city = pActor.plot.target_city;
+            List<TileZone> cZones = target_city != null && _cityZonesRef != null ? _cityZonesRef(target_city) : null;
+            if (target_city == null || cZones == null || cZones.Count == 0)
+            {
+                __result = false;
+                return false;
+            }
+            List<TileZone> zones = new List<TileZone>(cZones);
+            zones.Sort((a, b) => a.id.CompareTo(b.id));
+            int num = Randy.randomInt(pMin, pMax + 1);
+            for (int i = 0; i < num; i++)
+            {
+                TileZone z = zones[Randy.randomInt(0, zones.Count)];
+                WorldTile randomTile = z.getRandomTile();
+                Actor actor = World.world.units.createNewUnit(pActorAssetId, randomTile, pMiracleSpawn: false, 0f, null, null, pSpawnWithItems: true, pAdultAge: true, pGiveOwnerlessItems: false, pJoinCasters);
+                EffectsLibrary.spawn("fx_spawn", randomTile);
+                if (pJoinCasters && actor != null && pActor.isKingdomCiv())
+                {
+                    if (actor.subspecies.isJustCreated())
+                    {
+                        actor.subspecies.addTrait("prefrontal_cortex");
+                    }
+                    actor.joinKingdom(pActor.kingdom);
+                }
+            }
+            __result = true;
+            return false;
+        }
+
+        private static bool TryStartReligionRiteOnEnemyCityPrefix(Actor pActor, PlotAsset pPlotAsset, bool pForced, ref bool __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.kingdom == null) { __result = false; return false; }
+            using ListPool<Kingdom> listPool = pActor.kingdom.getEnemiesKingdoms();
+            if (listPool.Count == 0) { __result = false; return false; }
+            listPool.Sort((a, b) => a.id.CompareTo(b.id));
+            Kingdom random = listPool[Randy.randomInt(0, listPool.Count)];
+            if (!random.hasCities()) { __result = false; return false; }
+            List<City> cities = new List<City>(random.getCities());
+            cities.Sort((a, b) => a.id.CompareTo(b.id));
+            World.world.plots.newPlot(pActor, pPlotAsset, pForced).target_city = cities[Randy.randomInt(0, cities.Count)];
+            __result = true;
+            return false;
+        }
+
+        private static bool TryStartCauseRebellionPrefix(Actor pActor, PlotAsset pPlotAsset, bool pForced, ref bool __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.kingdom == null) { __result = false; return false; }
+            using ListPool<Kingdom> listPool = pActor.kingdom.getEnemiesKingdoms();
+            if (listPool.Count == 0) { __result = false; return false; }
+            listPool.Sort((a, b) => a.id.CompareTo(b.id));
+            Kingdom random = listPool[Randy.randomInt(0, listPool.Count)];
+            if (!random.hasCities()) { __result = false; return false; }
+            using ListPool<City> listPool2 = new ListPool<City>();
+            foreach (City city in random.getCities())
+            {
+                if (!city.isCapitalCity()) listPool2.Add(city);
+            }
+            if (listPool2.Count == 0) { __result = false; return false; }
+            listPool2.Sort((a, b) => a.id.CompareTo(b.id));
+            World.world.plots.newPlot(pActor, pPlotAsset, pForced).target_city = listPool2[Randy.randomInt(0, listPool2.Count)];
+            __result = true;
+            return false;
+        }
+
+        // ==========================================
+        // 29. World Road Decay Determinism
+        // ==========================================
+        private static bool UpdateRoadDecayPrefix()
+        {
+            if (!LockstepClock.InTick) return true;
+            ZoneCalculator zc = _zoneCalculatorRef != null ? _zoneCalculatorRef(World.world) : null;
+            if (zc == null || zc.zones == null || zc.zones.Count == 0) return false;
+            int totalZones = zc.zones_total_x * zc.zones_total_y;
+            if (totalZones <= 0) totalZones = zc.zones.Count;
+            int randIdx = Randy.randomInt(0, totalZones);
+            int rx = randIdx % zc.zones_total_x;
+            int ry = randIdx / zc.zones_total_x;
+            TileZone targetZone = zc.getZone(rx, ry);
+            if (targetZone == null && zc.zones.Count > 0)
+            {
+                targetZone = zc.zones[randIdx % zc.zones.Count];
+            }
+            if (targetZone == null) return false;
+            if ((targetZone.hasCity() && targetZone.city.hasCulture() && targetZone.city.culture.canUseRoads()) || Randy.randomBool())
+            {
+                return false;
+            }
+            if (targetZone.tiles != null && targetZone.tiles.Length > 0)
+            {
+                int count = targetZone.tiles.Length;
+                int startOffset = Randy.randomInt(0, count);
+                for (int i = 0; i < count; i++)
+                {
+                    WorldTile item = targetZone.tiles[(startOffset + i) % count];
+                    if (!Randy.randomBool() && item.Type.road)
+                    {
+                        MapAction.decreaseTile(item, pDamage: false);
+                    }
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 30. Spatial Distance Tie-Breakers in Toolbox
+        // ==========================================
+        private static bool GetClosestTileArrayPrefix(WorldTile[] pArray, WorldTile pTarget, ref WorldTile __result)
+        {
+            if (pArray == null || pTarget == null) { __result = null; return false; }
+            WorldTile result = null;
+            int num = int.MaxValue;
+            for (int i = 0; i < pArray.Length; i++)
+            {
+                WorldTile t = pArray[i];
+                if (t == null) continue;
+                int d = Toolbox.SquaredDist(pTarget.x, pTarget.y, t.x, t.y);
+                if (d < num || (d == num && result != null && t.tile_id < result.tile_id))
+                {
+                    num = d;
+                    result = t;
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        private static bool GetClosestTileListPrefix(List<WorldTile> pArray, WorldTile pTarget, ref WorldTile __result)
+        {
+            if (pArray == null || pTarget == null) { __result = null; return false; }
+            WorldTile result = null;
+            int num = int.MaxValue;
+            for (int i = 0; i < pArray.Count; i++)
+            {
+                WorldTile t = pArray[i];
+                if (t == null) continue;
+                int d = Toolbox.SquaredDist(pTarget.x, pTarget.y, t.x, t.y);
+                if (d < num || (d == num && result != null && t.tile_id < result.tile_id))
+                {
+                    num = d;
+                    result = t;
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        private static bool GetClosestTileListPoolPrefix(ListPool<WorldTile> pArray, WorldTile pTarget, ref WorldTile __result)
+        {
+            if (pArray == null || pTarget == null) { __result = null; return false; }
+            WorldTile result = null;
+            int num = int.MaxValue;
+            for (int i = 0; i < pArray.Count; i++)
+            {
+                WorldTile t = pArray[i];
+                if (t == null) continue;
+                int d = Toolbox.SquaredDist(pTarget.x, pTarget.y, t.x, t.y);
+                if (d < num || (d == num && result != null && t.tile_id < result.tile_id))
+                {
+                    num = d;
+                    result = t;
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        private static bool GetClosestBuildingPrefix(List<Building> pCollection, WorldTile pTile, ref Building __result)
+        {
+            if (pCollection == null || pTile == null) { __result = null; return false; }
+            Building result = null;
+            int num = int.MaxValue;
+            Vector2Int pos = pTile.pos;
+            for (int i = 0; i < pCollection.Count; i++)
+            {
+                Building b = pCollection[i];
+                if (b == null || b.current_tile == null) continue;
+                Vector2Int pos2 = b.current_tile.pos;
+                int d = Toolbox.SquaredDist(pos.x, pos.y, pos2.x, pos2.y);
+                if (d < num || (d == num && result != null && b.id < result.id))
+                {
+                    num = d;
+                    result = b;
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        private static bool GetClosestRegionPrefix(List<MapRegion> pArray, WorldTile pTarget, ref MapRegion __result)
+        {
+            if (pArray == null || pTarget == null) { __result = null; return false; }
+            MapRegion result = null;
+            int num = int.MaxValue;
+            for (int i = 0; i < pArray.Count; i++)
+            {
+                MapRegion r = pArray[i];
+                if (r == null || r.tiles == null || r.tiles.Count == 0) continue;
+                int d = Toolbox.SquaredDist(pTarget.pos.x, pTarget.pos.y, r.tiles[0].pos.x, r.tiles[0].pos.y);
+                if (d < num || (d == num && result != null && r.id < result.id))
+                {
+                    num = d;
+                    result = r;
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        private static bool SortRegionsByDistancePrefix(WorldTile pTile, List<MapRegion> pRegions)
+        {
+            if (pRegions == null || pRegions.Count <= 1 || pTile == null) return false;
+            pRegions.Sort((MapRegion x, MapRegion y) =>
+            {
+                if (ReferenceEquals(x, y)) return 0;
+                if (x == null || x.tiles == null || x.tiles.Count == 0) return 1;
+                if (y == null || y.tiles == null || y.tiles.Count == 0) return -1;
+                int cmp = Toolbox.SquaredDistTile(pTile, x.tiles[0]).CompareTo(Toolbox.SquaredDistTile(pTile, y.tiles[0]));
+                if (cmp != 0) return cmp;
+                return x.id.CompareTo(y.id);
+            });
+            return false;
+        }
+
+        private static bool GetClosestActorListPoolPrefix(ListPool<Actor> pCollection, WorldTile pTile, ref Actor __result)
+        {
+            if (pCollection == null || pTile == null) { __result = null; return false; }
+            Actor result = null;
+            int num = int.MaxValue;
+            Vector2Int pos = pTile.pos;
+            for (int i = 0; i < pCollection.Count; i++)
+            {
+                Actor a = pCollection[i];
+                if (a == null || a.current_tile == null) continue;
+                Vector2Int pos2 = a.current_tile.pos;
+                int d = Toolbox.SquaredDist(pos.x, pos.y, pos2.x, pos2.y);
+                if (d < num || (d == num && result != null && a.id < result.id))
+                {
+                    num = d;
+                    result = a;
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        // ==========================================
+        // 31. City Actor Idle Wandering Zone Selection
+        // ==========================================
+        private static bool BehCityActorGetRandomIdleTileExecutePrefix(BehCityActorGetRandomIdleTile __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.city == null || !pActor.city.hasZones())
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            WorldTile worldTile = TryToGetBonfireTileDeterministic(pActor);
+            if (worldTile == null)
+            {
+                worldTile = GetRandomCityZoneTileDeterministic(pActor);
+            }
+            if (worldTile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        private static WorldTile GetRandomCityZoneTileDeterministic(Actor pActor)
+        {
+            WorldTile worldTile = null;
+            if (!pActor.current_tile.isSameCityHere(pActor.city) || Randy.randomChance(0.2f))
+            {
+                List<TileZone> cZones = pActor.city != null && _cityZonesRef != null ? _cityZonesRef(pActor.city) : null;
+                if (cZones == null || cZones.Count == 0) return null;
+                List<TileZone> sortedZones = new List<TileZone>(cZones);
+                sortedZones.Sort((a, b) => a.id.CompareTo(b.id));
+                TileZone chosenZone = sortedZones[Randy.randomInt(0, sortedZones.Count)];
+                if (chosenZone.tiles == null || chosenZone.tiles.Length == 0) return null;
+                worldTile = chosenZone.tiles[Randy.randomInt(0, chosenZone.tiles.Length)];
+                if (!worldTile.isSameIsland(pActor.current_tile))
+                {
+                    return null;
+                }
+            }
+            else
+            {
+                MapRegion reg = pActor.current_tile.region;
+                if (reg != null && reg.tiles != null && reg.tiles.Count > 0)
+                {
+                    worldTile = reg.tiles[Randy.randomInt(0, reg.tiles.Count)];
+                }
+            }
+            return worldTile;
+        }
+
+        private static WorldTile TryToGetBonfireTileDeterministic(Actor pActor)
+        {
+            if (pActor?.city == null) return null;
+            Building bonfire = _getBuildingOfTypeMethod != null
+                ? (Building)_getBuildingOfTypeMethod.Invoke(pActor.city, new object[] { "type_bonfire", true, false, false, pActor.current_island })
+                : null;
+            if (bonfire == null) return null;
+            List<WorldTile> bTiles = _buildingTilesRef != null ? _buildingTilesRef(bonfire) : null;
+            if (bTiles == null || bTiles.Count == 0) return null;
+            WorldTile random = bTiles[Randy.randomInt(0, bTiles.Count)];
+            if (Randy.randomChance(0.3f))
+            {
+                MapRegion mapRegion = bonfire.current_tile.region;
+                if (mapRegion != null && mapRegion.neighbours != null && mapRegion.neighbours.Count > 0 && Randy.randomChance(0.3f))
+                {
+                    mapRegion = mapRegion.neighbours[Randy.randomInt(0, mapRegion.neighbours.Count)];
+                }
+                if (mapRegion != null && mapRegion.tiles != null && mapRegion.tiles.Count > 0)
+                {
+                    random = mapRegion.tiles[Randy.randomInt(0, mapRegion.tiles.Count)];
+                }
+            }
+            return random;
+        }
+
+        private static bool BehCityActorGetRandomZoneTileExecutePrefix(BehCityActorGetRandomZoneTile __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.city == null || !pActor.city.hasZones())
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            WorldTile worldTile = null;
+            if (pActor.current_tile.zone.city != pActor.city || Randy.randomChance(0.2f))
+            {
+                List<TileZone> cZones = _cityZonesRef != null ? _cityZonesRef(pActor.city) : null;
+                if (cZones == null || cZones.Count == 0)
+                {
+                    __result = BehResult.Stop;
+                    return false;
+                }
+                List<TileZone> sortedZones = new List<TileZone>(cZones);
+                sortedZones.Sort((a, b) => a.id.CompareTo(b.id));
+                TileZone chosen = sortedZones[Randy.randomInt(0, sortedZones.Count)];
+                worldTile = chosen.getRandomTile();
+                if (!worldTile.isSameIsland(pActor.current_tile))
+                {
+                    __result = BehResult.Stop;
+                    return false;
+                }
+            }
+            else
+            {
+                MapRegion reg = pActor.current_tile.region;
+                if (reg != null && reg.tiles != null && reg.tiles.Count > 0)
+                {
+                    worldTile = reg.tiles[Randy.randomInt(0, reg.tiles.Count)];
+                }
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 32. Unit Teleport Home Target Zone Determinism
+        // ==========================================
+        private static bool BehTeleportHomeExecutePrefix(BehTeleportHome __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || !pActor.hasCity()) { __result = BehResult.Stop; return false; }
+            City city = pActor.getCity();
+            List<TileZone> cZones = city != null && _cityZonesRef != null ? _cityZonesRef(city) : null;
+            if (city == null || !city.hasZones() || cZones == null || cZones.Count == 0) { __result = BehResult.Stop; return false; }
+            List<TileZone> sortedZones = new List<TileZone>(cZones);
+            sortedZones.Sort((a, b) => a.id.CompareTo(b.id));
+            TileZone random = sortedZones[Randy.randomInt(0, sortedZones.Count)];
+            if (random == null || random.tiles == null || random.tiles.Length == 0) { __result = BehResult.Stop; return false; }
+            WorldTile random2 = random.tiles[Randy.randomInt(0, random.tiles.Length)];
+            ActionLibrary.teleportEffect(pActor, random2);
+            pActor.cancelAllBeh();
+            if (_spawnOnMethod != null) _spawnOnMethod.Invoke(pActor, new object[] { random2, 0f });
+            pActor.doCastAnimation();
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 33. Dragon & UFO City Target Building Selection
+        // ==========================================
+        private static bool BehDragonCheckAttackCityExecutePrefix(BehDragonCheckAttackCity __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null) return true;
+            WorldTile bTarget = _behTileTargetRef != null ? _behTileTargetRef(pActor) : null;
+            if (bTarget != null) { __result = BehResult.Continue; return false; }
+            ActorData aData = _actorDataRef != null ? _actorDataRef(pActor) : null;
+            if (aData == null) { __result = BehResult.Continue; return false; }
+            aData.get("cityToAttack", out var pResult, -1L);
+            if (!pResult.hasValue()) { __result = BehResult.Continue; return false; }
+            aData.get("attacksForCity", out var pResult2, 0);
+            if (pResult2 < 1)
+            {
+                aData.removeLong("cityToAttack");
+                __result = BehResult.Continue;
+                return false;
+            }
+            City city = World.world.cities.get(pResult);
+            bool flag = true;
+            if (city != null && city.isAlive() && city.buildings != null && city.buildings.Count > 0)
+            {
+                List<Building> buildings = new List<Building>(city.buildings);
+                buildings.Sort((a, b) => a.id.CompareTo(b.id));
+                Building chosenBuilding = buildings[Randy.randomInt(0, buildings.Count)];
+                if (chosenBuilding.current_tile != null && chosenBuilding.current_tile.zone != null && chosenBuilding.current_tile.zone.tiles != null && chosenBuilding.current_tile.zone.tiles.Length > 0)
+                {
+                    WorldTile[] ztiles = chosenBuilding.current_tile.zone.tiles;
+                    WorldTile random = ztiles[Randy.randomInt(0, ztiles.Length)];
+                    Dragon dragon = _behDragonRef != null ? _behDragonRef(__instance) : null;
+                    WorldTile landTarget = (dragon != null && _randomTileWithinLandAttackRangeMethod != null)
+                        ? (WorldTile)_randomTileWithinLandAttackRangeMethod.Invoke(dragon, new object[] { random })
+                        : random;
+                    if (_behTileTargetRef != null) _behTileTargetRef(pActor) = landTarget;
+                    aData.set("attacksForCity", --pResult2);
+                    flag = false;
+                }
+            }
+            if (flag)
+            {
+                aData.removeLong("cityToAttack");
+                aData.removeInt("attacksForCity");
+            }
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        private static bool BehUFOFindTargetExecutePrefix(BehUFOFindTarget __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null) return true;
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = null;
+            ActorData aData = _actorDataRef != null ? _actorDataRef(pActor) : null;
+            if (aData == null) { __result = BehResult.Continue; return false; }
+            aData.get("attacksForCity", out var pResult, 0);
+            aData.get("cityToAttack", out var pResult2, -1L);
+            City city = (pResult2.hasValue() ? World.world.cities.get(pResult2) : null);
+            if (pResult > 0 && city != null)
+            {
+                if (!city.isAlive() || city.buildings == null || city.buildings.Count == 0)
+                {
+                    if (_behTileTargetRef != null) _behTileTargetRef(pActor) = null;
+                    pResult = 0;
+                    aData.removeLong("cityToAttack");
+                }
+                else
+                {
+                    List<Building> buildings = new List<Building>(city.buildings);
+                    buildings.Sort((a, b) => a.id.CompareTo(b.id));
+                    Building random = buildings[Randy.randomInt(0, buildings.Count)];
+                    if (random.current_tile != null && random.current_tile.zone != null && random.current_tile.zone.tiles != null && random.current_tile.zone.tiles.Length > 0)
+                    {
+                        WorldTile[] ztiles = random.current_tile.zone.tiles;
+                        if (_behTileTargetRef != null) _behTileTargetRef(pActor) = ztiles[Randy.randomInt(0, ztiles.Length)];
+                        pResult--;
+                    }
+                }
+            }
+            else if (pResult <= 0)
+            {
+                if (_behTileTargetRef != null) _behTileTargetRef(pActor) = null;
+                aData.removeLong("cityToAttack");
+            }
+            if (pResult > 0)
+            {
+                aData.set("attacksForCity", pResult);
+            }
+            else
+            {
+                aData.removeInt("attacksForCity");
+            }
+            WorldTile curTarget = _behTileTargetRef != null ? _behTileTargetRef(pActor) : null;
+            if (curTarget == null)
+            {
+                WorldTile worldTile = Toolbox.getRandomTileWithinDistance(pActor.current_tile, 100);
+                IslandsCalculator ic = _islandsCalculatorRef != null ? _islandsCalculatorRef(World.world) : null;
+                if (ic == null || (_hasGroundFunc != null && !_hasGroundFunc(ic)))
+                {
+                    if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+                    __result = BehResult.Continue;
+                    return false;
+                }
+                int num = 5;
+                while (!worldTile.Type.ground && num > 0)
+                {
+                    worldTile = Toolbox.getRandomTileWithinDistance(pActor.current_tile, 100);
+                    num--;
+                }
+                if (!worldTile.Type.ground && _getRandomIslandGroundFunc != null && _getRandomIslandGroundFunc(ic, true) != null)
+                {
+                    Span<Vector2Int> pArray = stackalloc Vector2Int[8];
+                    for (int i = 0; i < 8; i++)
+                    {
+                        pArray[i] = ic.tryGetRandomGround().pos;
+                    }
+                    Vector2Int closestTile = Toolbox.getClosestTile(pArray, pActor.current_tile);
+                    worldTile = World.world.GetTileSimple(closestTile.x, closestTile.y);
+                }
+                if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+            }
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 34. City Building Upgrades, Roads & Docks Iteration
+        // ==========================================
+        private static bool TryToUpgradeBuildingsPrefix(City pCity)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pCity == null || pCity.buildings == null || pCity.buildings.Count == 0) return false;
+            List<Building> buildings = new List<Building>(pCity.buildings);
+            buildings.Sort((a, b) => a.id.CompareTo(b.id));
+            int count = buildings.Count;
+            int offset = Randy.randomInt(0, count);
+            for (int i = 0; i < count; i++)
+            {
+                Building item = buildings[(offset + i) % count];
+                bool canUpg = _canBeUpgradedFunc != null ? _canBeUpgradedFunc(item) : false;
+                if (item != null && canUpg)
+                {
+                    CityBehBuild.upgradeBuilding(item, pCity);
+                    break;
+                }
+            }
+            return false;
+        }
+
+        private static bool UpgradeRandomBuildingPrefix(City pCity)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pCity == null || pCity.buildings == null || pCity.buildings.Count == 0) return false;
+            List<Building> buildings = new List<Building>(pCity.buildings);
+            buildings.Sort((a, b) => a.id.CompareTo(b.id));
+            int count = buildings.Count;
+            int offset = Randy.randomInt(0, count);
+            for (int i = 0; i < count; i++)
+            {
+                Building item = buildings[(offset + i) % count];
+                bool canUpg = _canBeUpgradedFunc != null ? _canBeUpgradedFunc(item) : false;
+                if (item != null && canUpg)
+                {
+                    CityBehBuild.upgradeBuilding(item, pCity);
+                    break;
+                }
+            }
+            return false;
+        }
+
+        private static bool GetOnHouseTilePrefix(City pCity, BuildingAsset pAsset, ref WorldTile __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pCity == null || pCity.buildings == null || pCity.buildings.Count == 0) { __result = null; return false; }
+            List<Building> buildings = new List<Building>(pCity.buildings);
+            buildings.Sort((a, b) => a.id.CompareTo(b.id));
+            int count = buildings.Count;
+            int offset = Randy.randomInt(0, count);
+            for (int i = 0; i < count; i++)
+            {
+                Building item = buildings[(offset + i) % count];
+                BuildingAsset bAsset = _buildingAssetRef != null ? _buildingAssetRef(item) : null;
+                if (item != null && bAsset != null && bAsset.priority <= pAsset.priority && bAsset.hasHousingSlots() && CityBehBuild.isGoodTileForBuilding(item.current_tile, pAsset, pCity))
+                {
+                    __result = item.current_tile;
+                    return false;
+                }
+            }
+            __result = null;
+            return false;
+        }
+
+        private static bool GetDockTilePrefix(City pCity, ref WorldTile __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            List<TileZone> cZones = pCity != null && _cityZonesRef != null ? _cityZonesRef(pCity) : null;
+            if (pCity == null || cZones == null || cZones.Count == 0) { __result = null; return false; }
+            BuildingAsset buildingDockAsset = pCity.getActorAsset().getBuildingDockAsset();
+            if (buildingDockAsset == null) { __result = null; return false; }
+            OceanHelper.clearOceanPools();
+            OceanHelper.saveOceanPoolsWithDocks(pCity);
+            List<TileZone> zones = new List<TileZone>(cZones);
+            zones.Sort((a, b) => a.id.CompareTo(b.id));
+            int zCount = zones.Count;
+            int zOffset = Randy.randomInt(0, zCount);
+            for (int i = 0; i < zCount; i++)
+            {
+                TileZone item = zones[(zOffset + i) % zCount];
+                if (item.tiles_with_liquid == 0) continue;
+                MapChunk chunk = item.chunk;
+                if (chunk == null || chunk.regions == null || chunk.regions.Count <= 1) continue;
+                int tCount = item.tiles.Length;
+                int tOffset = Randy.randomInt(0, tCount);
+                for (int j = 0; j < tCount; j++)
+                {
+                    WorldTile item2 = item.tiles[(tOffset + j) % tCount];
+                    if (item2.Type.ocean && _canBuildFromFunc != null && _canBuildFromFunc(World.world.buildings, item2, buildingDockAsset, pCity, BuildPlacingType.New, false))
+                    {
+                        __result = item2;
+                        return false;
+                    }
+                }
+            }
+            __result = null;
+            return false;
+        }
+
+        private static bool TryToBuildInZonesPrefix(List<TileZone> pList, BuildingAsset pBuildingAsset, City pCity, bool pForceCenterZone, ref WorldTile __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pList == null || pList.Count == 0) { __result = null; return false; }
+            pList.Sort((a, b) => a.id.CompareTo(b.id));
+            return true;
+        }
+
+        private static void GetBuildingListOfIDPostfix(ref List<Building> __result)
+        {
+            if (!LockstepClock.InTick) return;
+            if (__result != null && __result.Count > 1)
+            {
+                __result.Sort((a, b) => a.id.CompareTo(b.id));
+            }
+        }
+
+        private static bool MakeRoadsBuildingsPrefix(City pCity, Building pBuilding)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pCity == null || pBuilding == null) return false;
+            List<WorldTile> roadTiles = _cityRoadTilesRef != null ? _cityRoadTilesRef(pCity) : null;
+            BuildingAsset pAsset = _buildingAssetRef != null ? _buildingAssetRef(pBuilding) : null;
+            if ((roadTiles != null && roadTiles.Count > 0) || pAsset == null || !pAsset.build_road_to)
+            {
+                return false;
+            }
+            WorldTile current_tile = pBuilding.current_tile;
+            if (current_tile == null || current_tile.Type.liquid)
+            {
+                return false;
+            }
+            using ListPool<WorldTile> listPool = new ListPool<WorldTile>(pCity.buildings.Count);
+            foreach (Building building in pCity.buildings)
+            {
+                BuildingAsset bAsset = _buildingAssetRef != null ? _buildingAssetRef(building) : null;
+                if (building != pBuilding && bAsset != null && bAsset.build_road_to && !building.current_tile.Type.liquid && building.current_tile.isSameIsland(pBuilding.current_tile))
+                {
+                    listPool.Add(building.current_tile);
+                }
+            }
+            if (listPool.Count != 0)
+            {
+                listPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                bool pForceFinished = DebugConfig.isOn(DebugOption.CityFastConstruction);
+                WorldTile closestTile = Toolbox.getClosestTile(listPool, current_tile);
+                if (closestTile != null)
+                {
+                    listPool.Remove(closestTile);
+                    MapAction.makeRoadBetween(closestTile, current_tile, pCity, pForceFinished);
+                }
+                closestTile = Toolbox.getClosestTile(listPool, current_tile);
+                if (closestTile != null)
+                {
+                    MapAction.makeRoadBetween(closestTile, current_tile, pCity, pForceFinished);
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 35. City Resource Supply Sister City Allocation
+        // ==========================================
+        private static bool GetRandomStockpilePrefix(City __instance, ref Building __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (__instance == null || !__instance.hasStockpiles())
+            {
+                __result = null;
+                return false;
+            }
+            List<Building> spList = _cityStockpilesRef != null ? _cityStockpilesRef(__instance) : null;
+            if (spList == null || spList.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            List<Building> stockpiles = new List<Building>(spList);
+            stockpiles.Sort((a, b) => a.id.CompareTo(b.id));
+            int count = stockpiles.Count;
+            int offset = Randy.randomInt(0, count);
+            for (int i = 0; i < count; i++)
+            {
+                Building item = stockpiles[(offset + i) % count];
+                if (item != null && item.isUsable())
+                {
+                    __result = item;
+                    return false;
+                }
+            }
+            __result = null;
+            return false;
+        }
+
+        private static bool CityBehSupplyKingdomCitiesExecutePrefix(CityBehSupplyKingdomCities __instance, City pCity, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            Kingdom cityKingdom = _cityKingdomRef != null ? _cityKingdomRef(pCity) : null;
+            if (pCity == null || !pCity.hasCulture() || cityKingdom == null || cityKingdom.countCities() == 1 || pCity.data.timer_supply > 0f || !pCity.hasStockpiles())
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            Building randomStockpile = pCity.getRandomStockpile();
+            if (randomStockpile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            List<CityStorageSlot> listPool = new List<CityStorageSlot>();
+            foreach (CityStorageSlot slot in randomStockpile.resources.getSlots())
+            {
+                if (slot.amount > slot.asset.supply_bound_give)
+                {
+                    listPool.Add(slot);
+                }
+            }
+            if (listPool.Count == 0)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            listPool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+
+            List<City> sisterCities = new List<City>(cityKingdom.getCities());
+            sisterCities.Sort((a, b) => a.id.CompareTo(b.id));
+
+            int cCount = sisterCities.Count;
+            int cOffset = Randy.randomInt(0, cCount);
+            for (int i = 0; i < cCount; i++)
+            {
+                City item = sisterCities[(cOffset + i) % cCount];
+                if (item == pCity) continue;
+                int sCount = listPool.Count;
+                int sOffset = Randy.randomInt(0, sCount);
+                for (int j = 0; j < sCount; j++)
+                {
+                    CityStorageSlot item2 = listPool[(sOffset + j) % sCount];
+                    if (item.getResourcesAmount(item2.id) < item2.asset.supply_bound_take)
+                    {
+                        pCity.takeResource(item2.id, item2.asset.supply_give);
+                        item.addResourcesToRandomStockpile(item2.id, item2.asset.supply_give);
+
+                        float num = 30f;
+                        BaseStats lStats = pCity.hasLeader() && _baseStatsRef != null ? _baseStatsRef(pCity.leader) : null;
+                        if (lStats != null)
+                        {
+                            num *= lStats["multiplier_supply_timer"];
+                        }
+                        if (num < 10f) num = 10f;
+                        pCity.data.timer_supply = num;
+
+                        __result = BehResult.Continue;
+                        return false;
+                    }
+                }
+            }
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 36. Actor Target Search In City Zones
+        // ==========================================
+        private static bool FindNewBuildingTargetPrefix(Actor pActor, string pType, bool pOnlyFreeTile, ref Building __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.city == null) { __result = null; return false; }
+            using ListPool<Building> listPool = new ListPool<Building>(64);
+            switch (pType)
+            {
+                case "new_building":
+                {
+                    Building buildingToBuild = _getBuildingToBuildMethod != null ? (Building)_getBuildingToBuildMethod.Invoke(pActor.city, null) : null;
+                    List<WorldTile> bTiles = buildingToBuild != null && _buildingTilesRef != null ? _buildingTilesRef(buildingToBuild) : null;
+                    if (buildingToBuild != null && bTiles != null && bTiles.Count != 0)
+                    {
+                        WorldTile constructionTile = buildingToBuild.getConstructionTile();
+                        if (constructionTile != null && constructionTile.isSameIsland(pActor.current_tile))
+                        {
+                            __result = buildingToBuild;
+                            return false;
+                        }
+                    }
+                    break;
+                }
+                case "random_house_building":
+                {
+                    if (pActor.city.buildings != null && pActor.city.buildings.Count > 0)
+                    {
+                        List<Building> bList = new List<Building>(pActor.city.buildings);
+                        bList.Sort((a, b) => a.id.CompareTo(b.id));
+                        int bCount = bList.Count;
+                        int bOffset = Randy.randomInt(0, bCount);
+                        for (int i = 0; i < bCount; i++)
+                        {
+                            Building item = bList[(bOffset + i) % bCount];
+                            BuildingAsset bAsset = _buildingAssetRef != null ? _buildingAssetRef(item) : null;
+                            if (item.isSameIslandAs(pActor) && !item.isUnderConstruction() && item.isUsable() && bAsset != null && bAsset.hasHousingSlots())
+                            {
+                                __result = item;
+                                return false;
+                            }
+                        }
+                    }
+                    break;
+                }
+                case "ruins":
+                {
+                    List<TileZone> cZones = _cityZonesRef != null ? _cityZonesRef(pActor.city) : null;
+                    if (cZones != null && cZones.Count > 0)
+                    {
+                        List<TileZone> zList = new List<TileZone>(cZones);
+                        zList.Sort((a, b) => a.id.CompareTo(b.id));
+                        int zCount = zList.Count;
+                        int zOffset = Randy.randomInt(0, zCount);
+                        for (int i = 0; i < zCount; i++)
+                        {
+                            TileZone item2 = zList[(zOffset + i) % zCount];
+                            HashSet<Building> hashset = item2.getHashset(BuildingList.Ruins);
+                            if (hashset != null) listPool.AddRange(hashset);
+                            HashSet<Building> hashset2 = item2.getHashset(BuildingList.Abandoned);
+                            if (hashset2 != null) listPool.AddRange(hashset2);
+                            if (listPool.Count > 0) break;
+                        }
+                    }
+                    break;
+                }
+                case "type_mine":
+                case "type_bonfire":
+                case "type_training_dummies":
+                {
+                    Building buildingOfType = _getBuildingOfTypeMethod != null
+                        ? (Building)_getBuildingOfTypeMethod.Invoke(pActor.city, new object[] { pType, true, false, pOnlyFreeTile, pActor.current_island })
+                        : null;
+                    if (buildingOfType != null)
+                    {
+                        __result = buildingOfType;
+                        return false;
+                    }
+                    break;
+                }
+                default:
+                {
+                    __result = ai.ActorTool.findNewTargetInZones(pActor, pType, listPool);
+                    return false;
+                }
+            }
+            if (listPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            listPool.Sort((a, b) => a.id.CompareTo(b.id));
+            __result = listPool[Randy.randomInt(0, listPool.Count)];
+            return false;
+        }
+
+        private static bool FindNewTargetInZonesPrefix(Actor pActor, string pType, ListPool<Building> pPossibleBuildings, ref Building __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            List<TileZone> cZones2 = pActor?.city != null && _cityZonesRef != null ? _cityZonesRef(pActor.city) : null;
+            if (pActor == null || pActor.city == null || cZones2 == null) { __result = null; return false; }
+            List<TileZone> sortedZones = new List<TileZone>(cZones2);
+            sortedZones.Sort((a, b) => a.id.CompareTo(b.id));
+            for (int i = 0; i < sortedZones.Count; i++)
+            {
+                TileZone zone = sortedZones[i];
+                HashSet<Building> hashSet = null;
+                switch (pType)
+                {
+                    case "type_flower":
+                    case "type_vegetation":
+                        hashSet = zone.getHashset(BuildingList.Flora);
+                        break;
+                    case "type_tree":
+                        hashSet = zone.getHashset(BuildingList.Trees);
+                        break;
+                    case "type_mineral":
+                        hashSet = zone.getHashset(BuildingList.Minerals);
+                        break;
+                    case "type_fruits":
+                        hashSet = zone.getHashset(BuildingList.Food);
+                        break;
+                    case "type_hive":
+                        hashSet = zone.getHashset(BuildingList.Hives);
+                        break;
+                    case "type_poop":
+                        hashSet = zone.getHashset(BuildingList.Poops);
+                        break;
+                }
+                if (hashSet == null || hashSet.Count == 0) continue;
+                List<Building> candidatesInZone = new List<Building>(hashSet);
+                candidatesInZone.Sort((a, b) => a.id.CompareTo(b.id));
+                for (int j = 0; j < candidatesInZone.Count; j++)
+                {
+                    Building item = candidatesInZone[j];
+                    BuildingAsset asset = _buildingAssetRef != null ? _buildingAssetRef(item) : null;
+                    if (asset != null && !item.current_tile.isTargeted() && item.isSameIslandAs(pActor) &&
+                        ((asset.building_type != BuildingType.Building_Fruits && asset.building_type != BuildingType.Building_Tree) || item.hasResourcesToCollect()) &&
+                        (asset.building_type != BuildingType.Building_Tree || asset.can_be_chopped_down))
+                    {
+                        pPossibleBuildings.Add(item);
+                    }
+                }
+                if (pPossibleBuildings.Count > 0) break;
+            }
+            if (pPossibleBuildings.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            pPossibleBuildings.Sort((a, b) => a.id.CompareTo(b.id));
+            __result = pPossibleBuildings[Randy.randomInt(0, pPossibleBuildings.Count)];
+            return false;
+        }
+
+        // ==========================================
+        // 37. City Soldier Attack Zone Selection
+        // ==========================================
+        private static bool BehCityActorCheckAttackExecutePrefix(BehCityActorCheckAttack __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.city == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            TileZone target_attack_zone = _targetAttackZoneRef != null ? _targetAttackZoneRef(pActor.city) : null;
+            if (target_attack_zone == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            City city = target_attack_zone.city;
+            if (city == null) { __result = BehResult.Stop; return false; }
+            if (pActor.army != null && pActor.army.isGroupInCityAndHaveLeader() && !pActor.city.isOkToSendArmy())
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (pActor.current_tile == null || target_attack_zone.centerTile == null || !target_attack_zone.centerTile.isSameIsland(pActor.current_tile))
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (pActor.current_tile.zone == null || pActor.current_tile.zone.city != target_attack_zone.city)
+            {
+                if (target_attack_zone.tiles != null && target_attack_zone.tiles.Length > 0)
+                {
+                    if (_behTileTargetRef != null) _behTileTargetRef(pActor) = target_attack_zone.tiles[Randy.randomInt(0, target_attack_zone.tiles.Length)];
+                    __result = BehResult.Continue;
+                    return false;
+                }
+            }
+            Building buildingOfType = _getBuildingOfTypeMethod != null
+                ? (Building)_getBuildingOfTypeMethod.Invoke(city, new object[] { "type_watch_tower", false, false, false, pActor.current_island })
+                : null;
+            if (buildingOfType != null && buildingOfType.current_tile != null && buildingOfType.current_tile.region != null && buildingOfType.current_tile.region.tiles != null && buildingOfType.current_tile.region.tiles.Count > 0)
+            {
+                List<WorldTile> rt = buildingOfType.current_tile.region.tiles;
+                if (_behTileTargetRef != null) _behTileTargetRef(pActor) = rt[Randy.randomInt(0, rt.Count)];
+                __result = BehResult.Continue;
+                return false;
+            }
+            TileZone[] neighbours_all = (pActor.current_tile.zone != null) ? pActor.current_tile.zone.neighbours_all : null;
+            if (neighbours_all != null && neighbours_all.Length > 0)
+            {
+                List<TileZone> sortedNeighbours = new List<TileZone>(neighbours_all);
+                sortedNeighbours.Sort((a, b) => a.id.CompareTo(b.id));
+                for (int i = 0; i < sortedNeighbours.Count; i++)
+                {
+                    TileZone tileZone = sortedNeighbours[i];
+                    if (tileZone.city == city && tileZone.tiles != null && tileZone.tiles.Length > 0)
+                    {
+                        WorldTile random = tileZone.tiles[Randy.randomInt(0, tileZone.tiles.Length)];
+                        if (random.isSameIsland(pActor.current_tile))
+                        {
+                            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = random;
+                            __result = BehResult.Continue;
+                            return false;
+                        }
+                    }
+                }
+            }
+            List<TileZone> cZones = _cityZonesRef != null ? _cityZonesRef(city) : null;
+            if (cZones != null && cZones.Count > 0)
+            {
+                List<TileZone> cityZones = new List<TileZone>(cZones);
+                cityZones.Sort((a, b) => a.id.CompareTo(b.id));
+                for (int i = 0; i < cityZones.Count; i++)
+                {
+                    TileZone zone = cityZones[i];
+                    if (zone.tiles != null && zone.tiles.Length > 0)
+                    {
+                        WorldTile random2 = zone.tiles[Randy.randomInt(0, zone.tiles.Length)];
+                        if (random2.isSameIsland(pActor.current_tile))
+                        {
+                            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = random2;
+                            __result = BehResult.Continue;
+                            return false;
+                        }
+                    }
+                }
+            }
+            __result = BehResult.Stop;
+            return false;
+        }
+
+        // ==========================================
+        // 38. War History Pruning Equal Died Time Tie-Break
+        // ==========================================
+        private static bool CheckDeadObjectsPrefix(WarManager __instance)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (__instance == null || __instance.Count <= 20) return false;
+            List<War> endWars = _warManagerEndWarsRef != null ? _warManagerEndWarsRef(__instance) : null;
+            if (endWars == null) return true;
+            endWars.Clear();
+            using (IEnumerator<War> enumerator = __instance.GetEnumerator())
+            {
+                while (enumerator.MoveNext())
+                {
+                    War current = enumerator.Current;
+                    if (!current.isFavorite() && current.hasEnded())
+                    {
+                        endWars.Add(current);
+                    }
+                }
+            }
+            if (endWars.Count != 0)
+            {
+                int b2 = __instance.Count - 20;
+                endWars.Sort((War a, War b) =>
+                {
+                    int cmp = a.data.died_time.CompareTo(b.data.died_time);
+                    if (cmp != 0) return cmp;
+                    return a.id.CompareTo(b.id);
+                });
+                int num = Mathf.Min(endWars.Count, b2);
+                for (int i = 0; i < num; i++)
+                {
+                    War pObject = endWars[i];
+                    if (_removeWarObjectMethod != null)
+                    {
+                        _removeWarObjectMethod.Invoke(__instance, new object[] { pObject });
+                    }
+                }
+                endWars.Clear();
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 39. Allied War Entry Unsorted Hashset Iteration
+        // ==========================================
+        private static bool StartWarPrefix(DiplomacyManager __instance, Kingdom pAttacker, Kingdom pDefender, WarTypeAsset pAsset, bool pLog, ref War __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pAsset == null || pAsset.total_war) return true;
+            if (pAttacker == pDefender) { __result = null; return false; }
+            if (World.world.wars.getWar(pAttacker, pDefender) != null) { __result = null; return false; }
+            if (pLog)
+            {
+                WorldLog.logNewWar(pAttacker, pDefender);
+            }
+            War war = World.world.wars.newWar(pAttacker, pDefender, pAsset);
+            if (pAsset.alliance_join)
+            {
+                Alliance alliance = pAttacker.getAlliance();
+                Alliance alliance2 = pDefender.getAlliance();
+                if (alliance != null && alliance.kingdoms_hashset != null)
+                {
+                    List<Kingdom> attackers = new List<Kingdom>(alliance.kingdoms_hashset);
+                    attackers.Sort((a, b) => a.id.CompareTo(b.id));
+                    for (int i = 0; i < attackers.Count; i++)
+                    {
+                        war.joinAttackers(attackers[i]);
+                    }
+                }
+                if (alliance2 != null && alliance2.kingdoms_hashset != null)
+                {
+                    List<Kingdom> defenders = new List<Kingdom>(alliance2.kingdoms_hashset);
+                    defenders.Sort((a, b) => a.id.CompareTo(b.id));
+                    for (int i = 0; i < defenders.Count; i++)
+                    {
+                        war.joinDefenders(defenders[i]);
+                    }
+                }
+            }
+            __result = war;
+            return false;
+        }
+
+        private static bool StartRebellionPrefix(Actor pActor, Plot pPlot, bool pCheckForHappiness)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.city == null) return true;
+            City city = pActor.city;
+            Kingdom kingdom = _cityKingdomRef != null ? _cityKingdomRef(city) : null;
+            if (kingdom == null) return true;
+            if (pActor.isCityLeader())
+            {
+                pActor.city.removeLeader();
+            }
+            Kingdom kingdom2 = _makeOwnKingdomMethod != null
+                ? (Kingdom)_makeOwnKingdomMethod.Invoke(city, new object[] { pActor, true, false })
+                : null;
+            if (kingdom2 == null) return true;
+            using ListPool<City> listPool = new ListPool<City>();
+            listPool.Add(city);
+            pActor.joinCity(city);
+            War war = null;
+            foreach (War war2 in kingdom.getWars())
+            {
+                if (war2.isMainAttacker(kingdom) && war2.getAsset() == WarTypeLibrary.rebellion)
+                {
+                    war = war2;
+                    war.joinDefenders(kingdom2);
+                    break;
+                }
+            }
+            if (war == null)
+            {
+                war = _startWarMethod != null
+                    ? (War)_startWarMethod.Invoke(World.world.diplomacy, new object[] { kingdom, kingdom2, WarTypeLibrary.rebellion, true })
+                    : null;
+                if (war != null && kingdom.hasAlliance() && kingdom.getAlliance() != null && kingdom.getAlliance().kingdoms_hashset != null)
+                {
+                    List<Kingdom> allies = new List<Kingdom>(kingdom.getAlliance().kingdoms_hashset);
+                    allies.Sort((a, b) => a.id.CompareTo(b.id));
+                    for (int i = 0; i < allies.Count; i++)
+                    {
+                        Kingdom item = allies[i];
+                        if (item != kingdom && item.isOpinionTowardsKingdomGood(kingdom))
+                        {
+                            war.joinAttackers(item);
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 40. Tile Island Swim To Safety Equal Distance Region Tie-Break
+        // ==========================================
+        private static bool BehGoToStablePlaceExecutePrefix(BehGoToStablePlace __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pActor == null || pActor.current_tile == null || pActor.current_tile.region == null || pActor.current_tile.region.island == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            TileIsland island = pActor.current_tile.region.island;
+            bool isGood = _isGoodIslandFunc != null ? _isGoodIslandFunc(island, pActor) : true;
+            if (isGood)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            MapRegion bestNearby = FindIslandNearbyDeterministic(pActor);
+            if (bestNearby != null && bestNearby.tiles != null && bestNearby.tiles.Count > 0)
+            {
+                if (_behTileTargetRef != null) _behTileTargetRef(pActor) = bestNearby.tiles[Randy.randomInt(0, bestNearby.tiles.Count)];
+                __result = BehResult.Continue;
+                return false;
+            }
+            List<KeyValuePair<int, MapRegion>> candidateRegions = new List<KeyValuePair<int, MapRegion>>(4);
+            Vector2Int pos = pActor.current_tile.pos;
+            IslandsCalculator ic = _islandsCalculatorRef != null ? _islandsCalculatorRef(World.world) : null;
+            if (ic == null || ic.islands == null) return true;
+            ListPool<TileIsland> islandsList = ic.islands;
+            for (int i = 0; i < islandsList.Count; i++)
+            {
+                TileIsland tileIsland = islandsList[i];
+                if (!CheckIslandDeterministic(island, tileIsland, pActor)) continue;
+                SelectBorderRegionsDeterministic(tileIsland, island, out var pOut, out var pOut2);
+                MapRegion mapRegion = null;
+                int num = int.MaxValue;
+                foreach (MapRegion item in pOut)
+                {
+                    if (pOut2.Contains(item) && item.tiles != null && item.tiles.Count > 0)
+                    {
+                        int num2 = Toolbox.SquaredDist(pos.x, pos.y, item.tiles[0].pos.x, item.tiles[0].pos.y);
+                        if (num2 < num || (num2 == num && mapRegion != null && item.id < mapRegion.id))
+                        {
+                            num = num2;
+                            mapRegion = item;
+                        }
+                    }
+                }
+                if (mapRegion == null) continue;
+                List<WorldTile> edgeTiles = mapRegion.getEdgeTiles();
+                if (edgeTiles == null || edgeTiles.Count == 0) continue;
+                WorldTile randomEdge = edgeTiles[Randy.randomInt(0, edgeTiles.Count)];
+                float num3 = Toolbox.DistTile(pActor.current_tile, randomEdge);
+                if (candidateRegions.Count > 0 && (float)(candidateRegions[0].Key + 15) < num3) continue;
+                if (candidateRegions.Count < 4)
+                {
+                    candidateRegions.Add(new KeyValuePair<int, MapRegion>((int)num3, mapRegion));
+                    continue;
+                }
+                candidateRegions.Sort((x, y) =>
+                {
+                    int cmp = x.Key.CompareTo(y.Key);
+                    if (cmp != 0) return cmp;
+                    return x.Value.id.CompareTo(y.Value.id);
+                });
+                if ((float)candidateRegions[3].Key > num3)
+                {
+                    candidateRegions[3] = new KeyValuePair<int, MapRegion>((int)num3, mapRegion);
+                }
+            }
+            if (candidateRegions.Count > 0)
+            {
+                candidateRegions.Sort((x, y) =>
+                {
+                    int cmp = x.Key.CompareTo(y.Key);
+                    if (cmp != 0) return cmp;
+                    return x.Value.id.CompareTo(y.Value.id);
+                });
+                int bestKey = candidateRegions[0].Key;
+                candidateRegions.RemoveAll(x => x.Key - 15 > bestKey);
+            }
+            if (Randy.randomChance(0.8f) && candidateRegions.Count > 0)
+            {
+                MapRegion chosen = candidateRegions[Randy.randomInt(0, candidateRegions.Count)].Value;
+                if (chosen.tiles != null && chosen.tiles.Count > 0)
+                {
+                    if (_behTileTargetRef != null) _behTileTargetRef(pActor) = chosen.tiles[Randy.randomInt(0, chosen.tiles.Count)];
+                }
+            }
+            else
+            {
+                MapRegion mapRegion3 = (!Randy.randomChance(0.5f) && pActor.current_tile.region.neighbours != null && pActor.current_tile.region.neighbours.Count > 0)
+                    ? pActor.current_tile.region.neighbours[Randy.randomInt(0, pActor.current_tile.region.neighbours.Count)]
+                    : pActor.current_tile.region;
+                if (mapRegion3 != null && mapRegion3.tiles != null && mapRegion3.tiles.Count > 0)
+                {
+                    if (_behTileTargetRef != null) _behTileTargetRef(pActor) = mapRegion3.tiles[Randy.randomInt(0, mapRegion3.tiles.Count)];
+                }
+            }
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        private static void SelectBorderRegionsDeterministic(TileIsland pIsland1, TileIsland pIsland2, out HashSet<MapRegion> pOut1, out HashSet<MapRegion> pOut2)
+        {
+            if (pIsland1.outsideRegionEdges.Count + pIsland2.insideRegionEdges.Count < pIsland1.insideRegionEdges.Count + pIsland2.outsideRegionEdges.Count)
+            {
+                if (pIsland1.outsideRegionEdges.Count > pIsland2.insideRegionEdges.Count)
+                {
+                    pOut1 = pIsland2.insideRegionEdges;
+                    pOut2 = pIsland1.outsideRegionEdges;
+                }
+                else
+                {
+                    pOut2 = pIsland2.insideRegionEdges;
+                    pOut1 = pIsland1.outsideRegionEdges;
+                }
+            }
+            else if (pIsland1.insideRegionEdges.Count > pIsland2.outsideRegionEdges.Count)
+            {
+                pOut1 = pIsland2.outsideRegionEdges;
+                pOut2 = pIsland1.insideRegionEdges;
+            }
+            else
+            {
+                pOut2 = pIsland2.outsideRegionEdges;
+                pOut1 = pIsland1.insideRegionEdges;
+            }
+        }
+
+        private static bool CheckIslandDeterministic(TileIsland pCurrentIsland, TileIsland pIsland, Actor pActor)
+        {
+            if (pCurrentIsland == pIsland) return false;
+            bool isGood = _isGoodIslandFunc != null ? _isGoodIslandFunc(pIsland, pActor) : true;
+            if (!isGood) return false;
+            if (!((pCurrentIsland.getTileCount() <= pIsland.getTileCount()) ? pCurrentIsland.isConnectedWith(pIsland) : pIsland.isConnectedWith(pCurrentIsland))) return false;
+            if (pIsland.insideRegionEdges.Count == 0) return false;
+            return true;
+        }
+
+        private static MapRegion FindIslandNearbyDeterministic(Actor pActor)
+        {
+            if (pActor?.current_tile == null) return null;
+            MapChunk curChunk = pActor.current_tile.chunk;
+            if (curChunk == null) return null;
+            MapChunk[] neighbours = curChunk.neighbours_all;
+            int totalChunks = 1 + (neighbours?.Length ?? 0);
+            TileIsland island = pActor.current_tile.region?.island;
+            MapRegion bestReg = null;
+            int bestDist = int.MaxValue;
+            for (int i = 0; i < totalChunks; i++)
+            {
+                MapChunk mapChunk = i == 0 ? curChunk : neighbours[i - 1];
+                if (mapChunk == null || mapChunk.regions == null) continue;
+                for (int j = 0; j < mapChunk.regions.Count; j++)
+                {
+                    MapRegion mapRegion = mapChunk.regions[j];
+                    if (mapRegion == null || !CheckIslandDeterministic(island, mapRegion.island, pActor)) continue;
+                    List<WorldTile> edgeTiles = mapRegion.getEdgeTiles();
+                    if (edgeTiles != null && edgeTiles.Count != 0)
+                    {
+                        WorldTile closestTile = Toolbox.getClosestTile(edgeTiles, pActor.current_tile);
+                        if (closestTile != null)
+                        {
+                            int num = Toolbox.SquaredDistTile(pActor.current_tile, closestTile);
+                            if (num < bestDist || (num == bestDist && bestReg != null && mapRegion.id < bestReg.id))
+                            {
+                                bestReg = mapRegion;
+                                bestDist = num;
+                            }
+                        }
+                    }
+                }
+            }
+            return bestReg;
+        }
+
+        // ==========================================
+        // 41. City Territory Paint Drop Zone Selection Over Hashset Order
+        // ==========================================
+        private static bool ActionPaintPrefix(WorldTile pTile, string pDropID)
+        {
+            if (!LockstepClock.InTick) return true;
+            if (pTile == null || pTile.zone == null) return false;
+            TileZone zone = pTile.zone;
+            if (!zone.hasCity()) return false;
+            City city = zone.city;
+            if (city == null) return false;
+            HashSet<TileZone> paintZones = new HashSet<TileZone>();
+            World.world.city_zone_helper.city_growth.getZoneToClaim(null, city, pDebug: true, paintZones, 1);
+            List<TileZone> candidates = new List<TileZone>();
+            foreach (TileZone item in paintZones)
+            {
+                if (item.hasCity()) continue;
+                TileZone[] neighbours = item.neighbours;
+                if (neighbours == null) continue;
+                for (int i = 0; i < neighbours.Length; i++)
+                {
+                    if (neighbours[i].city == city)
+                    {
+                        candidates.Add(item);
+                        break;
+                    }
+                }
+            }
+            if (candidates.Count > 0)
+            {
+                candidates.Sort((a, b) => a.id.CompareTo(b.id));
+                TileZone random = candidates[Randy.randomInt(0, candidates.Count)];
+                if (_addZoneMethod != null)
+                {
+                    _addZoneMethod.Invoke(city, new object[] { random });
+                }
+                city.setAbandonedZonesDirty();
+            }
             return false;
         }
     }
