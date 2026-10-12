@@ -107,6 +107,14 @@ namespace Coopfall.Lockstep
     /// 92. ai.ActorTool.attributeDice: attribute dice rolls derived deterministically via tick hash without unseeded randomInt.
     /// 93. ItemAsset.getRandomNameTemplate: matching legendary weapon/gear name templates presorted alphabetically and chosen deterministically.
     /// 94. NameGeneratorReplacers: deterministic selection for dynamic name replacers (city, kingdom, culture, family, subspecies, clan, food) without unseeded getRandom.
+    /// 95. IslandsCalculator.getRandomIslandGround & getRandomIslandNonGround: deterministic island selection and weighted distribution via tick hash.
+    /// 96. WorldTile.getWalkableTileAround, getTileAroundThisOnSameIsland & getNeighbourTileSameIsland: deterministic candidate neighbour tile sorting by tile_id.
+    /// 97. WarManager.getWars & getRandomWarFor: candidate wars presorted by war.id with deterministic Fisher-Yates shuffle.
+    /// 98. GeneLibrary.getRandomNormalGene: candidate normal genes presorted alphabetically and selected deterministically via tick hash.
+    /// 99. NameGeneratorReplacers.replaceAnyKing, replaceAnyLeader & replaceAnyFamilyFounders: candidate monarchs, leaders, and family founders presorted by ID.
+    /// 100. Toolbox.getRandomVectorWithinDistance & getRandomTileWithinDistance: deterministic vector offsets and tile candidate distance sorting.
+    /// 101. WorldBehaviourActions.updateUnitSpawn: candidate islands and tiles selected deterministically via tick hash with deterministic creature spawn counts.
+    /// 102. WorldBehaviourActions.growMinerals & TileActionLibrary.getGrowTypeRandomMineral: candidate regions, tiles, and mineral assets presorted and derived deterministically.
     /// </summary>
     public static class SimulationInTick
     {
@@ -200,6 +208,13 @@ namespace Coopfall.Lockstep
         private static readonly List<Subspecies> _sortSubspeciesReplacerPool = new List<Subspecies>();
         private static readonly List<Clan> _sortClanReplacerPool = new List<Clan>();
         private static readonly List<ResourceAsset> _sortResourceReplacerPool = new List<ResourceAsset>();
+        private static readonly List<TileIsland> _islandsCandidatePool = new List<TileIsland>();
+        private static readonly List<WorldTile> _tileCandidatePool = new List<WorldTile>();
+        private static readonly List<War> _warCandidatePool = new List<War>();
+        private static readonly List<GeneAsset> _geneCandidatePool = new List<GeneAsset>();
+        private static readonly List<string> _unitSpawnCandidatePool = new List<string>();
+        private static readonly List<string> _mineralSpawnCandidatePool = new List<string>();
+        private static readonly List<MapRegion> _regionCandidatePool = new List<MapRegion>();
 
         private delegate void CalculateForceDelegate(Actor pActor, float pStartX, float pStartY, float pTargetX, float pTargetY, float pForceAmountDirection, float pForceHeight, bool pCheckCancelJobOnLand);
         private static CalculateForceDelegate _calculateForceDel;
@@ -1205,6 +1220,94 @@ namespace Coopfall.Lockstep
                 MethodInfo mRepFood = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceFavoriteFood", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
                 if (mRepFood != null) h.Patch(mRepFood, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceFoodPrefix)));
                 else Log.Warn("lockstep: NameGeneratorReplacers.replaceFavoriteFood not found");
+
+                // 95. World Ground & Water Island Random Selection Determinism
+                MethodInfo mGetIslandGround = AccessTools.Method(typeof(IslandsCalculator), "getRandomIslandGround", new[] { typeof(bool) });
+                if (mGetIslandGround != null) h.Patch(mGetIslandGround, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(IslandsCalculatorGetRandomIslandGroundPrefix)));
+                else Log.Warn("lockstep: IslandsCalculator.getRandomIslandGround not found");
+
+                MethodInfo mGetIslandGroundWeighted = AccessTools.Method(typeof(IslandsCalculator), "getRandomIslandGroundWeighted", new[] { typeof(bool) });
+                if (mGetIslandGroundWeighted != null) h.Patch(mGetIslandGroundWeighted, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(IslandsCalculatorGetRandomIslandGroundWeightedPrefix)));
+                else Log.Warn("lockstep: IslandsCalculator.getRandomIslandGroundWeighted not found");
+
+                MethodInfo mGetIslandNonGround = AccessTools.Method(typeof(IslandsCalculator), "getRandomIslandNonGround", new[] { typeof(bool) });
+                if (mGetIslandNonGround != null) h.Patch(mGetIslandNonGround, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(IslandsCalculatorGetRandomIslandNonGroundPrefix)));
+                else Log.Warn("lockstep: IslandsCalculator.getRandomIslandNonGround not found");
+
+                MethodInfo mGetIslandNonGroundWeighted = AccessTools.Method(typeof(IslandsCalculator), "getRandomIslandNonGroundWeighted", new[] { typeof(bool) });
+                if (mGetIslandNonGroundWeighted != null) h.Patch(mGetIslandNonGroundWeighted, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(IslandsCalculatorGetRandomIslandNonGroundWeightedPrefix)));
+                else Log.Warn("lockstep: IslandsCalculator.getRandomIslandNonGroundWeighted not found");
+
+                // 96. Cardinal and Adjacent WorldTile Walkable / Same-Island Neighbor Search Determinism
+                MethodInfo mWalkableTileAround = AccessTools.Method(typeof(WorldTile), "getWalkableTileAround", new[] { typeof(WorldTile) });
+                if (mWalkableTileAround != null) h.Patch(mWalkableTileAround, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldTileGetWalkableTileAroundPrefix)));
+                else Log.Warn("lockstep: WorldTile.getWalkableTileAround not found");
+
+                MethodInfo mTileAroundSameIsland = AccessTools.Method(typeof(WorldTile), "getTileAroundThisOnSameIsland", new[] { typeof(WorldTile) });
+                if (mTileAroundSameIsland != null) h.Patch(mTileAroundSameIsland, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldTileGetTileAroundThisOnSameIslandPrefix)));
+                else Log.Warn("lockstep: WorldTile.getTileAroundThisOnSameIsland not found");
+
+                MethodInfo mTileAroundSameIslandClosest = AccessTools.Method(typeof(WorldTile), "getTileAroundThisOnSameIsland", new[] { typeof(WorldTile), typeof(bool) });
+                if (mTileAroundSameIslandClosest != null) h.Patch(mTileAroundSameIslandClosest, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldTileGetTileAroundThisOnSameIslandClosestPrefix)));
+                else Log.Warn("lockstep: WorldTile.getTileAroundThisOnSameIsland(bool) not found");
+
+                MethodInfo mNeighbourTileSameIsland = AccessTools.Method(typeof(WorldTile), "getNeighbourTileSameIsland", Type.EmptyTypes);
+                if (mNeighbourTileSameIsland != null) h.Patch(mNeighbourTileSameIsland, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldTileGetNeighbourTileSameIslandPrefix)));
+                else Log.Warn("lockstep: WorldTile.getNeighbourTileSameIsland not found");
+
+                // 97. War Random Iteration & Plots War Targeting Determinism
+                MethodInfo mGetRandomWarFor = AccessTools.Method(typeof(WarManager), "getRandomWarFor", new[] { typeof(Kingdom) });
+                if (mGetRandomWarFor != null) h.Patch(mGetRandomWarFor, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WarManagerGetRandomWarForPrefix)));
+                else Log.Warn("lockstep: WarManager.getRandomWarFor not found");
+
+                MethodInfo mGetWarsKingdom = AccessTools.Method(typeof(WarManager), "getWars", new[] { typeof(Kingdom), typeof(bool) });
+                if (mGetWarsKingdom != null) h.Patch(mGetWarsKingdom, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WarManagerGetWarsKingdomPrefix)));
+                else Log.Warn("lockstep: WarManager.getWars(Kingdom) not found");
+
+                MethodInfo mGetWarsAlliance = AccessTools.Method(typeof(WarManager), "getWars", new[] { typeof(Alliance), typeof(bool) });
+                if (mGetWarsAlliance != null) h.Patch(mGetWarsAlliance, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WarManagerGetWarsAlliancePrefix)));
+                else Log.Warn("lockstep: WarManager.getWars(Alliance) not found");
+
+                // 98. Subspecies Genome Nucleus Random Normal Gene Selection Determinism
+                MethodInfo mGetRandomNormalGene = AccessTools.Method(typeof(GeneLibrary), "getRandomNormalGene", Type.EmptyTypes);
+                if (mGetRandomNormalGene != null) h.Patch(mGetRandomNormalGene, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GeneLibraryGetRandomNormalGenePrefix)));
+                else Log.Warn("lockstep: GeneLibrary.getRandomNormalGene not found");
+
+                // 99. Dynamic Name Generator Monarch & City Leader Replacers Determinism
+                MethodInfo mRepKing = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyKing", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepKing != null) h.Patch(mRepKing, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyKingPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyKing not found");
+
+                MethodInfo mRepLeader = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyLeader", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepLeader != null) h.Patch(mRepLeader, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyLeaderPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyLeader not found");
+
+                MethodInfo mRepFounders = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyFamilyFounders", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepFounders != null) h.Patch(mRepFounders, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyFamilyFoundersPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyFamilyFounders not found");
+
+                // 100. Spatial Proximity Tile Search Vector Random Offset Determinism
+                MethodInfo mGetRandomVectorDist = AccessTools.Method(typeof(Toolbox), "getRandomVectorWithinDistance", new[] { typeof(int), typeof(int), typeof(int) });
+                if (mGetRandomVectorDist != null) h.Patch(mGetRandomVectorDist, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ToolboxGetRandomVectorWithinDistancePrefix)));
+                else Log.Warn("lockstep: Toolbox.getRandomVectorWithinDistance not found");
+
+                MethodInfo mGetRandomTileDistTiles = AccessTools.Method(typeof(Toolbox), "getRandomTileWithinDistance", new[] { typeof(WorldTile), typeof(int), typeof(ListPool<WorldTile>) });
+                if (mGetRandomTileDistTiles != null) h.Patch(mGetRandomTileDistTiles, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ToolboxGetRandomTileWithinDistanceTilesPrefix)));
+                else Log.Warn("lockstep: Toolbox.getRandomTileWithinDistance(tiles) not found");
+
+                // 101. Ambient Animal & Creature Spawning Determinism
+                MethodInfo mUpdateUnitSpawn = AccessTools.Method(typeof(WorldBehaviourActions), "updateUnitSpawn", Type.EmptyTypes);
+                if (mUpdateUnitSpawn != null) h.Patch(mUpdateUnitSpawn, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionsUpdateUnitSpawnPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActions.updateUnitSpawn not found");
+
+                // 102. World Law Mineral Growth Terraforming Determinism
+                MethodInfo mGrowMinerals = AccessTools.Method(typeof(WorldBehaviourActions), "growMinerals", Type.EmptyTypes);
+                if (mGrowMinerals != null) h.Patch(mGrowMinerals, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionsGrowMineralsPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActions.growMinerals not found");
+
+                MethodInfo mGrowTypeMineral = AccessTools.Method(typeof(TileActionLibrary), "getGrowTypeRandomMineral", new[] { typeof(WorldTile) });
+                if (mGrowTypeMineral != null) h.Patch(mGrowTypeMineral, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TileActionLibraryGetGrowTypeRandomMineralPrefix)));
+                else Log.Warn("lockstep: TileActionLibrary.getGrowTypeRandomMineral not found");
             }
             catch (Exception e)
             {
@@ -8203,6 +8306,757 @@ namespace Coopfall.Lockstep
                 }
             }
             pName = pName.Replace("$food$", newValue);
+            return false;
+        }
+
+        // 95. World Ground & Water Island Random Selection Determinism
+        private static bool IslandsCalculatorGetRandomIslandGroundPrefix(bool pMinRegions, ref TileIsland __result, IslandsCalculator __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance.islands_ground == null || __instance.islands_ground.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Clear();
+            var list = __instance.islands_ground;
+            for (int i = 0; i < list.Count; i++)
+            {
+                TileIsland island = list[i];
+                if (island != null && (!pMinRegions || island.regions.Count >= 4))
+                {
+                    _islandsCandidatePool.Add(island);
+                }
+            }
+            if (_islandsCandidatePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Sort((a, b) => a.id.CompareTo(b.id));
+            int pick = (int)(Det01x(LockstepClock.Tick, 0x1A1, 0x7E1) * _islandsCandidatePool.Count);
+            if (pick >= _islandsCandidatePool.Count) pick = _islandsCandidatePool.Count - 1;
+            __result = _islandsCandidatePool[pick];
+            _islandsCandidatePool.Clear();
+            return false;
+        }
+
+        private static bool IslandsCalculatorGetRandomIslandGroundWeightedPrefix(bool pMinRegions, ref TileIsland __result, IslandsCalculator __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance.islands_ground == null || __instance.islands_ground.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Clear();
+            int totalWeight = 0;
+            var list = __instance.islands_ground;
+            for (int i = 0; i < list.Count; i++)
+            {
+                TileIsland island = list[i];
+                if (island != null && (!pMinRegions || island.regions.Count >= 4))
+                {
+                    _islandsCandidatePool.Add(island);
+                    totalWeight += island.regions.Count;
+                }
+            }
+            if (_islandsCandidatePool.Count == 0 || totalWeight == 0)
+            {
+                _islandsCandidatePool.Clear();
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Sort((a, b) => a.id.CompareTo(b.id));
+            float roll = Det01x(LockstepClock.Tick, 0x1A2, 0x7E2) * totalWeight;
+            int acc = 0;
+            TileIsland chosen = _islandsCandidatePool[_islandsCandidatePool.Count - 1];
+            for (int i = 0; i < _islandsCandidatePool.Count; i++)
+            {
+                acc += _islandsCandidatePool[i].regions.Count;
+                if (roll < acc)
+                {
+                    chosen = _islandsCandidatePool[i];
+                    break;
+                }
+            }
+            _islandsCandidatePool.Clear();
+            __result = chosen;
+            return false;
+        }
+
+        private static bool IslandsCalculatorGetRandomIslandNonGroundPrefix(bool pMinRegions, ref TileIsland __result, IslandsCalculator __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance.islands == null || __instance.islands.Count == 0 || __instance.islands_ground.Count == __instance.islands.Count)
+            {
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Clear();
+            var list = __instance.islands;
+            for (int i = 0; i < list.Count; i++)
+            {
+                TileIsland island = list[i];
+                if (island != null && island.type != TileLayerType.Ground && (!pMinRegions || island.regions.Count >= 4))
+                {
+                    _islandsCandidatePool.Add(island);
+                }
+            }
+            if (_islandsCandidatePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Sort((a, b) => a.id.CompareTo(b.id));
+            int pick = (int)(Det01x(LockstepClock.Tick, 0x1A3, 0x7E3) * _islandsCandidatePool.Count);
+            if (pick >= _islandsCandidatePool.Count) pick = _islandsCandidatePool.Count - 1;
+            __result = _islandsCandidatePool[pick];
+            _islandsCandidatePool.Clear();
+            return false;
+        }
+
+        private static bool IslandsCalculatorGetRandomIslandNonGroundWeightedPrefix(bool pMinRegions, ref TileIsland __result, IslandsCalculator __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance.islands == null || __instance.islands.Count == 0 || __instance.islands_ground.Count == __instance.islands.Count)
+            {
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Clear();
+            int totalWeight = 0;
+            var list = __instance.islands;
+            for (int i = 0; i < list.Count; i++)
+            {
+                TileIsland island = list[i];
+                if (island != null && island.type != TileLayerType.Ground && (!pMinRegions || island.regions.Count >= 4))
+                {
+                    _islandsCandidatePool.Add(island);
+                    totalWeight += island.regions.Count;
+                }
+            }
+            if (_islandsCandidatePool.Count == 0 || totalWeight == 0)
+            {
+                _islandsCandidatePool.Clear();
+                __result = null;
+                return false;
+            }
+            _islandsCandidatePool.Sort((a, b) => a.id.CompareTo(b.id));
+            float roll = Det01x(LockstepClock.Tick, 0x1A4, 0x7E4) * totalWeight;
+            int acc = 0;
+            TileIsland chosen = _islandsCandidatePool[_islandsCandidatePool.Count - 1];
+            for (int i = 0; i < _islandsCandidatePool.Count; i++)
+            {
+                acc += _islandsCandidatePool[i].regions.Count;
+                if (roll < acc)
+                {
+                    chosen = _islandsCandidatePool[i];
+                    break;
+                }
+            }
+            _islandsCandidatePool.Clear();
+            __result = chosen;
+            return false;
+        }
+
+        // 96. Cardinal and Adjacent WorldTile Walkable / Same-Island Neighbor Search Determinism
+        private static bool WorldTileGetWalkableTileAroundPrefix(WorldTile pFrom, ref WorldTile __result, WorldTile __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance.neighboursAll == null || __instance.neighboursAll.Length == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _tileCandidatePool.Clear();
+            for (int i = 0; i < __instance.neighboursAll.Length; i++)
+            {
+                WorldTile nb = __instance.neighboursAll[i];
+                if (nb != null && pFrom != null && nb.isSameIsland(pFrom))
+                {
+                    _tileCandidatePool.Add(nb);
+                }
+            }
+            if (_tileCandidatePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _tileCandidatePool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            int pick = (int)(Det01x(__instance.tile_id, LockstepClock.Tick, 0x31) * _tileCandidatePool.Count);
+            if (pick >= _tileCandidatePool.Count) pick = _tileCandidatePool.Count - 1;
+            __result = _tileCandidatePool[pick];
+            _tileCandidatePool.Clear();
+            return false;
+        }
+
+        private static bool WorldTileGetTileAroundThisOnSameIslandPrefix(WorldTile pTileFrom, ref WorldTile __result, WorldTile __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance.neighboursAll == null || __instance.neighboursAll.Length == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _tileCandidatePool.Clear();
+            for (int i = 0; i < __instance.neighboursAll.Length; i++)
+            {
+                WorldTile nb = __instance.neighboursAll[i];
+                if (nb != null && nb.isSameIsland(__instance))
+                {
+                    _tileCandidatePool.Add(nb);
+                }
+            }
+            if (_tileCandidatePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _tileCandidatePool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            int pick = (int)(Det01x(__instance.tile_id, LockstepClock.Tick, 0x32) * _tileCandidatePool.Count);
+            if (pick >= _tileCandidatePool.Count) pick = _tileCandidatePool.Count - 1;
+            __result = _tileCandidatePool[pick];
+            _tileCandidatePool.Clear();
+            return false;
+        }
+
+        private static bool WorldTileGetTileAroundThisOnSameIslandClosestPrefix(WorldTile pTileFrom, bool pClosest, ref WorldTile __result, WorldTile __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (!pClosest)
+            {
+                __result = __instance.getTileAroundThisOnSameIsland(pTileFrom);
+                return false;
+            }
+            if (__instance.neighboursAll == null || __instance.neighboursAll.Length == 0)
+            {
+                __result = null;
+                return false;
+            }
+            int minSqDist = int.MaxValue;
+            WorldTile best = null;
+            for (int i = 0; i < __instance.neighboursAll.Length; i++)
+            {
+                WorldTile nb = __instance.neighboursAll[i];
+                if (nb != null && nb.isSameIsland(__instance))
+                {
+                    int sqDist = Toolbox.SquaredDistTile(pTileFrom, nb);
+                    if (sqDist < minSqDist || (sqDist == minSqDist && (best == null || nb.tile_id < best.tile_id)))
+                    {
+                        minSqDist = sqDist;
+                        best = nb;
+                    }
+                }
+            }
+            __result = best;
+            return false;
+        }
+
+        private static bool WorldTileGetNeighbourTileSameIslandPrefix(ref WorldTile __result, WorldTile __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance.neighboursAll == null || __instance.neighboursAll.Length == 0)
+            {
+                __result = __instance;
+                return false;
+            }
+            _tileCandidatePool.Clear();
+            for (int i = 0; i < __instance.neighboursAll.Length; i++)
+            {
+                WorldTile nb = __instance.neighboursAll[i];
+                if (nb != null && nb.isSameIsland(__instance))
+                {
+                    _tileCandidatePool.Add(nb);
+                }
+            }
+            if (_tileCandidatePool.Count == 0)
+            {
+                __result = __instance;
+                return false;
+            }
+            _tileCandidatePool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            int pick = (int)(Det01x(__instance.tile_id, LockstepClock.Tick, 0x33) * _tileCandidatePool.Count);
+            if (pick >= _tileCandidatePool.Count) pick = _tileCandidatePool.Count - 1;
+            __result = _tileCandidatePool[pick];
+            _tileCandidatePool.Clear();
+            return false;
+        }
+
+        // 97. War Random Iteration & Plots War Targeting Determinism
+        private static bool WarManagerGetRandomWarForPrefix(Kingdom pKingdom, ref War __result, WarManager __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            _warCandidatePool.Clear();
+            var warsList = __instance.list;
+            if (warsList != null)
+            {
+                for (int i = 0; i < warsList.Count; i++)
+                {
+                    War w = warsList[i];
+                    if (w != null && !w.hasEnded() && w.hasKingdom(pKingdom))
+                    {
+                        _warCandidatePool.Add(w);
+                    }
+                }
+            }
+            if (_warCandidatePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _warCandidatePool.Sort((a, b) => a.id.CompareTo(b.id));
+            long kid = pKingdom != null ? pKingdom.id : 0L;
+            int pick = (int)(Det01x(LockstepClock.Tick, kid, 0x973) * _warCandidatePool.Count);
+            if (pick >= _warCandidatePool.Count) pick = _warCandidatePool.Count - 1;
+            __result = _warCandidatePool[pick];
+            _warCandidatePool.Clear();
+            return false;
+        }
+
+        private static bool WarManagerGetWarsKingdomPrefix(Kingdom pKingdom, bool pRandom, ref IEnumerable<War> __result, WarManager __instance)
+        {
+            if (!LockstepClock.Active || !pRandom) return true;
+            var matchingWars = new List<War>();
+            var warsList = __instance.list;
+            if (warsList != null)
+            {
+                for (int i = 0; i < warsList.Count; i++)
+                {
+                    War w = warsList[i];
+                    if (w != null && !w.hasEnded() && w.hasKingdom(pKingdom))
+                    {
+                        matchingWars.Add(w);
+                    }
+                }
+            }
+            matchingWars.Sort((a, b) => a.id.CompareTo(b.id));
+            long kid = pKingdom != null ? pKingdom.id : 0L;
+            for (int i = matchingWars.Count - 1; i > 0; i--)
+            {
+                int j = (int)(Det01x(LockstepClock.Tick, kid, (int)(0x971 ^ i)) * (i + 1));
+                if (j > i) j = i;
+                War temp = matchingWars[i];
+                matchingWars[i] = matchingWars[j];
+                matchingWars[j] = temp;
+            }
+            __result = matchingWars;
+            return false;
+        }
+
+        private static bool WarManagerGetWarsAlliancePrefix(Alliance pAlliance, bool pRandom, ref IEnumerable<War> __result, WarManager __instance)
+        {
+            if (!LockstepClock.Active || !pRandom) return true;
+            var matchingWars = new List<War>();
+            var warsList = __instance.list;
+            if (warsList != null && pAlliance != null && pAlliance.kingdoms_list != null)
+            {
+                for (int i = 0; i < warsList.Count; i++)
+                {
+                    War w = warsList[i];
+                    if (w == null || w.hasEnded()) continue;
+                    for (int k = 0; k < pAlliance.kingdoms_list.Count; k++)
+                    {
+                        Kingdom kingdom = pAlliance.kingdoms_list[k];
+                        if (kingdom != null && w.hasKingdom(kingdom))
+                        {
+                            matchingWars.Add(w);
+                            break;
+                        }
+                    }
+                }
+            }
+            matchingWars.Sort((a, b) => a.id.CompareTo(b.id));
+            long aid = pAlliance != null ? pAlliance.id : 0L;
+            for (int i = matchingWars.Count - 1; i > 0; i--)
+            {
+                int j = (int)(Det01x(LockstepClock.Tick, aid, (int)(0x972 ^ i)) * (i + 1));
+                if (j > i) j = i;
+                War temp = matchingWars[i];
+                matchingWars[i] = matchingWars[j];
+                matchingWars[j] = temp;
+            }
+            __result = matchingWars;
+            return false;
+        }
+
+        // 98. Subspecies Genome Nucleus Random Normal Gene Selection Determinism
+        private static bool GeneLibraryGetRandomNormalGenePrefix(ref string __result, GeneLibrary __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            _geneCandidatePool.Clear();
+            var list = __instance.list;
+            if (list != null)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    GeneAsset item = list[i];
+                    if (item != null && item.isAvailable() && !item.is_empty && !item.for_generation)
+                    {
+                        _geneCandidatePool.Add(item);
+                    }
+                }
+            }
+            if (_geneCandidatePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _geneCandidatePool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+            int pick = (int)(Det01x(LockstepClock.Tick, 0x4E7A, 0x11B) * _geneCandidatePool.Count);
+            if (pick >= _geneCandidatePool.Count) pick = _geneCandidatePool.Count - 1;
+            __result = _geneCandidatePool[pick].id;
+            _geneCandidatePool.Clear();
+            return false;
+        }
+
+        // 99. Dynamic Name Generator Monarch & City Leader Replacers Determinism
+        private static bool NameGeneratorReplacersReplaceAnyKingPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$king_random$")) return false;
+            if (World.world?.kingdoms == null || !World.world.kingdoms.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            _sortKingdomReplacerPool.Clear();
+            var list = World.world.kingdoms.list;
+            for (int i = 0; i < list.Count; i++)
+            {
+                Kingdom k = list[i];
+                if (k != null && k.hasKing() && k.king != null && k.king.isAlive())
+                {
+                    _sortKingdomReplacerPool.Add(k);
+                }
+            }
+            if (_sortKingdomReplacerPool.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _sortKingdomReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            long actorId = pActor != null ? pActor.id : 0L;
+            int pick = (int)(Det01x(LockstepClock.Tick, actorId, 0x888) * _sortKingdomReplacerPool.Count);
+            if (pick >= _sortKingdomReplacerPool.Count) pick = _sortKingdomReplacerPool.Count - 1;
+            Actor king = _sortKingdomReplacerPool[pick].king;
+            _sortKingdomReplacerPool.Clear();
+            pName = pName.Replace("$king_random$", king.getName());
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceAnyLeaderPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$leader_random$")) return false;
+            if (World.world?.cities == null || !World.world.cities.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            _sortCityReplacerPool.Clear();
+            var list = World.world.cities.list;
+            for (int i = 0; i < list.Count; i++)
+            {
+                City c = list[i];
+                if (c != null && c.hasLeader() && c.leader != null && c.leader.isAlive())
+                {
+                    _sortCityReplacerPool.Add(c);
+                }
+            }
+            if (_sortCityReplacerPool.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _sortCityReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            long actorId = pActor != null ? pActor.id : 0L;
+            int pick = (int)(Det01x(LockstepClock.Tick, actorId, 0x999) * _sortCityReplacerPool.Count);
+            if (pick >= _sortCityReplacerPool.Count) pick = _sortCityReplacerPool.Count - 1;
+            Actor leader = _sortCityReplacerPool[pick].leader;
+            _sortCityReplacerPool.Clear();
+            pName = pName.Replace("$leader_random$", leader.getName());
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceAnyFamilyFoundersPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || (!pName.Contains("$family_founder_1$") && !pName.Contains("$family_founder_2$"))) return false;
+            if (World.world?.families == null || !World.world.families.hasAny() || pActor == null)
+            {
+                pName = "";
+                return false;
+            }
+            _sortFamilyReplacerPool.Clear();
+            var list = World.world.families.list;
+            for (int i = 0; i < list.Count; i++)
+            {
+                Family f = list[i];
+                if (f != null && f.isSameSpecies(pActor.asset.id) && f.hasFounders() && f.units != null && f.units.Count > 0)
+                {
+                    _sortFamilyReplacerPool.Add(f);
+                }
+            }
+            if (_sortFamilyReplacerPool.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _sortFamilyReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            long actorId = pActor.id;
+            int pick = (int)(Det01x(LockstepClock.Tick, actorId, 0xAAA) * _sortFamilyReplacerPool.Count);
+            if (pick >= _sortFamilyReplacerPool.Count) pick = _sortFamilyReplacerPool.Count - 1;
+            Family family = _sortFamilyReplacerPool[pick];
+            _sortFamilyReplacerPool.Clear();
+            NameGeneratorReplacers.replaceFamilyFounder1(ref pName, family.units[0]);
+            NameGeneratorReplacers.replaceFamilyFounder2(ref pName, family.units[0]);
+            return false;
+        }
+
+        // 100. Spatial Proximity Tile Search Vector Random Offset Determinism
+        private static bool ToolboxGetRandomVectorWithinDistancePrefix(int pX, int pY, int pRange, ref Vector2Int __result)
+        {
+            if (!LockstepClock.Active) return true;
+            Vector2 pPos = new Vector2(pX - pRange, pY - pRange);
+            Vector2 pPos2 = new Vector2(pX + pRange, pY + pRange);
+            pPos.x = Mathf.Clamp(pPos.x, 0f, MapBox.width - 1);
+            pPos.y = Mathf.Clamp(pPos.y, 0f, MapBox.height - 1);
+            pPos2.x = Mathf.Clamp(pPos2.x, 0f, MapBox.width - 1);
+            pPos2.y = Mathf.Clamp(pPos2.y, 0f, MapBox.height - 1);
+            float fx = Det01x(LockstepClock.Tick, pX, 0x1B89);
+            float fy = Det01x(LockstepClock.Tick, pY, 0x2C9A);
+            float rx = pPos.x + fx * (pPos2.x - pPos.x);
+            float ry = pPos.y + fy * (pPos2.y - pPos.y);
+            __result = new Vector2Int((int)rx, (int)ry);
+            return false;
+        }
+
+        private static bool ToolboxGetRandomTileWithinDistanceTilesPrefix(WorldTile pWorldTile, int pRange, ListPool<WorldTile> pTiles, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pTiles != null && pTiles.Count > 0)
+            {
+                _tileCandidatePool.Clear();
+                for (int i = 0; i < pTiles.Count; i++)
+                {
+                    WorldTile t = pTiles[i];
+                    if (t != null && !(Toolbox.DistTile(pWorldTile, t) > (float)pRange))
+                    {
+                        _tileCandidatePool.Add(t);
+                    }
+                }
+                if (_tileCandidatePool.Count > 0)
+                {
+                    _tileCandidatePool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                    int pick = (int)(Det01x(LockstepClock.Tick, pWorldTile != null ? pWorldTile.tile_id : 0, 0x3DAB) * _tileCandidatePool.Count);
+                    if (pick >= _tileCandidatePool.Count) pick = _tileCandidatePool.Count - 1;
+                    __result = _tileCandidatePool[pick];
+                    _tileCandidatePool.Clear();
+                    return false;
+                }
+            }
+            __result = Toolbox.getRandomTileWithinDistance(pWorldTile, pRange);
+            return false;
+        }
+
+        // 101. Ambient Animal & Creature Spawning Determinism
+        private static bool WorldBehaviourActionsUpdateUnitSpawnPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            MapChunkManager mcm = _mapChunkManagerRef != null ? _mapChunkManagerRef(World.world) : null;
+            if (!WorldLawLibrary.world_law_animals_spawn.isEnabled() || mcm == null || mcm.chunks == null || mcm.chunks.Length == 0)
+            {
+                return false;
+            }
+            IslandsCalculator ic = _islandsCalculatorRef != null ? _islandsCalculatorRef(World.world) : null;
+            if (ic == null || ic.islands_ground == null || ic.islands_ground.Count == 0)
+            {
+                return false;
+            }
+            TileIsland tileIsland = _getRandomIslandGroundFunc != null ? _getRandomIslandGroundFunc(ic, true) : null;
+            if (tileIsland == null || tileIsland.regions == null || tileIsland.regions.Count == 0)
+            {
+                return false;
+            }
+            _regionCandidatePool.Clear();
+            var regList = tileIsland.regions.getSimpleList();
+            for (int i = 0; i < regList.Count; i++)
+            {
+                MapRegion r = regList[i];
+                if (r != null && r.tiles.Count > 0) _regionCandidatePool.Add(r);
+            }
+            if (_regionCandidatePool.Count == 0)
+            {
+                return false;
+            }
+            _regionCandidatePool.Sort((a, b) => a.id.CompareTo(b.id));
+            int regPick = (int)(Det01x(LockstepClock.Tick, tileIsland.id, 0x111) * _regionCandidatePool.Count);
+            if (regPick >= _regionCandidatePool.Count) regPick = _regionCandidatePool.Count - 1;
+            MapRegion chosenRegion = _regionCandidatePool[regPick];
+            _regionCandidatePool.Clear();
+
+            _tileCandidatePool.Clear();
+            for (int i = 0; i < chosenRegion.tiles.Count; i++)
+            {
+                WorldTile t = chosenRegion.tiles[i];
+                if (t != null) _tileCandidatePool.Add(t);
+            }
+            if (_tileCandidatePool.Count == 0)
+            {
+                return false;
+            }
+            _tileCandidatePool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            int tilePick = (int)(Det01x(LockstepClock.Tick, tileIsland.id, 0x222) * _tileCandidatePool.Count);
+            if (tilePick >= _tileCandidatePool.Count) tilePick = _tileCandidatePool.Count - 1;
+            WorldTile randomTile = _tileCandidatePool[tilePick];
+            _tileCandidatePool.Clear();
+
+            BiomeAsset biome_asset = randomTile.Type.biome_asset;
+            if (biome_asset == null || !biome_asset.pot_spawn_units_auto || biome_asset.pot_units_spawn == null || biome_asset.pot_units_spawn.Count == 0)
+            {
+                return false;
+            }
+            _unitSpawnCandidatePool.Clear();
+            for (int i = 0; i < biome_asset.pot_units_spawn.Count; i++)
+            {
+                string u = biome_asset.pot_units_spawn[i];
+                if (!string.IsNullOrEmpty(u)) _unitSpawnCandidatePool.Add(u);
+            }
+            if (_unitSpawnCandidatePool.Count == 0)
+            {
+                return false;
+            }
+            _unitSpawnCandidatePool.Sort(StringComparer.Ordinal);
+            int unitPick = (int)(Det01x(LockstepClock.Tick, randomTile.tile_id, 0x333) * _unitSpawnCandidatePool.Count);
+            if (unitPick >= _unitSpawnCandidatePool.Count) unitPick = _unitSpawnCandidatePool.Count - 1;
+            string chosenUnit = _unitSpawnCandidatePool[unitPick];
+            _unitSpawnCandidatePool.Clear();
+
+            ActorAsset actorAsset = AssetManager.actor_library.get(chosenUnit);
+            if (actorAsset == null || actorAsset.units.Count > actorAsset.max_random_amount)
+            {
+                return false;
+            }
+            int num = 0;
+            foreach (Actor item in Finder.getUnitsFromChunk(randomTile, 1))
+            {
+                _ = item;
+                if (num++ > 3)
+                {
+                    return false;
+                }
+            }
+            int spawnCount = 2 + (int)(Det01x(LockstepClock.Tick, randomTile.tile_id, 0x444) * 3);
+            for (int i = 0; i < spawnCount; i++)
+            {
+                World.world.units.spawnNewUnit(actorAsset.id, randomTile, pSpawnSound: false, pMiracleSpawn: false, 6f, null, pGiveOwnerlessItems: true);
+            }
+            return false;
+        }
+
+        // 102. World Law Mineral Growth Terraforming Determinism
+        private static bool MineralsAroundZoneSafe(TileZone pZone)
+        {
+            if (pZone == null) return false;
+            if (pZone.hasAnyBuildingsInSet(BuildingList.Minerals)) return true;
+            TileZone[] neighbours = pZone.neighbours_all;
+            if (neighbours != null)
+            {
+                for (int i = 0; i < neighbours.Length; i++)
+                {
+                    TileZone nb = neighbours[i];
+                    if (nb != null && nb.hasAnyBuildingsInSet(BuildingList.Minerals)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool WorldBehaviourActionsGrowMineralsPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            if (!WorldLawLibrary.world_law_grow_minerals.isEnabled()) return false;
+            IslandsCalculator ic = _islandsCalculatorRef != null ? _islandsCalculatorRef(World.world) : null;
+            var islandsList = ic?.islands_ground;
+            if (islandsList == null) return false;
+            for (int i = 0; i < islandsList.Count; i++)
+            {
+                TileIsland tileIsland = islandsList[i];
+                if (tileIsland == null || tileIsland.getTileCount() <= 20) continue;
+                _regionCandidatePool.Clear();
+                var regList = tileIsland.regions.getSimpleList();
+                for (int r = 0; r < regList.Count; r++)
+                {
+                    MapRegion reg = regList[r];
+                    if (reg != null && reg.tiles.Count > 0) _regionCandidatePool.Add(reg);
+                }
+                if (_regionCandidatePool.Count == 0) continue;
+                _regionCandidatePool.Sort((a, b) => a.id.CompareTo(b.id));
+                int regPick = (int)(Det01x(LockstepClock.Tick, tileIsland.id ^ (i * 0x31), 0x555) * _regionCandidatePool.Count);
+                if (regPick >= _regionCandidatePool.Count) regPick = _regionCandidatePool.Count - 1;
+                MapRegion candidateRegion = _regionCandidatePool[regPick];
+                _regionCandidatePool.Clear();
+
+                TileZone testZone = candidateRegion.tiles[0].zone;
+                if (testZone != null && MineralsAroundZoneSafe(testZone)) continue;
+
+                int a = Mathf.Min(tileIsland.regions.Count / 20 + 1, 3);
+                _tileCandidatePool.Clear();
+                for (int t = 0; t < candidateRegion.tiles.Count; t++)
+                {
+                    WorldTile wt = candidateRegion.tiles[t];
+                    if (wt != null) _tileCandidatePool.Add(wt);
+                }
+                _tileCandidatePool.Sort((x, y) => x.tile_id.CompareTo(y.tile_id));
+
+                for (int j = 0; j < a; j++)
+                {
+                    for (int k = 0; k < _tileCandidatePool.Count; k++)
+                    {
+                        WorldTile item = _tileCandidatePool[k];
+                        BiomeAsset biome = item.getBiome();
+                        if (biome != null && biome.grow_minerals_auto && !item.isOnFire())
+                        {
+                            bool roll = Det01x(item.tile_id, LockstepClock.Tick ^ (j * 0x17), 0x666) < 0.5f;
+                            if (roll)
+                            {
+                                BuildingActions.tryGrowMineralRandom(item);
+                                break;
+                            }
+                        }
+                    }
+                }
+                _tileCandidatePool.Clear();
+            }
+            return false;
+        }
+
+        private static bool TileActionLibraryGetGrowTypeRandomMineralPrefix(WorldTile pTile, ref BuildingAsset __result)
+        {
+            if (!LockstepClock.Active) return true;
+            BiomeAsset biome_asset = pTile?.Type?.biome_asset;
+            if (biome_asset == null || biome_asset.pot_minerals_spawn == null || biome_asset.pot_minerals_spawn.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _mineralSpawnCandidatePool.Clear();
+            for (int i = 0; i < biome_asset.pot_minerals_spawn.Count; i++)
+            {
+                string m = biome_asset.pot_minerals_spawn[i];
+                if (!string.IsNullOrEmpty(m)) _mineralSpawnCandidatePool.Add(m);
+            }
+            if (_mineralSpawnCandidatePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _mineralSpawnCandidatePool.Sort(StringComparer.Ordinal);
+            int pick = (int)(Det01x(pTile.tile_id, LockstepClock.Tick, 0x777) * _mineralSpawnCandidatePool.Count);
+            if (pick >= _mineralSpawnCandidatePool.Count) pick = _mineralSpawnCandidatePool.Count - 1;
+            string chosen = _mineralSpawnCandidatePool[pick];
+            _mineralSpawnCandidatePool.Clear();
+            __result = AssetManager.buildings.get(chosen);
             return false;
         }
     }
