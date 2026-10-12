@@ -99,6 +99,14 @@ namespace Coopfall.Lockstep
     /// 84. WorldAgeLibrary.extremeEnvironmentAction: nature buildings presorted by building.id and deterministically selected via tick hash without LoopRandom(5).
     /// 85. WorldBehaviourActions.updateRuinRatSpawn: ruin housing buildings presorted by building.id and deterministic rat count without LoopRandom or unseeded randomInt.
     /// 86. Ant.randomNeighbour & BehFindRandomTile4Directions/8Directions: deterministic cardinal/8-way tile selection and step counts via tick hash without unseeded LoopRandom or PRNG.
+    /// 87. Actor.applyRandomForce: physical impulse and egg hatching momentum derived deterministically via tick hash without unseeded randomFloat or LoopRandom.
+    /// 88. CheckKingdomChaosPrefix: removed unseeded LoopRandom traversal in Fix 13 chaos defection.
+    /// 89. CityZoneGrowth.checkGrowBorder: deterministic border growth roll and candidate neighbour zone selection via tick hash.
+    /// 90. Earthquake.spawnQuake: deterministic earthquake print template selection, print steps permutation, and type determination without unseeded Shuffle or randomChance.
+    /// 91. ai.ActorTool.getRandomTileForBoat: ocean regions and tiles presorted and deterministically selected via tick hash.
+    /// 92. ai.ActorTool.attributeDice: attribute dice rolls derived deterministically via tick hash without unseeded randomInt.
+    /// 93. ItemAsset.getRandomNameTemplate: matching legendary weapon/gear name templates presorted alphabetically and chosen deterministically.
+    /// 94. NameGeneratorReplacers: deterministic selection for dynamic name replacers (city, kingdom, culture, family, subspecies, clan, food) without unseeded getRandom.
     /// </summary>
     public static class SimulationInTick
     {
@@ -181,6 +189,28 @@ namespace Coopfall.Lockstep
         private static AccessTools.FieldRef<Projectile, Kingdom> _projKingdomRef;
         private delegate AttackDataResult CheckHitForUnitDelegate(Projectile proj, BaseSimObject pObject, AttackData pData);
         private static CheckHitForUnitDelegate _checkHitForUnitDel;
+
+        private static readonly List<MapRegion> _boatNeighbourRegionsPool = new List<MapRegion>();
+        private static readonly List<WorldTile> _boatTilesPool = new List<WorldTile>();
+        private static readonly List<string> _nameTemplatesPool = new List<string>();
+        private static readonly List<City> _sortCityReplacerPool = new List<City>();
+        private static readonly List<Kingdom> _sortKingdomReplacerPool = new List<Kingdom>();
+        private static readonly List<Culture> _sortCultureReplacerPool = new List<Culture>();
+        private static readonly List<Family> _sortFamilyReplacerPool = new List<Family>();
+        private static readonly List<Subspecies> _sortSubspeciesReplacerPool = new List<Subspecies>();
+        private static readonly List<Clan> _sortClanReplacerPool = new List<Clan>();
+        private static readonly List<ResourceAsset> _sortResourceReplacerPool = new List<ResourceAsset>();
+
+        private delegate void CalculateForceDelegate(Actor pActor, float pStartX, float pStartY, float pTargetX, float pTargetY, float pForceAmountDirection, float pForceHeight, bool pCheckCancelJobOnLand);
+        private static CalculateForceDelegate _calculateForceDel;
+
+        private static AccessTools.FieldRef<Earthquake, PrintTemplate> _currentPrintRef;
+        private static AccessTools.FieldRef<Earthquake, int> _printTickRef;
+        private static AccessTools.FieldRef<Earthquake, WorldTile> _printTileOriginRef;
+        private static AccessTools.FieldRef<Earthquake, bool> _quakeActiveRef;
+        private static AccessTools.FieldRef<Earthquake, EarthquakeType> _quakeTypeRef;
+        private static AccessTools.FieldRef<Earthquake, int> _currentPrintIndexRef;
+        private static AccessTools.FieldRef<PrintTemplate, PrintStep[]> _printTemplateStepsRef;
 
         private static Action<Actor, Kingdom> _setKingdomDel;
         private static Action<Actor, City> _setCityDel;
@@ -1107,6 +1137,74 @@ namespace Coopfall.Lockstep
                 MethodInfo mFindRandom8 = AccessTools.Method(typeof(BehFindRandomTile8Directions), "execute", new[] { typeof(Actor) });
                 if (mFindRandom8 != null) h.Patch(mFindRandom8, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindRandomTile8DirectionsExecutePrefix)));
                 else Log.Warn("lockstep: BehFindRandomTile8Directions.execute not found");
+
+                // 87. Actor Physical Impulse & Egg Hatch Force Determinism
+                MethodInfo mCalcForce = AccessTools.Method(typeof(Actor), "calculateForce", new[] { typeof(float), typeof(float), typeof(float), typeof(float), typeof(float), typeof(float), typeof(bool) });
+                if (mCalcForce != null) _calculateForceDel = (CalculateForceDelegate)Delegate.CreateDelegate(typeof(CalculateForceDelegate), mCalcForce);
+                else Log.Warn("lockstep: Actor.calculateForce not found");
+
+                MethodInfo mApplyRandForce = AccessTools.Method(typeof(Actor), "applyRandomForce", new[] { typeof(float), typeof(float) });
+                if (mApplyRandForce != null) h.Patch(mApplyRandForce, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ActorApplyRandomForcePrefix)));
+                else Log.Warn("lockstep: Actor.applyRandomForce not found");
+
+                // 89. Earthquake Disaster & Terraforming Shape Determinism
+                MethodInfo mSpawnQuake = AccessTools.Method(typeof(Earthquake), "spawnQuake", new[] { typeof(WorldTile), typeof(EarthquakeType) });
+                if (mSpawnQuake != null)
+                {
+                    _currentPrintRef = AccessTools.FieldRefAccess<Earthquake, PrintTemplate>("_current_print");
+                    _printTickRef = AccessTools.FieldRefAccess<Earthquake, int>("_print_tick");
+                    _printTileOriginRef = AccessTools.FieldRefAccess<Earthquake, WorldTile>("_print_tile_origin");
+                    _quakeActiveRef = AccessTools.FieldRefAccess<Earthquake, bool>("_quake_active");
+                    _quakeTypeRef = AccessTools.FieldRefAccess<Earthquake, EarthquakeType>("_type");
+                    _currentPrintIndexRef = AccessTools.FieldRefAccess<Earthquake, int>("_current_print_index");
+                    _printTemplateStepsRef = AccessTools.FieldRefAccess<PrintTemplate, PrintStep[]>("steps");
+                    h.Patch(mSpawnQuake, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(EarthquakeSpawnQuakePrefix)));
+                }
+                else Log.Warn("lockstep: Earthquake.spawnQuake not found");
+
+                // 90. Boat Navigation & Waypoint Target Determinism
+                MethodInfo mGetBoatTile = AccessTools.Method(typeof(ai.ActorTool), "getRandomTileForBoat", new[] { typeof(Actor) });
+                if (mGetBoatTile != null) h.Patch(mGetBoatTile, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ActorToolGetRandomTileForBoatPrefix)));
+                else Log.Warn("lockstep: ai.ActorTool.getRandomTileForBoat not found");
+
+                // 91. Leader & Royal Succession Attribute Dice Determinism
+                MethodInfo mAttributeDice = AccessTools.Method(typeof(ai.ActorTool), "attributeDice", new[] { typeof(Actor), typeof(int) });
+                if (mAttributeDice != null) h.Patch(mAttributeDice, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ActorToolAttributeDicePrefix)));
+                else Log.Warn("lockstep: ai.ActorTool.attributeDice not found");
+
+                // 92. Item Name Template & Legendary Crafting Determinism
+                MethodInfo mGetRandomNameTemplate = AccessTools.Method(typeof(ItemAsset), "getRandomNameTemplate", new[] { typeof(Actor) });
+                if (mGetRandomNameTemplate != null) h.Patch(mGetRandomNameTemplate, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ItemAssetGetRandomNameTemplatePrefix)));
+                else Log.Warn("lockstep: ItemAsset.getRandomNameTemplate not found");
+
+                // 93. Dynamic Name Generator Replacers Determinism
+                MethodInfo mRepCity = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyCity", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepCity != null) h.Patch(mRepCity, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyCityPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyCity not found");
+
+                MethodInfo mRepKingdom = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyKingdom", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepKingdom != null) h.Patch(mRepKingdom, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyKingdomPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyKingdom not found");
+
+                MethodInfo mRepCulture = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyCulture", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepCulture != null) h.Patch(mRepCulture, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyCulturePrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyCulture not found");
+
+                MethodInfo mRepFamily = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyFamily", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepFamily != null) h.Patch(mRepFamily, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyFamilyPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyFamily not found");
+
+                MethodInfo mRepSub = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnySubspecies", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepSub != null) h.Patch(mRepSub, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnySubspeciesPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnySubspecies not found");
+
+                MethodInfo mRepClan = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyClan", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepClan != null) h.Patch(mRepClan, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyClanPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyClan not found");
+
+                MethodInfo mRepFood = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceFavoriteFood", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mRepFood != null) h.Patch(mRepFood, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceFoodPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceFavoriteFood not found");
             }
             catch (Exception e)
             {
@@ -2201,7 +2299,7 @@ namespace Coopfall.Lockstep
                 listPool.Sort((a, b) => a.id.CompareTo(b.id));
             }
 
-            foreach (City item in listPool.LoopRandom())
+            foreach (City item in listPool)
             {
                 Actor leader = item.leader;
                 if (leader != null && leader.isAlive())
@@ -4552,7 +4650,7 @@ namespace Coopfall.Lockstep
         }
 
         /// <summary>A stable draw per id pair, independent of the shared PRNG and of the tick.</summary>
-        private static float Det01x(long pIdA, long pIdB, int pSalt)
+        internal static float Det01x(long pIdA, long pIdB, int pSalt)
         {
             ulong a = (ulong)(uint)(pSalt ^ unchecked((int)pIdA)) * 0x9E3779B97F4A7C15UL ^ (ulong)(uint)(pIdA >> 32) * 0xC2B2AE3D27D4EB4FUL;
             a ^= a >> 33; a *= 0xFF51AFD7ED558CCDUL; a ^= a >> 33;
@@ -7676,6 +7774,435 @@ namespace Coopfall.Lockstep
             if (_behTileTargetRef != null) _behTileTargetRef(pActor) = nextTarget;
             aData.set("random_steps", pResult);
             __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 87. Actor Physical Impulse & Egg Hatch Force Determinism
+        // ==========================================
+        private static bool ActorApplyRandomForcePrefix(Actor __instance, float pMinHeight, float pMaxHeight)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.current_tile == null || __instance.current_tile.neighboursAll == null || __instance.current_tile.neighboursAll.Length == 0) return false;
+            WorldTile[] nbs = __instance.current_tile.neighboursAll;
+            int pick = (int)(Det01x(__instance.id, LockstepClock.Tick, 0x7F1A) * nbs.Length);
+            if (pick >= nbs.Length) pick = nbs.Length - 1;
+            WorldTile random = nbs[pick];
+            if (random == null) return false;
+            float pForceAmountDirection = 1.5f + Det01x(__instance.id, LockstepClock.Tick, 0x7F1B) * 0.5f;
+            float pSpan = Math.Max(0f, pMaxHeight - pMinHeight);
+            float pForceHeight = pMinHeight + Det01x(__instance.id, LockstepClock.Tick, 0x7F1C) * pSpan;
+            if (_calculateForceDel != null)
+            {
+                _calculateForceDel(__instance, __instance.current_tile.posV3.x, __instance.current_tile.posV3.y, random.posV3.x, random.posV3.y, pForceAmountDirection, pForceHeight, true);
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 89. Earthquake Disaster & Terraforming Shape Determinism
+        // ==========================================
+        private static bool EarthquakeSpawnQuakePrefix(Earthquake __instance, WorldTile pTile, EarthquakeType pType)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || Earthquake.isQuakeActive() || pTile == null) return false;
+            MusicBox.playSound("event:/SFX/NATURE/EarthQuake", pTile);
+            if (_quakeActiveRef != null) _quakeActiveRef(__instance) = true;
+            List<PrintTemplate> quakes = PrintLibrary.getQuakes();
+            if (quakes != null && quakes.Count > 0)
+            {
+                int curIdx = (_currentPrintIndexRef != null ? _currentPrintIndexRef(__instance) : 0) + 1;
+                if (curIdx >= quakes.Count)
+                {
+                    quakes.Sort((a, b) => string.CompareOrdinal(a?.name ?? "", b?.name ?? ""));
+                    for (int i = quakes.Count - 1; i > 0; i--)
+                    {
+                        int j = (int)(Det01x(LockstepClock.Tick, i, 0x51E) * (i + 1));
+                        if (j > i) j = i;
+                        PrintTemplate tmp = quakes[i]; quakes[i] = quakes[j]; quakes[j] = tmp;
+                    }
+                    curIdx = 0;
+                }
+                if (_currentPrintIndexRef != null) _currentPrintIndexRef(__instance) = curIdx;
+                PrintTemplate currentPrint = quakes[curIdx];
+                if (_currentPrintRef != null) _currentPrintRef(__instance) = currentPrint;
+                if (currentPrint != null && _printTemplateStepsRef != null)
+                {
+                    PrintStep[] steps = _printTemplateStepsRef(currentPrint);
+                    if (steps != null && steps.Length > 1)
+                    {
+                        for (int i = steps.Length - 1; i > 0; i--)
+                        {
+                            int j = (int)(Det01x(LockstepClock.Tick, i ^ pTile.tile_id, 0x51F) * (i + 1));
+                            if (j > i) j = i;
+                            PrintStep tmp = steps[i]; steps[i] = steps[j]; steps[j] = tmp;
+                        }
+                    }
+                }
+            }
+            if (_printTileOriginRef != null) _printTileOriginRef(__instance) = pTile;
+            if (_printTickRef != null) _printTickRef(__instance) = 0;
+            if (pType == EarthquakeType.RandomPower)
+            {
+                EarthquakeType derivedType = (Det01x(LockstepClock.Tick, pTile.tile_id, 0x520) < 0.5f) ? EarthquakeType.BigDecrease : EarthquakeType.BigIncrease;
+                if (_quakeTypeRef != null) _quakeTypeRef(__instance) = derivedType;
+            }
+            else
+            {
+                if (_quakeTypeRef != null) _quakeTypeRef(__instance) = pType;
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 90. Boat Navigation & Waypoint Target Determinism
+        // ==========================================
+        private static bool ActorToolGetRandomTileForBoatPrefix(Actor pActor, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.current_tile == null || pActor.current_tile.region == null)
+            {
+                __result = null;
+                return false;
+            }
+            MapRegion mapRegion = pActor.current_tile.region;
+            if (mapRegion.neighbours != null && mapRegion.neighbours.Count > 0 && Det01x(pActor.id, LockstepClock.Tick, 0x8C1A) < 0.5f)
+            {
+                _boatNeighbourRegionsPool.Clear();
+                for (int i = 0; i < mapRegion.neighbours.Count; i++)
+                {
+                    MapRegion r = mapRegion.neighbours[i];
+                    if (r != null) _boatNeighbourRegionsPool.Add(r);
+                }
+                if (_boatNeighbourRegionsPool.Count > 0)
+                {
+                    _boatNeighbourRegionsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                    int rIdx = (int)(Det01x(pActor.id, LockstepClock.Tick, 0x8C1B) * _boatNeighbourRegionsPool.Count);
+                    if (rIdx >= _boatNeighbourRegionsPool.Count) rIdx = _boatNeighbourRegionsPool.Count - 1;
+                    mapRegion = _boatNeighbourRegionsPool[rIdx];
+                }
+                _boatNeighbourRegionsPool.Clear();
+            }
+            if (mapRegion != null && mapRegion.tiles != null && mapRegion.tiles.Count > 0)
+            {
+                _boatTilesPool.Clear();
+                for (int i = 0; i < mapRegion.tiles.Count; i++)
+                {
+                    WorldTile t = mapRegion.tiles[i];
+                    if (t != null) _boatTilesPool.Add(t);
+                }
+                if (_boatTilesPool.Count > 0)
+                {
+                    _boatTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                    int tIdx = (int)(Det01x(pActor.id, LockstepClock.Tick, 0x8C1C) * _boatTilesPool.Count);
+                    if (tIdx >= _boatTilesPool.Count) tIdx = _boatTilesPool.Count - 1;
+                    __result = _boatTilesPool[tIdx];
+                    _boatTilesPool.Clear();
+                    return false;
+                }
+                _boatTilesPool.Clear();
+            }
+            __result = null;
+            return false;
+        }
+
+        // ==========================================
+        // 91. Leader & Royal Succession Attribute Dice Determinism
+        // ==========================================
+        private static bool ActorToolAttributeDicePrefix(Actor pActor, int pAmount, ref int __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null)
+            {
+                __result = int.MinValue;
+                return false;
+            }
+            int num = 0;
+            int num2 = pActor.diplomacy + pActor.warfare + pActor.stewardship;
+            if (pActor.hasCulture())
+            {
+                Culture culture = pActor.culture;
+                if (culture != null)
+                {
+                    bool flag = culture.hasTrait("patriarchy");
+                    bool flag2 = culture.hasTrait("matriarchy");
+                    if (flag && pActor.isSexMale()) num2 += 999;
+                    if (flag2 && pActor.isSexFemale()) num2 += 999;
+                }
+            }
+            if (num2 > 0)
+            {
+                for (int i = 0; i < pAmount; i++)
+                {
+                    int roll = (int)(Det01x(LockstepClock.Tick, pActor.id, 0x4D2 ^ (i * 0x7A1)) * num2);
+                    if (roll >= num2) roll = num2 - 1;
+                    num += roll;
+                }
+            }
+            __result = num;
+            return false;
+        }
+
+        // ==========================================
+        // 92. Item Name Template & Legendary Crafting Determinism
+        // ==========================================
+        private static bool ItemAssetGetRandomNameTemplatePrefix(ItemAsset __instance, Actor pActor, ref string __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.name_templates == null || __instance.name_templates.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _nameTemplatesPool.Clear();
+            for (int i = 0; i < __instance.name_templates.Count; i++)
+            {
+                string tpl = __instance.name_templates[i];
+                if (string.IsNullOrEmpty(tpl)) continue;
+                NameGeneratorAsset asset = AssetManager.name_generator.get(tpl);
+                if (asset != null && (asset.check == null || asset.check(pActor)))
+                {
+                    _nameTemplatesPool.Add(tpl);
+                }
+            }
+            if (_nameTemplatesPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _nameTemplatesPool.Sort(string.CompareOrdinal);
+            long actorId = pActor != null ? pActor.id : 0L;
+            int assetHash = __instance.id != null ? __instance.id.GetHashCode() : 0;
+            int pick = (int)(Det01x(actorId, LockstepClock.Tick, assetHash ^ 0x6E1) * _nameTemplatesPool.Count);
+            if (pick >= _nameTemplatesPool.Count) pick = _nameTemplatesPool.Count - 1;
+            __result = _nameTemplatesPool[pick];
+            _nameTemplatesPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 93. Dynamic Name Generator Replacers Determinism
+        // ==========================================
+        private static bool NameGeneratorReplacersReplaceAnyCityPrefix(ref string pName, Actor _)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$city_random$")) return false;
+            if (World.world?.cities == null || !World.world.cities.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            var list = World.world.cities.list;
+            _sortCityReplacerPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                City c = list[i];
+                if (c != null) _sortCityReplacerPool.Add(c);
+            }
+            if (_sortCityReplacerPool.Count == 0) { pName = ""; return false; }
+            _sortCityReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            int pick = (int)(Det01x(LockstepClock.Tick, _sortCityReplacerPool.Count, 0x111) * _sortCityReplacerPool.Count);
+            if (pick >= _sortCityReplacerPool.Count) pick = _sortCityReplacerPool.Count - 1;
+            City chosen = _sortCityReplacerPool[pick];
+            _sortCityReplacerPool.Clear();
+            pName = pName.Replace("$city_random$", chosen.name);
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceAnyKingdomPrefix(ref string pName, Actor _)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$kingdom_random$")) return false;
+            if (World.world?.kingdoms == null || !World.world.kingdoms.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            var list = World.world.kingdoms.list;
+            _sortKingdomReplacerPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Kingdom k = list[i];
+                if (k != null) _sortKingdomReplacerPool.Add(k);
+            }
+            if (_sortKingdomReplacerPool.Count == 0) { pName = ""; return false; }
+            _sortKingdomReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            int pick = (int)(Det01x(LockstepClock.Tick, _sortKingdomReplacerPool.Count, 0x222) * _sortKingdomReplacerPool.Count);
+            if (pick >= _sortKingdomReplacerPool.Count) pick = _sortKingdomReplacerPool.Count - 1;
+            Kingdom chosen = _sortKingdomReplacerPool[pick];
+            _sortKingdomReplacerPool.Clear();
+            pName = pName.Replace("$kingdom_random$", chosen.name);
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceAnyCulturePrefix(ref string pName, Actor _)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$culture_random$")) return false;
+            if (World.world?.cultures == null || !World.world.cultures.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            var list = World.world.cultures.list;
+            _sortCultureReplacerPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Culture c = list[i];
+                if (c != null) _sortCultureReplacerPool.Add(c);
+            }
+            if (_sortCultureReplacerPool.Count == 0) { pName = ""; return false; }
+            _sortCultureReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            int pick = (int)(Det01x(LockstepClock.Tick, _sortCultureReplacerPool.Count, 0x333) * _sortCultureReplacerPool.Count);
+            if (pick >= _sortCultureReplacerPool.Count) pick = _sortCultureReplacerPool.Count - 1;
+            Culture chosen = _sortCultureReplacerPool[pick];
+            _sortCultureReplacerPool.Clear();
+            pName = pName.Replace("$culture_random$", chosen.name);
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceAnyFamilyPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$family_random$")) return false;
+            if (World.world?.families == null || !World.world.families.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            var list = World.world.families.list;
+            _sortFamilyReplacerPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Family f = list[i];
+                if (f != null && (pActor == null || pActor.asset == null || f.isSameSpecies(pActor.asset.id)))
+                {
+                    _sortFamilyReplacerPool.Add(f);
+                }
+            }
+            if (_sortFamilyReplacerPool.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _sortFamilyReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            long actorId = pActor != null ? pActor.id : 0L;
+            int pick = (int)(Det01x(LockstepClock.Tick, actorId, 0x444) * _sortFamilyReplacerPool.Count);
+            if (pick >= _sortFamilyReplacerPool.Count) pick = _sortFamilyReplacerPool.Count - 1;
+            Family chosen = _sortFamilyReplacerPool[pick];
+            _sortFamilyReplacerPool.Clear();
+            pName = pName.Replace("$family_random$", chosen.name);
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceAnySubspeciesPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$random_subspecies$")) return false;
+            if (World.world?.subspecies == null || !World.world.subspecies.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            var list = World.world.subspecies.list;
+            _sortSubspeciesReplacerPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Subspecies s = list[i];
+                if (s != null) _sortSubspeciesReplacerPool.Add(s);
+            }
+            if (_sortSubspeciesReplacerPool.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _sortSubspeciesReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            long actorId = pActor != null ? pActor.id : 0L;
+            int pick = (int)(Det01x(LockstepClock.Tick, actorId, 0x555) * _sortSubspeciesReplacerPool.Count);
+            if (pick >= _sortSubspeciesReplacerPool.Count) pick = _sortSubspeciesReplacerPool.Count - 1;
+            Subspecies chosen = _sortSubspeciesReplacerPool[pick];
+            _sortSubspeciesReplacerPool.Clear();
+            pName = pName.Replace("$random_subspecies$", chosen.name);
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceAnyClanPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$clan_random$")) return false;
+            if (World.world?.clans == null || !World.world.clans.hasAny())
+            {
+                pName = "";
+                return false;
+            }
+            var list = World.world.clans.list;
+            _sortClanReplacerPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Clan c = list[i];
+                if (c != null) _sortClanReplacerPool.Add(c);
+            }
+            if (_sortClanReplacerPool.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _sortClanReplacerPool.Sort((a, b) => a.id.CompareTo(b.id));
+            long actorId = pActor != null ? pActor.id : 0L;
+            int pick = (int)(Det01x(LockstepClock.Tick, actorId, 0x666) * _sortClanReplacerPool.Count);
+            if (pick >= _sortClanReplacerPool.Count) pick = _sortClanReplacerPool.Count - 1;
+            Clan chosen = _sortClanReplacerPool[pick];
+            _sortClanReplacerPool.Clear();
+            pName = pName.Replace("$clan_random$", chosen.name);
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceFoodPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$food$")) return false;
+            string newValue;
+            Kingdom kingdom = pActor?.kingdom;
+            if (kingdom != null && kingdom.king?.hasFavoriteFood() == true)
+            {
+                newValue = kingdom.king.favorite_food_asset.getTranslatedName();
+            }
+            else
+            {
+                City city = pActor?.city;
+                if (city != null && city.leader?.hasFavoriteFood() == true)
+                {
+                    newValue = city.leader.favorite_food_asset.getTranslatedName();
+                }
+                else if (pActor != null && pActor.hasFavoriteFood())
+                {
+                    newValue = pActor.favorite_food_asset.getTranslatedName();
+                }
+                else
+                {
+                    if (AssetManager.resources?.list != null && AssetManager.resources.list.Count > 0)
+                    {
+                        _sortResourceReplacerPool.Clear();
+                        var resList = AssetManager.resources.list;
+                        for (int i = 0; i < resList.Count; i++)
+                        {
+                            ResourceAsset r = resList[i];
+                            if (r != null) _sortResourceReplacerPool.Add(r);
+                        }
+                        _sortResourceReplacerPool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+                        long actorId = pActor != null ? pActor.id : 0L;
+                        int pick = (int)(Det01x(actorId, LockstepClock.Tick, 0x777) * _sortResourceReplacerPool.Count);
+                        if (pick >= _sortResourceReplacerPool.Count) pick = _sortResourceReplacerPool.Count - 1;
+                        newValue = _sortResourceReplacerPool[pick].getTranslatedName();
+                        _sortResourceReplacerPool.Clear();
+                    }
+                    else
+                    {
+                        newValue = "";
+                    }
+                }
+            }
+            pName = pName.Replace("$food$", newValue);
             return false;
         }
     }

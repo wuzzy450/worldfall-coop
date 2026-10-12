@@ -19,6 +19,7 @@ namespace Coopfall.Lockstep
     {
         private static readonly List<TileZone> _sortZonePool = new List<TileZone>();
         private static readonly List<WorldTile> _sortTilePool = new List<WorldTile>();
+        private static readonly List<TileZone> _growthCandidateZonesPool = new List<TileZone>();
 
         private static readonly Comparison<TileZone> _zoneOrder = (a, b) =>
         {
@@ -76,6 +77,7 @@ namespace Coopfall.Lockstep
 
                 MethodInfo randomChecked = AccessTools.Method(typeof(CityZoneGrowth), "getRandomCheckedZone");
                 MethodInfo randomBorder = AccessTools.Method(typeof(CityZoneGrowth), "getRandomZone");
+                MethodInfo checkGrowBorder = AccessTools.Method(typeof(CityZoneGrowth), "checkGrowBorder", new[] { typeof(City) });
                 if (randomChecked != null && randomBorder != null)
                 {
                     _growthChecked = AccessTools.FieldRefAccess<CityZoneGrowth, HashSet<ZoneConnection>>("_zones_checked");
@@ -83,6 +85,8 @@ namespace Coopfall.Lockstep
                     h.Patch(randomBorder, prefix: new HarmonyMethod(typeof(ZonesInTick), nameof(GetRandomZonePrefix)));
                 }
                 else Log.Warn("lockstep: CityZoneGrowth methods not found: zone expansion may differ between PCs");
+                if (checkGrowBorder != null) h.Patch(checkGrowBorder, prefix: new HarmonyMethod(typeof(ZonesInTick), nameof(CheckGrowBorderPrefix)));
+                else Log.Warn("lockstep: CityZoneGrowth.checkGrowBorder not found");
 
                 MethodInfo singularity = AccessTools.Method(typeof(ActionLibrary), "singularityTeleportation");
                 if (singularity != null) h.Patch(singularity, prefix: new HarmonyMethod(typeof(ZonesInTick), nameof(SingularityTeleportationPrefix)));
@@ -296,8 +300,40 @@ namespace Coopfall.Lockstep
             return false;
         }
 
+        private static bool CheckGrowBorderPrefix(CityZoneGrowth __instance, City pCity, ref TileZone __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pCity == null)
+            {
+                __result = null;
+                return false;
+            }
+            bool tryBorder = SimulationInTick.Det01x(pCity.id, LockstepClock.Tick, 0x3D7) < 0.7f;
+            TileZone zone = null;
+            if (tryBorder)
+            {
+                GetRandomZonePrefix(pCity, ref zone);
+                if (zone == null)
+                {
+                    GetRandomCheckedZonePrefix(__instance, pCity, ref zone);
+                }
+            }
+            else
+            {
+                GetRandomCheckedZonePrefix(__instance, pCity, ref zone);
+            }
+            __result = zone;
+            return false;
+        }
+
         private static bool GetRandomCheckedZonePrefix(CityZoneGrowth __instance, City pCity, ref TileZone __result)
         {
+            if (!LockstepClock.Active) return true;
+            if (pCity == null)
+            {
+                __result = null;
+                return false;
+            }
             HashSet<ZoneConnection> checkedSet = _growthChecked(__instance);
             if (checkedSet == null || checkedSet.Count == 0)
             {
@@ -316,7 +352,9 @@ namespace Coopfall.Lockstep
             if (listPool.Count > 0)
             {
                 listPool.Sort(_zoneOrder);
-                __result = listPool.GetRandom();
+                int pick = (int)(SimulationInTick.Det01x(pCity.id, LockstepClock.Tick, 0x3D9) * listPool.Count);
+                if (pick >= listPool.Count) pick = listPool.Count - 1;
+                __result = listPool[pick];
                 return false;
             }
             __result = null;
@@ -325,6 +363,12 @@ namespace Coopfall.Lockstep
 
         private static bool GetRandomZonePrefix(City pCity, ref TileZone __result)
         {
+            if (!LockstepClock.Active) return true;
+            if (pCity == null)
+            {
+                __result = null;
+                return false;
+            }
             HashSet<TileZone> borders = _borderZonesRef(pCity);
             if (borders == null || borders.Count == 0)
             {
@@ -343,17 +387,34 @@ namespace Coopfall.Lockstep
             TileZone zone = tile.zone;
             float num = (float)pCity.getZoneRange() * 0.75f;
             num *= num;
-            foreach (TileZone item in list.LoopRandom())
+
+            _growthCandidateZonesPool.Clear();
+            for (int i = 0; i < list.Count; i++)
             {
-                foreach (TileZone item2 in item.neighbours.LoopRandom())
+                TileZone item = list[i];
+                if (item == null || item.neighbours == null) continue;
+                for (int j = 0; j < item.neighbours.Length; j++)
                 {
-                    if (item2.canBeClaimedByCity(pCity) && item2.centerTile.isSameIsland(tile) && !((float)Toolbox.SquaredDist(zone.x, zone.y, item2.x, item2.y) > num))
+                    TileZone item2 = item.neighbours[j];
+                    if (item2 != null && item2.canBeClaimedByCity(pCity) && item2.centerTile != null && item2.centerTile.isSameIsland(tile) && !((float)Toolbox.SquaredDist(zone.x, zone.y, item2.x, item2.y) > num))
                     {
-                        __result = item2;
-                        return false;
+                        if (!_growthCandidateZonesPool.Contains(item2))
+                        {
+                            _growthCandidateZonesPool.Add(item2);
+                        }
                     }
                 }
             }
+            if (_growthCandidateZonesPool.Count > 0)
+            {
+                _growthCandidateZonesPool.Sort(_zoneOrder);
+                int pick = (int)(SimulationInTick.Det01x(pCity.id, LockstepClock.Tick, 0x3D8) * _growthCandidateZonesPool.Count);
+                if (pick >= _growthCandidateZonesPool.Count) pick = _growthCandidateZonesPool.Count - 1;
+                __result = _growthCandidateZonesPool[pick];
+                _growthCandidateZonesPool.Clear();
+                return false;
+            }
+            _growthCandidateZonesPool.Clear();
             __result = null;
             return false;
         }
