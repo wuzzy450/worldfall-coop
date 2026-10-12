@@ -74,6 +74,11 @@ namespace Coopfall.Lockstep
     /// 59. BehAffectDreams.getRandomDreamingActor: candidate sleeping actors sorted by actor.id before deterministic GetRandom draw.
     /// 60. BehKingCheckNewCityFoundation.moveSomeUnitsToNewCity: candidate citizens sorted by actor.id before deterministic migration.
     /// 61. Docks.getOceanTileInSameOcean & buildBoatFromHere: deterministic ocean tile iteration and presorted tiles_ocean before GetRandom().
+    /// 62. Building.getConstructionTile: deterministic dock construction zone/tile scan and presorted building tiles before GetRandom().
+    /// 63. BehKingCheckNewCityFoundation.getCityListForExpansion & findCityForMigration: candidate cities sorted by city.id.
+    /// 64. CityBehBuild.tryToBuildInZoneRandomly & tryToBuildInZoneDrunk: candidate tiles sorted by tile_id and stable hash drunk roll.
+    /// 65. DisasterLibrary.spawnBiomass, spawnTumor, gardenSurprise, spawnMadThought: candidate cities, buildings and actors sorted by ID.
+    /// 66. Kingdom.getRandomUnit, Alliance.getRandomUnit, War.getRandomUnit & plot_join_alliance: candidates sorted by ID before deterministic selection.
     /// </summary>
     public static class SimulationInTick
     {
@@ -101,6 +106,23 @@ namespace Coopfall.Lockstep
         private static readonly List<Actor> _dreamingActorsPool = new List<Actor>();
         private static readonly List<Actor> _cityMigrateUnitsPool = new List<Actor>();
         private static readonly List<Actor> _familyMigratePool = new List<Actor>();
+        private static readonly List<TileZone> _dockZonesPool = new List<TileZone>();
+        private static readonly List<WorldTile> _constructionTilesPool = new List<WorldTile>();
+        private static readonly List<City> _migrationCitiesPool = new List<City>();
+        private static readonly List<WorldTile> _buildZoneCandidatesPool = new List<WorldTile>();
+        private static readonly List<WorldTile> _neighboursAllPool = new List<WorldTile>();
+        private static readonly List<City> _disasterCitiesPool = new List<City>();
+        private static readonly List<Building> _disasterBuildingsPool = new List<Building>();
+        private static readonly List<Actor> _madThoughtUnitsPool = new List<Actor>();
+        private static readonly List<Actor> _kingdomUnitsPool = new List<Actor>();
+        private static readonly List<Kingdom> _allianceKingdomsPool = new List<Kingdom>();
+        private static readonly List<Kingdom> _warKingdomsPool = new List<Kingdom>();
+        private static readonly List<Alliance> _alliancesPool = new List<Alliance>();
+        private static readonly List<Alliance> _candidateAlliancesPool = new List<Alliance>();
+
+        private static Func<DisasterLibrary, DisasterAsset, bool> _checkUnitSpawnLimitsDel;
+        private static Func<DisasterLibrary, DisasterAsset, WorldTile, Building> _spawnDisasterBuildingDel;
+        private static Func<DisasterLibrary, DisasterAsset, WorldTile, Actor> _spawnDisasterUnitDel;
 
         // 28-41 Internal field refs & methods
         private static AccessTools.FieldRef<WarManager, List<War>> _warManagerEndWarsRef;
@@ -759,6 +781,66 @@ namespace Coopfall.Lockstep
                 MethodInfo buildBoat = AccessTools.Method(typeof(Docks), "buildBoatFromHere", new[] { typeof(City) });
                 if (buildBoat != null) h.Patch(buildBoat, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DocksBuildBoatFromHerePrefix)));
                 else Log.Warn("lockstep: Docks.buildBoatFromHere not found");
+
+                // 62. Building construction tile & dock construction determinism
+                MethodInfo mGetConstTile = AccessTools.Method(typeof(Building), "getConstructionTile");
+                if (mGetConstTile != null) h.Patch(mGetConstTile, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BuildingGetConstructionTilePrefix)));
+                else Log.Warn("lockstep: Building.getConstructionTile not found");
+
+                // 63. New city expansion & migration finding determinism
+                MethodInfo mGetCityExp = AccessTools.Method(typeof(BehKingCheckNewCityFoundation), "getCityListForExpansion", new[] { typeof(Kingdom) });
+                if (mGetCityExp != null) h.Patch(mGetCityExp, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehKingCheckNewCityFoundationGetCityListForExpansionPrefix)));
+                else Log.Warn("lockstep: BehKingCheckNewCityFoundation.getCityListForExpansion not found");
+
+                MethodInfo mFindCityMig = AccessTools.Method(typeof(BehKingCheckNewCityFoundation), "findCityForMigration", new[] { typeof(City) });
+                if (mFindCityMig != null) h.Patch(mFindCityMig, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehKingCheckNewCityFoundationFindCityForMigrationPrefix)));
+                else Log.Warn("lockstep: BehKingCheckNewCityFoundation.findCityForMigration not found");
+
+                // 64. City building zone placement styles determinism
+                MethodInfo mTryBuildRand = AccessTools.Method(typeof(CityBehBuild), "tryToBuildInZoneRandomly", new[] { typeof(TileZone), typeof(BuildingAsset), typeof(City) });
+                if (mTryBuildRand != null) h.Patch(mTryBuildRand, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CityBehBuildTryToBuildInZoneRandomlyPrefix)));
+                else Log.Warn("lockstep: CityBehBuild.tryToBuildInZoneRandomly not found");
+
+                MethodInfo mTryBuildDrunk = AccessTools.Method(typeof(CityBehBuild), "tryToBuildInZoneDrunk", new[] { typeof(TileZone), typeof(BuildingAsset), typeof(City) });
+                if (mTryBuildDrunk != null) h.Patch(mTryBuildDrunk, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CityBehBuildTryToBuildInZoneDrunkPrefix)));
+                else Log.Warn("lockstep: CityBehBuild.tryToBuildInZoneDrunk not found");
+
+                // 65. Disaster library target city & victim selection determinism
+                MethodInfo mCheckLimits = AccessTools.Method(typeof(DisasterLibrary), "checkUnitSpawnLimits", new[] { typeof(DisasterAsset) });
+                if (mCheckLimits != null) _checkUnitSpawnLimitsDel = (Func<DisasterLibrary, DisasterAsset, bool>)Delegate.CreateDelegate(typeof(Func<DisasterLibrary, DisasterAsset, bool>), mCheckLimits);
+                MethodInfo mSpawnBld = AccessTools.Method(typeof(DisasterLibrary), "spawnDisasterBuilding", new[] { typeof(DisasterAsset), typeof(WorldTile) });
+                if (mSpawnBld != null) _spawnDisasterBuildingDel = (Func<DisasterLibrary, DisasterAsset, WorldTile, Building>)Delegate.CreateDelegate(typeof(Func<DisasterLibrary, DisasterAsset, WorldTile, Building>), mSpawnBld);
+                MethodInfo mSpawnUnit = AccessTools.Method(typeof(DisasterLibrary), "spawnDisasterUnit", new[] { typeof(DisasterAsset), typeof(WorldTile) });
+                if (mSpawnUnit != null) _spawnDisasterUnitDel = (Func<DisasterLibrary, DisasterAsset, WorldTile, Actor>)Delegate.CreateDelegate(typeof(Func<DisasterLibrary, DisasterAsset, WorldTile, Actor>), mSpawnUnit);
+
+                MethodInfo mSpawnBiomass = AccessTools.Method(typeof(DisasterLibrary), "spawnBiomass", new[] { typeof(DisasterAsset) });
+                if (mSpawnBiomass != null) h.Patch(mSpawnBiomass, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DisasterLibrarySpawnBiomassPrefix)));
+                else Log.Warn("lockstep: DisasterLibrary.spawnBiomass not found");
+
+                MethodInfo mSpawnTumor = AccessTools.Method(typeof(DisasterLibrary), "spawnTumor", new[] { typeof(DisasterAsset) });
+                if (mSpawnTumor != null) h.Patch(mSpawnTumor, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DisasterLibrarySpawnTumorPrefix)));
+                else Log.Warn("lockstep: DisasterLibrary.spawnTumor not found");
+
+                MethodInfo mGardenSurprise = AccessTools.Method(typeof(DisasterLibrary), "gardenSurprise", new[] { typeof(DisasterAsset) });
+                if (mGardenSurprise != null) h.Patch(mGardenSurprise, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DisasterLibraryGardenSurprisePrefix)));
+                else Log.Warn("lockstep: DisasterLibrary.gardenSurprise not found");
+
+                MethodInfo mSpawnMadThought = AccessTools.Method(typeof(DisasterLibrary), "spawnMadThought", new[] { typeof(DisasterAsset) });
+                if (mSpawnMadThought != null) h.Patch(mSpawnMadThought, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DisasterLibrarySpawnMadThoughtPrefix)));
+                else Log.Warn("lockstep: DisasterLibrary.spawnMadThought not found");
+
+                // 66. Kingdom, Alliance & War random unit accessors determinism
+                MethodInfo mKingGetRandUnit = AccessTools.Method(typeof(Kingdom), "getRandomUnit");
+                if (mKingGetRandUnit != null) h.Patch(mKingGetRandUnit, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(KingdomGetRandomUnitPrefix)));
+                else Log.Warn("lockstep: Kingdom.getRandomUnit not found");
+
+                MethodInfo mAllianceGetRandUnit = AccessTools.Method(typeof(Alliance), "getRandomUnit");
+                if (mAllianceGetRandUnit != null) h.Patch(mAllianceGetRandUnit, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(AllianceGetRandomUnitPrefix)));
+                else Log.Warn("lockstep: Alliance.getRandomUnit not found");
+
+                MethodInfo mWarGetRandUnit = AccessTools.Method(typeof(War), "getRandomUnit");
+                if (mWarGetRandUnit != null) h.Patch(mWarGetRandUnit, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WarGetRandomUnitPrefix)));
+                else Log.Warn("lockstep: War.getRandomUnit not found");
             }
             catch (Exception e)
             {
@@ -2716,6 +2798,70 @@ namespace Coopfall.Lockstep
                                 MapBox.spawnLightningMedium(tTargetTileL, 0.15f, pActor);
                             });
                         }
+                        return true;
+                    };
+                }
+
+                PlotAsset allianceJoin = AssetManager.plots_library.get("alliance_join");
+                if (allianceJoin != null)
+                {
+                    allianceJoin.try_to_start_advanced = (Actor pActor, PlotAsset pPlotAsset, bool pForced) =>
+                    {
+                        if (pActor == null || pActor.kingdom == null) return false;
+                        Kingdom kingdom4 = pActor.kingdom;
+                        Alliance alliance3 = null;
+                        _alliancesPool.Clear();
+                        List<Alliance> allAlliances = World.world.alliances.list;
+                        if (allAlliances != null)
+                        {
+                            for (int i = 0; i < allAlliances.Count; i++)
+                            {
+                                Alliance a = allAlliances[i];
+                                if (a != null) _alliancesPool.Add(a);
+                            }
+                        }
+                        if (_alliancesPool.Count == 0) return false;
+                        _alliancesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                        _candidateAlliancesPool.Clear();
+                        for (int i = 0; i < _alliancesPool.Count; i++)
+                        {
+                            Alliance item3 = _alliancesPool[i];
+                            if (!item3.hasWars())
+                            {
+                                if (pForced)
+                                {
+                                    _candidateAlliancesPool.Add(item3);
+                                }
+                                else if (item3.canJoin(kingdom4) && !item3.hasSupremeKingdom())
+                                {
+                                    bool flag = false;
+                                    if (kingdom4.countCities() <= 2 && !kingdom4.hasNearbyKingdoms())
+                                    {
+                                        flag = true;
+                                    }
+                                    if (!flag && item3.hasSharedBordersWithKingdom(kingdom4))
+                                    {
+                                        flag = true;
+                                    }
+                                    if (flag)
+                                    {
+                                        _candidateAlliancesPool.Add(item3);
+                                    }
+                                }
+                            }
+                        }
+                        if (_candidateAlliancesPool.Count > 0)
+                        {
+                            alliance3 = _candidateAlliancesPool.GetRandom();
+                        }
+                        _candidateAlliancesPool.Clear();
+                        _alliancesPool.Clear();
+                        if (alliance3 == null)
+                        {
+                            return false;
+                        }
+                        World.world.plots.newPlot(pActor, pPlotAsset, pForced).target_alliance = alliance3;
                         return true;
                     };
                 }
@@ -5101,6 +5247,542 @@ namespace Coopfall.Lockstep
                 });
             }
             return true;
+        }
+
+        // ==========================================
+        // 62. Building Construction Tile & Dock Construction Determinism
+        // ==========================================
+        private static bool BuildingGetConstructionTilePrefix(Building __instance, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null)
+            {
+                __result = null;
+                return false;
+            }
+            BuildingAsset bAsset = _buildingAssetRef != null ? _buildingAssetRef(__instance) : null;
+            if (bAsset != null && bAsset.docks)
+            {
+                TileZone centerZone = __instance.current_tile?.zone;
+                if (centerZone != null)
+                {
+                    _dockZonesPool.Clear();
+                    if (centerZone.city == __instance.city) _dockZonesPool.Add(centerZone);
+                    if (centerZone.neighbours_all != null)
+                    {
+                        for (int i = 0; i < centerZone.neighbours_all.Length; i++)
+                        {
+                            TileZone nz = centerZone.neighbours_all[i];
+                            if (nz != null && nz.city == __instance.city)
+                            {
+                                _dockZonesPool.Add(nz);
+                            }
+                        }
+                    }
+                    _dockZonesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                    for (int i = 0; i < _dockZonesPool.Count; i++)
+                    {
+                        TileZone zone = _dockZonesPool[i];
+                        if (zone.tiles == null || zone.tiles.Length == 0) continue;
+                        WorldTile bestTile = null;
+                        for (int t = 0; t < zone.tiles.Length; t++)
+                        {
+                            WorldTile tile = zone.tiles[t];
+                            if (tile != null && tile.Type != null && tile.Type.ground && Toolbox.SquaredDistTile(__instance.current_tile, tile) <= 49)
+                            {
+                                if (bestTile == null || tile.tile_id < bestTile.tile_id)
+                                {
+                                    bestTile = tile;
+                                }
+                            }
+                        }
+                        if (bestTile != null)
+                        {
+                            _dockZonesPool.Clear();
+                            __result = bestTile;
+                            return false;
+                        }
+                    }
+                    _dockZonesPool.Clear();
+                }
+            }
+
+            List<WorldTile> bTiles = _buildingTilesRef != null ? _buildingTilesRef(__instance) : null;
+            if (bTiles != null && bTiles.Count > 0)
+            {
+                _constructionTilesPool.Clear();
+                for (int i = 0; i < bTiles.Count; i++)
+                {
+                    WorldTile wt = bTiles[i];
+                    if (wt != null) _constructionTilesPool.Add(wt);
+                }
+                if (_constructionTilesPool.Count > 0)
+                {
+                    _constructionTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                    __result = _constructionTilesPool.GetRandom();
+                    _constructionTilesPool.Clear();
+                    return false;
+                }
+            }
+
+            __result = __instance.current_tile;
+            return false;
+        }
+
+        // ==========================================
+        // 63. New City Expansion & Migration Finding Determinism
+        // ==========================================
+        private static bool BehKingCheckNewCityFoundationGetCityListForExpansionPrefix(Kingdom pKingdom, ref ListPool<City> __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pKingdom == null)
+            {
+                __result = new ListPool<City>(0);
+                return false;
+            }
+            ListPool<City> listPool = new ListPool<City>(pKingdom.countCities());
+            foreach (City city in pKingdom.getCities())
+            {
+                if (city != null && city.getTile() != null && city.status.population_adults >= 30 && !city.needSettlers())
+                {
+                    listPool.Add(city);
+                }
+            }
+            listPool.Sort((a, b) => a.id.CompareTo(b.id));
+            __result = listPool;
+            return false;
+        }
+
+        private static bool BehKingCheckNewCityFoundationFindCityForMigrationPrefix(City pCity, ref TileZone __result)
+        {
+            if (!LockstepClock.Active) return true;
+            Kingdom cityKingdom = _cityKingdomRef != null ? _cityKingdomRef(pCity) : null;
+            if (pCity == null || cityKingdom == null)
+            {
+                __result = null;
+                return false;
+            }
+            WorldTile tile = pCity.getTile();
+            if (tile == null)
+            {
+                __result = null;
+                return false;
+            }
+            _migrationCitiesPool.Clear();
+            foreach (City c in cityKingdom.getCities())
+            {
+                if (c != null && c != pCity)
+                {
+                    _migrationCitiesPool.Add(c);
+                }
+            }
+            if (_migrationCitiesPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _migrationCitiesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            TileZone found = null;
+            for (int i = 0; i < _migrationCitiesPool.Count; i++)
+            {
+                City item = _migrationCitiesPool[i];
+                WorldTile tile2 = item.getTile();
+                if (tile2 != null && tile.reachableFrom(tile2) && item.needSettlers())
+                {
+                    TileZone tileZone = item.getTile()?.zone;
+                    if (tileZone != null)
+                    {
+                        found = tileZone;
+                        break;
+                    }
+                }
+            }
+            _migrationCitiesPool.Clear();
+            __result = found;
+            return false;
+        }
+
+        // ==========================================
+        // 64. City Building Zone Placement Styles Determinism
+        // ==========================================
+        private static bool CityBehBuildTryToBuildInZoneRandomlyPrefix(TileZone pZone, BuildingAsset pBuildingAsset, City pCity, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pZone == null || pZone.tiles == null || pZone.tiles.Length == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _buildZoneCandidatesPool.Clear();
+            for (int i = 0; i < pZone.tiles.Length; i++)
+            {
+                WorldTile item = pZone.tiles[i];
+                if (item != null && CityBehBuild.isGoodTileForBuilding(item, pBuildingAsset, pCity))
+                {
+                    _buildZoneCandidatesPool.Add(item);
+                }
+            }
+            if (_buildZoneCandidatesPool.Count > 0)
+            {
+                _buildZoneCandidatesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                __result = _buildZoneCandidatesPool.GetRandom();
+                _buildZoneCandidatesPool.Clear();
+                return false;
+            }
+            _buildZoneCandidatesPool.Clear();
+            __result = null;
+            return false;
+        }
+
+        private static bool CityBehBuildTryToBuildInZoneDrunkPrefix(TileZone pZone, BuildingAsset pBuildingAsset, City pCity, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pZone == null)
+            {
+                __result = null;
+                return false;
+            }
+            WorldTile worldTile = null;
+            if (pZone.centerTile != null && CityBehBuild.isGoodTileForBuilding(pZone.centerTile, pBuildingAsset, pCity))
+            {
+                worldTile = pZone.centerTile;
+            }
+            long cityId = pCity != null ? pCity.id : 0;
+            long zoneId = pZone.id;
+            bool drunkRoll = Det01x(cityId, zoneId, 0x3D8F1B) < 0.6f;
+            if (drunkRoll && worldTile != null && worldTile.neighboursAll != null && worldTile.neighboursAll.Length > 0)
+            {
+                _neighboursAllPool.Clear();
+                for (int i = 0; i < worldTile.neighboursAll.Length; i++)
+                {
+                    WorldTile nb = worldTile.neighboursAll[i];
+                    if (nb != null) _neighboursAllPool.Add(nb);
+                }
+                if (_neighboursAllPool.Count > 0)
+                {
+                    _neighboursAllPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                    WorldTile random = _neighboursAllPool.GetRandom();
+                    if (CityBehBuild.isGoodTileForBuilding(random, pBuildingAsset, pCity))
+                    {
+                        worldTile = random;
+                    }
+                }
+                _neighboursAllPool.Clear();
+            }
+            __result = worldTile;
+            return false;
+        }
+
+        // ==========================================
+        // 65. Disaster Library Target City & Victim Selection Determinism
+        // ==========================================
+        private static bool DisasterLibrarySpawnBiomassPrefix(DisasterLibrary __instance, DisasterAsset pAsset)
+        {
+            if (!LockstepClock.Active) return true;
+            if (_checkUnitSpawnLimitsDel != null && !_checkUnitSpawnLimitsDel(__instance, pAsset))
+            {
+                return false;
+            }
+            Building building = null;
+            _disasterBuildingsPool.Clear();
+            List<City> cities = World.world.cities.list;
+            if (cities != null)
+            {
+                _disasterCitiesPool.Clear();
+                for (int i = 0; i < cities.Count; i++)
+                {
+                    City c = cities[i];
+                    if (c != null) _disasterCitiesPool.Add(c);
+                }
+                _disasterCitiesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                for (int i = 0; i < _disasterCitiesPool.Count; i++)
+                {
+                    City c = _disasterCitiesPool[i];
+                    if (c.buildings != null)
+                    {
+                        for (int b = 0; b < c.buildings.Count; b++)
+                        {
+                            Building bld = c.buildings[b];
+                            if (bld != null && bld.isUsable())
+                            {
+                                _disasterBuildingsPool.Add(bld);
+                            }
+                        }
+                    }
+                }
+                _disasterCitiesPool.Clear();
+            }
+
+            if (_disasterBuildingsPool.Count > 0)
+            {
+                _disasterBuildingsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                building = _disasterBuildingsPool.GetRandom();
+            }
+            _disasterBuildingsPool.Clear();
+
+            if (building != null)
+            {
+                List<WorldTile> bTiles = _buildingTilesRef != null ? _buildingTilesRef(building) : null;
+                WorldTile spawnTile = null;
+                if (bTiles != null && bTiles.Count > 0)
+                {
+                    _constructionTilesPool.Clear();
+                    for (int i = 0; i < bTiles.Count; i++)
+                    {
+                        WorldTile wt = bTiles[i];
+                        if (wt != null) _constructionTilesPool.Add(wt);
+                    }
+                    if (_constructionTilesPool.Count > 0)
+                    {
+                        _constructionTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                        spawnTile = _constructionTilesPool.GetRandom();
+                    }
+                    _constructionTilesPool.Clear();
+                }
+                if (spawnTile != null && _spawnDisasterBuildingDel != null)
+                {
+                    if (_spawnDisasterBuildingDel(__instance, pAsset, spawnTile) != null)
+                    {
+                        if (_spawnDisasterUnitDel != null) _spawnDisasterUnitDel(__instance, pAsset, spawnTile);
+                        WorldLog.logDisaster(pAsset, spawnTile);
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static bool DisasterLibrarySpawnTumorPrefix(DisasterLibrary __instance, DisasterAsset pAsset)
+        {
+            return DisasterLibrarySpawnBiomassPrefix(__instance, pAsset);
+        }
+
+        private static bool DisasterLibraryGardenSurprisePrefix(DisasterLibrary __instance, DisasterAsset pAsset)
+        {
+            if (!LockstepClock.Active) return true;
+            if (_checkUnitSpawnLimitsDel != null && !_checkUnitSpawnLimitsDel(__instance, pAsset))
+            {
+                return false;
+            }
+            Building building = null;
+            _disasterBuildingsPool.Clear();
+            List<City> cities = World.world.cities.list;
+            if (cities != null)
+            {
+                _disasterCitiesPool.Clear();
+                for (int i = 0; i < cities.Count; i++)
+                {
+                    City c = cities[i];
+                    if (c != null) _disasterCitiesPool.Add(c);
+                }
+                _disasterCitiesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                for (int i = 0; i < _disasterCitiesPool.Count; i++)
+                {
+                    City c = _disasterCitiesPool[i];
+                    Building windmill = _getBuildingOfTypeMethod != null
+                        ? (Building)_getBuildingOfTypeMethod.Invoke(c, new object[] { "type_windmill", true, false, false, null })
+                        : null;
+                    if (windmill != null && windmill.isAlive())
+                    {
+                        _disasterBuildingsPool.Add(windmill);
+                    }
+                }
+                _disasterCitiesPool.Clear();
+            }
+
+            if (_disasterBuildingsPool.Count > 0)
+            {
+                _disasterBuildingsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                building = _disasterBuildingsPool.GetRandom();
+            }
+            _disasterBuildingsPool.Clear();
+
+            if (building != null)
+            {
+                List<WorldTile> bTiles = _buildingTilesRef != null ? _buildingTilesRef(building) : null;
+                WorldTile spawnTile = null;
+                if (bTiles != null && bTiles.Count > 0)
+                {
+                    _constructionTilesPool.Clear();
+                    for (int i = 0; i < bTiles.Count; i++)
+                    {
+                        WorldTile wt = bTiles[i];
+                        if (wt != null) _constructionTilesPool.Add(wt);
+                    }
+                    if (_constructionTilesPool.Count > 0)
+                    {
+                        _constructionTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                        spawnTile = _constructionTilesPool.GetRandom();
+                    }
+                    _constructionTilesPool.Clear();
+                }
+                if (spawnTile != null && _spawnDisasterBuildingDel != null)
+                {
+                    if (_spawnDisasterBuildingDel(__instance, pAsset, spawnTile) != null)
+                    {
+                        if (_spawnDisasterUnitDel != null) _spawnDisasterUnitDel(__instance, pAsset, spawnTile);
+                        WorldLog.logDisaster(pAsset, spawnTile);
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static bool DisasterLibrarySpawnMadThoughtPrefix(DisasterLibrary __instance, DisasterAsset pAsset)
+        {
+            if (!LockstepClock.Active) return true;
+            _disasterCitiesPool.Clear();
+            List<City> cities = World.world.cities.list;
+            if (cities != null)
+            {
+                for (int i = 0; i < cities.Count; i++)
+                {
+                    City c = cities[i];
+                    if (c != null && c.getPopulationPeople() >= 50 && c.getTile() != null)
+                    {
+                        _disasterCitiesPool.Add(c);
+                    }
+                }
+            }
+            if (_disasterCitiesPool.Count == 0) return false;
+            _disasterCitiesPool.Sort((a, b) => a.id.CompareTo(b.id));
+            City randomCity = _disasterCitiesPool.GetRandom();
+            _disasterCitiesPool.Clear();
+
+            if (randomCity == null || randomCity.units == null || randomCity.units.Count == 0) return false;
+
+            _madThoughtUnitsPool.Clear();
+            for (int i = 0; i < randomCity.units.Count; i++)
+            {
+                Actor u = randomCity.units[i];
+                if (u != null && u.city == randomCity)
+                {
+                    _madThoughtUnitsPool.Add(u);
+                }
+            }
+            _madThoughtUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            for (int i = 0; i < _madThoughtUnitsPool.Count; i++)
+            {
+                Actor item = _madThoughtUnitsPool[i];
+                if (Randy.randomChance(0.2f))
+                {
+                    item.addTrait("madness");
+                }
+            }
+            _madThoughtUnitsPool.Clear();
+            WorldLog.logDisaster(pAsset, randomCity.getTile(), null, randomCity);
+            return false;
+        }
+
+        // ==========================================
+        // 66. Kingdom, Alliance & War Random Unit Accessors Determinism
+        // ==========================================
+        private static bool KingdomGetRandomUnitPrefix(Kingdom __instance, ref Actor __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.units == null || __instance.units.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _kingdomUnitsPool.Clear();
+            List<Actor> units = __instance.units;
+            for (int i = 0; i < units.Count; i++)
+            {
+                Actor item = units[i];
+                if (item != null && item.isAlive() && (item.asset == null || !item.asset.is_boat) && item.kingdom == __instance)
+                {
+                    _kingdomUnitsPool.Add(item);
+                }
+            }
+            if (_kingdomUnitsPool.Count > 0)
+            {
+                _kingdomUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                __result = _kingdomUnitsPool.GetRandom();
+                _kingdomUnitsPool.Clear();
+                return false;
+            }
+            _kingdomUnitsPool.Clear();
+            __result = null;
+            return false;
+        }
+
+        private static bool AllianceGetRandomUnitPrefix(Alliance __instance, ref Actor __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.kingdoms_list == null || __instance.kingdoms_list.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _allianceKingdomsPool.Clear();
+            for (int i = 0; i < __instance.kingdoms_list.Count; i++)
+            {
+                Kingdom k = __instance.kingdoms_list[i];
+                if (k != null && k.isAlive() && k.countUnits() > 0)
+                {
+                    _allianceKingdomsPool.Add(k);
+                }
+            }
+            if (_allianceKingdomsPool.Count > 0)
+            {
+                _allianceKingdomsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                Kingdom chosen = _allianceKingdomsPool.GetRandom();
+                _allianceKingdomsPool.Clear();
+                __result = chosen != null ? chosen.getRandomUnit() : null;
+                return false;
+            }
+            _allianceKingdomsPool.Clear();
+            __result = null;
+            return false;
+        }
+
+        private static bool WarGetRandomUnitPrefix(War __instance, ref Actor __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null)
+            {
+                __result = null;
+                return false;
+            }
+            _warKingdomsPool.Clear();
+            var attackers = __instance.getAttackers();
+            if (attackers != null)
+            {
+                foreach (Kingdom k in attackers)
+                {
+                    if (k != null && k.isAlive() && k.countUnits() > 0)
+                    {
+                        _warKingdomsPool.Add(k);
+                    }
+                }
+            }
+            var defenders = __instance.getDefenders();
+            if (defenders != null)
+            {
+                foreach (Kingdom k in defenders)
+                {
+                    if (k != null && k.isAlive() && k.countUnits() > 0 && !_warKingdomsPool.Contains(k))
+                    {
+                        _warKingdomsPool.Add(k);
+                    }
+                }
+            }
+            if (_warKingdomsPool.Count > 0)
+            {
+                _warKingdomsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                Kingdom chosen = _warKingdomsPool.GetRandom();
+                _warKingdomsPool.Clear();
+                __result = chosen != null ? chosen.getRandomUnit() : null;
+                return false;
+            }
+            _warKingdomsPool.Clear();
+            __result = null;
+            return false;
         }
     }
 }
