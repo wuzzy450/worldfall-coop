@@ -69,6 +69,11 @@ namespace Coopfall.Lockstep
     /// 53. City.getBuildingOfType: candidate buildings sorted by building.id before GetRandom draws when pRandom is true.
     /// 54. BehTryToSocialize.getRandomActorAround: deterministic chunk scan (pRandom: false) and closest candidate distance sorting with actor.id tie-breaking.
     /// 55. CityBehProduceResources.execute: production recipes in actorAsset.production sorted by ID instead of LoopRandom().
+    /// 57. Army.getRandomActorForCaptain & getNearbyUnitForCaptain: candidate units sorted by actor.id before random selection and stable actor.id tie-breaking on equal distance.
+    /// 58. BehActorCheckZoneTarget.execute: deterministic island tile candidate selection with lowest tile_id tie-breaking without LoopRandom().
+    /// 59. BehAffectDreams.getRandomDreamingActor: candidate sleeping actors sorted by actor.id before deterministic GetRandom draw.
+    /// 60. BehKingCheckNewCityFoundation.moveSomeUnitsToNewCity: candidate citizens sorted by actor.id before deterministic migration.
+    /// 61. Docks.getOceanTileInSameOcean & buildBoatFromHere: deterministic ocean tile iteration and presorted tiles_ocean before GetRandom().
     /// </summary>
     public static class SimulationInTick
     {
@@ -92,6 +97,10 @@ namespace Coopfall.Lockstep
         private static readonly List<Actor> _socializeBestPool = new List<Actor>();
         private static readonly List<Actor> _socializeNormalPool = new List<Actor>();
         private static readonly List<string> _productionRecipesPool = new List<string>();
+        private static readonly List<Actor> _armyCaptainPool = new List<Actor>();
+        private static readonly List<Actor> _dreamingActorsPool = new List<Actor>();
+        private static readonly List<Actor> _cityMigrateUnitsPool = new List<Actor>();
+        private static readonly List<Actor> _familyMigratePool = new List<Actor>();
 
         // 28-41 Internal field refs & methods
         private static AccessTools.FieldRef<WarManager, List<War>> _warManagerEndWarsRef;
@@ -211,6 +220,10 @@ namespace Coopfall.Lockstep
 
         // 50. City random warrior captain selection field ref
         private static AccessTools.FieldRef<City, Dictionary<UnitProfession, List<Actor>>> _professionsDictRef;
+
+        // 59. Dream conversion sleeping unit status delegate
+        private delegate bool HasStatusDelegate(BaseSimObject pSelf, string pID);
+        private static HasStatusDelegate _hasStatusDel;
 
         // 51-55 Field refs
         private static AccessTools.FieldRef<Batch<Actor>, float> _batchActorElapsedRef;
@@ -711,6 +724,41 @@ namespace Coopfall.Lockstep
                 MethodInfo produceResourcesExec = AccessTools.Method(typeof(CityBehProduceResources), "execute", new[] { typeof(City) });
                 if (produceResourcesExec != null) h.Patch(produceResourcesExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CityBehProduceResourcesExecutePrefix)));
                 else Log.Warn("lockstep: CityBehProduceResources.execute not found");
+
+                // 57. Army captain selection and distance tie-breaking
+                MethodInfo getRandCapt = AccessTools.Method(typeof(Army), "getRandomActorForCaptain");
+                if (getRandCapt != null) h.Patch(getRandCapt, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ArmyGetRandomActorForCaptainPrefix)));
+                else Log.Warn("lockstep: Army.getRandomActorForCaptain not found");
+
+                MethodInfo getNearbyCapt = AccessTools.Method(typeof(Army), "getNearbyUnitForCaptain", new[] { typeof(WorldTile) });
+                if (getNearbyCapt != null) h.Patch(getNearbyCapt, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ArmyGetNearbyUnitForCaptainPrefix)));
+                else Log.Warn("lockstep: Army.getNearbyUnitForCaptain not found");
+
+                // 58. City growth island tile selection
+                MethodInfo behCheckZoneTarget = AccessTools.Method(typeof(BehActorCheckZoneTarget), "execute", new[] { typeof(Actor) });
+                if (behCheckZoneTarget != null) h.Patch(behCheckZoneTarget, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehActorCheckZoneTargetExecutePrefix)));
+                else Log.Warn("lockstep: BehActorCheckZoneTarget.execute not found");
+
+                // 59. Dream conversion unit selection
+                MethodInfo hasStatusMethod = AccessTools.Method(typeof(BaseSimObject), "hasStatus", new[] { typeof(string) });
+                if (hasStatusMethod != null) _hasStatusDel = (HasStatusDelegate)Delegate.CreateDelegate(typeof(HasStatusDelegate), hasStatusMethod);
+                MethodInfo behAffectDreams = AccessTools.Method(typeof(BehAffectDreams), "getRandomDreamingActor", new[] { typeof(Actor) });
+                if (behAffectDreams != null) h.Patch(behAffectDreams, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehAffectDreamsGetRandomDreamingActorPrefix)));
+                else Log.Warn("lockstep: BehAffectDreams.getRandomDreamingActor not found");
+
+                // 60. New city colony population migration
+                MethodInfo moveSomeUnits = AccessTools.Method(typeof(BehKingCheckNewCityFoundation), "moveSomeUnitsToNewCity", new[] { typeof(City), typeof(City) });
+                if (moveSomeUnits != null) h.Patch(moveSomeUnits, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehKingCheckNewCityFoundationMoveSomeUnitsToNewCityPrefix)));
+                else Log.Warn("lockstep: BehKingCheckNewCityFoundation.moveSomeUnitsToNewCity not found");
+
+                // 61. Docks ocean tile search and boat spawn selection
+                MethodInfo getOceanTile = AccessTools.Method(typeof(Docks), "getOceanTileInSameOcean", new[] { typeof(WorldTile) });
+                if (getOceanTile != null) h.Patch(getOceanTile, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DocksGetOceanTileInSameOceanPrefix)));
+                else Log.Warn("lockstep: Docks.getOceanTileInSameOcean not found");
+
+                MethodInfo buildBoat = AccessTools.Method(typeof(Docks), "buildBoatFromHere", new[] { typeof(City) });
+                if (buildBoat != null) h.Patch(buildBoat, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DocksBuildBoatFromHerePrefix)));
+                else Log.Warn("lockstep: Docks.buildBoatFromHere not found");
             }
             catch (Exception e)
             {
@@ -4753,6 +4801,304 @@ namespace Coopfall.Lockstep
                     }
                 }
                 if (pCity.addResourcesToRandomStockpile(pAsset.id) <= 0) return false;
+            }
+            return true;
+        }
+
+        // ==========================================
+        // 57. Army Captain Selection & Distance Tie-Breaking
+        // ==========================================
+        private static bool ArmyGetRandomActorForCaptainPrefix(Army __instance, ref Actor __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.units == null || __instance.units.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _armyCaptainPool.Clear();
+            List<Actor> list = __instance.units;
+            for (int i = 0; i < list.Count; i++)
+            {
+                Actor item = list[i];
+                if (item != null && !item.isRekt() && item.army == __instance)
+                {
+                    _armyCaptainPool.Add(item);
+                }
+            }
+            if (_armyCaptainPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _armyCaptainPool.Sort((a, b) => a.id.CompareTo(b.id));
+            __result = _armyCaptainPool.GetRandom();
+            _armyCaptainPool.Clear();
+            return false;
+        }
+
+        private static bool ArmyGetNearbyUnitForCaptainPrefix(Army __instance, WorldTile pLastPosition, ref Actor __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.units == null || pLastPosition == null)
+            {
+                __result = null;
+                return false;
+            }
+            Actor result = null;
+            int bestDist = int.MaxValue;
+            List<Actor> list = __instance.units;
+            for (int i = 0; i < list.Count; i++)
+            {
+                Actor actor = list[i];
+                if (actor != null && actor.army == __instance && !actor.isRekt() && actor.current_tile != null)
+                {
+                    int dist = Toolbox.SquaredDistTile(actor.current_tile, pLastPosition);
+                    if (dist < bestDist || (dist == bestDist && (result == null || actor.id < result.id)))
+                    {
+                        result = actor;
+                        bestDist = dist;
+                    }
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        // ==========================================
+        // 58. City Growth Island Tile Selection Determinism
+        // ==========================================
+        private static bool BehActorCheckZoneTargetExecutePrefix(Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.city == null || pActor.current_tile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            City city = pActor.city;
+            TileZone zoneToClaim = World.world?.city_zone_helper?.city_growth?.getZoneToClaim(pActor, city);
+            if (zoneToClaim == null || zoneToClaim.city == city)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            WorldTile worldTile = null;
+            if (zoneToClaim.centerTile != null && zoneToClaim.centerTile.isSameIsland(pActor.current_tile))
+            {
+                worldTile = zoneToClaim.centerTile;
+            }
+            else if (zoneToClaim.tiles != null)
+            {
+                WorldTile[] tiles = zoneToClaim.tiles;
+                for (int i = 0; i < tiles.Length; i++)
+                {
+                    WorldTile item = tiles[i];
+                    if (item != null && item.isSameIsland(pActor.current_tile))
+                    {
+                        if (worldTile == null || item.tile_id < worldTile.tile_id)
+                        {
+                            worldTile = item;
+                        }
+                    }
+                }
+            }
+            if (worldTile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 59. Dream Conversion Unit Selection Determinism
+        // ==========================================
+        private static bool BehAffectDreamsGetRandomDreamingActorPrefix(Actor pActor, ref Actor __result)
+        {
+            if (!LockstepClock.Active) return true;
+            ActorManager units = World.world?.units;
+            if (units == null)
+            {
+                __result = null;
+                return false;
+            }
+            units.checkSleepingUnits();
+            List<Actor> cached = units.cached_sleeping_units;
+            if (cached == null || cached.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _dreamingActorsPool.Clear();
+            for (int i = 0; i < cached.Count; i++)
+            {
+                Actor item = cached[i];
+                if (item != null && item.isAlive() && item.hasSubspecies() &&
+                    (_hasStatusDel != null && _hasStatusDel(item, "sleeping")) &&
+                    (item.subspecies.has_advanced_memory || item.subspecies.has_advanced_communication))
+                {
+                    _dreamingActorsPool.Add(item);
+                }
+            }
+            if (_dreamingActorsPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _dreamingActorsPool.Sort((a, b) => a.id.CompareTo(b.id));
+            __result = _dreamingActorsPool.GetRandom();
+            _dreamingActorsPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 60. New City Colony Population Migration Determinism
+        // ==========================================
+        private static bool BehKingCheckNewCityFoundationMoveSomeUnitsToNewCityPrefix(City pNewCity, City pFromCity)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pNewCity == null || pFromCity == null || pFromCity.units == null || pFromCity.units.Count == 0)
+            {
+                return false;
+            }
+            _cityMigrateUnitsPool.Clear();
+            List<Actor> units = pFromCity.units;
+            for (int i = 0; i < units.Count; i++)
+            {
+                Actor a = units[i];
+                if (a != null) _cityMigrateUnitsPool.Add(a);
+            }
+            if (_cityMigrateUnitsPool.Count == 0) return false;
+            _cityMigrateUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            int targetCount = Mathf.Min(units.Count, 6);
+            int movedCount = 0;
+            for (int i = 0; i < _cityMigrateUnitsPool.Count; i++)
+            {
+                Actor item = _cityMigrateUnitsPool[i];
+                if (item != null && IsPossibleToMoveUnitToCity(item, pNewCity))
+                {
+                    MoveUnitToCity(item, pNewCity);
+                    movedCount++;
+                    int familyMoved = CheckUnitFamilyAndLovers(item, pNewCity, movedCount);
+                    movedCount += familyMoved;
+                    if (movedCount >= targetCount)
+                    {
+                        break;
+                    }
+                }
+            }
+            _cityMigrateUnitsPool.Clear();
+            return false;
+        }
+
+        private static bool IsPossibleToMoveUnitToCity(Actor pUnit, City pCity)
+        {
+            if (pUnit == null || pUnit.isRekt()) return false;
+            if (!pUnit.isAdult()) return false;
+            if (pUnit.isCityLeader()) return false;
+            if (pUnit.isKing()) return false;
+            if (pUnit.isArmyGroupLeader()) return false;
+            if (pUnit.army != null) return false;
+            if (pUnit.hasLover())
+            {
+                if (pUnit.lover == null || pUnit.lover.isKing() || pUnit.lover.isCityLeader())
+                {
+                    return false;
+                }
+            }
+            if (pUnit.city == pCity) return false;
+            return true;
+        }
+
+        private static void MoveUnitToCity(Actor pActor, City pCity)
+        {
+            pActor.stopBeingWarrior();
+            pActor.joinCity(pCity);
+            pActor.cancelAllBeh();
+        }
+
+        private static int CheckUnitFamilyAndLovers(Actor pActor, City pCity, int pMovedAlready)
+        {
+            int num = 0;
+            if (pActor.hasLover() && pActor.lover != null)
+            {
+                Actor lover = pActor.lover;
+                if (IsPossibleToMoveUnitToCity(lover, pCity))
+                {
+                    MoveUnitToCity(lover, pCity);
+                    num++;
+                }
+            }
+            if (pActor.hasFamily() && pActor.family != null && pActor.family.units != null)
+            {
+                _familyMigratePool.Clear();
+                List<Actor> famUnits = pActor.family.units;
+                for (int i = 0; i < famUnits.Count; i++)
+                {
+                    Actor u = famUnits[i];
+                    if (u != null) _familyMigratePool.Add(u);
+                }
+                _familyMigratePool.Sort((a, b) => a.id.CompareTo(b.id));
+                for (int i = 0; i < _familyMigratePool.Count; i++)
+                {
+                    Actor unit = _familyMigratePool[i];
+                    if (IsPossibleToMoveUnitToCity(unit, pCity))
+                    {
+                        MoveUnitToCity(unit, pCity);
+                        num++;
+                    }
+                    if (num + pMovedAlready >= 6)
+                    {
+                        break;
+                    }
+                }
+                _familyMigratePool.Clear();
+            }
+            return num;
+        }
+
+        // ==========================================
+        // 61. Docks Ocean Tile & Boat Spawn Selection Determinism
+        // ==========================================
+        private static bool DocksGetOceanTileInSameOceanPrefix(Docks __instance, WorldTile pTile, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.tiles_ocean == null || pTile == null)
+            {
+                __result = null;
+                return false;
+            }
+            WorldTile best = null;
+            for (int i = 0; i < __instance.tiles_ocean.Count; i++)
+            {
+                WorldTile item = __instance.tiles_ocean[i];
+                if (item != null && item.isSameIsland(pTile))
+                {
+                    if (best == null || item.tile_id < best.tile_id)
+                    {
+                        best = item;
+                    }
+                }
+            }
+            __result = best;
+            return false;
+        }
+
+        private static bool DocksBuildBoatFromHerePrefix(Docks __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance?.tiles_ocean != null && __instance.tiles_ocean.Count > 1)
+            {
+                __instance.tiles_ocean.Sort((a, b) =>
+                {
+                    if (a == null) return b == null ? 0 : -1;
+                    if (b == null) return 1;
+                    return a.tile_id.CompareTo(b.tile_id);
+                });
             }
             return true;
         }

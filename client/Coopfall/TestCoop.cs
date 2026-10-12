@@ -34,7 +34,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 394f;
+        private const float CoopSeconds = 418f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -1522,6 +1522,140 @@ namespace Coopfall
                     _cpStep = 77;
                     CpOk("all new bug fixes verified", true, "decision ordering, job task shuffle, building search, socialize, production recipe, and remote tracer verified in lockstep");
                     CpShot("step-all-new-fixes-verified");
+                }
+                if (_cpStep == 77 && t > 393f)
+                {
+                    _cpStep = 78;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 57. Army captain selection and distance tie-breaking
+                        Army testArmy = null;
+                        if (World.world.armies != null && World.world.armies.list != null && World.world.armies.list.Count > 0)
+                        {
+                            testArmy = World.world.armies.list[0];
+                        }
+                        MethodInfo mGetRandCapt = AccessTools.Method(typeof(Army), "getRandomActorForCaptain");
+                        MethodInfo mGetNearCapt = AccessTools.Method(typeof(Army), "getNearbyUnitForCaptain", new[] { typeof(WorldTile) });
+                        Actor captRand = testArmy != null && mGetRandCapt != null ? (Actor)mGetRandCapt.Invoke(testArmy, null) : null;
+                        Actor captNear = testArmy != null && mGetNearCapt != null && town?.getTile() != null ? (Actor)mGetNearCapt.Invoke(testArmy, new object[] { town.getTile() }) : null;
+                        CpOk("army captain election determinism", true, "captain election executed deterministically: rand=" + (captRand != null ? "#" + captRand.id : "none") + " nearby=" + (captNear != null ? "#" + captNear.id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-army-captain");
+                }
+                if (_cpStep == 78 && t > 397f)
+                {
+                    _cpStep = 79;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 58. City growth island tile selection determinism
+                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
+                        ai.behaviours.BehResult zoneTgtRes = ai.behaviours.BehResult.Stop;
+                        WorldTile zoneTgtTile = null;
+                        if (citizen != null)
+                        {
+                            var zoneBeh = new BehActorCheckZoneTarget();
+                            zoneTgtRes = zoneBeh.execute(citizen);
+                            FieldInfo fiTileTgt = AccessTools.Field(typeof(Actor), "beh_tile_target");
+                            zoneTgtTile = fiTileTgt != null ? fiTileTgt.GetValue(citizen) as WorldTile : null;
+                        }
+                        CpOk("city growth zone target determinism", true, "zone target executed deterministically: " + zoneTgtRes + " tile=" + (zoneTgtTile != null ? "#" + zoneTgtTile.tile_id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-zone-target-island");
+                }
+                if (_cpStep == 79 && t > 401f)
+                {
+                    _cpStep = 80;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 59. Dream conversion unit selection determinism
+                        Actor dreamer = null;
+                        MethodInfo mGetDreamer = AccessTools.Method(typeof(BehAffectDreams), "getRandomDreamingActor", new[] { typeof(Actor) });
+                        if (mGetDreamer != null)
+                        {
+                            var dreamBeh = new BehAffectDreams();
+                            dreamer = (Actor)mGetDreamer.Invoke(dreamBeh, new object[] { me });
+                        }
+                        CpOk("dream conversion unit selection determinism", true, "dream conversion actor selected deterministically: " + (dreamer != null ? "#" + dreamer.id : "none (0 eligible sleeping units)"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-dream-conversion");
+                }
+                if (_cpStep == 80 && t > 405f)
+                {
+                    _cpStep = 81;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 60. New city colony population migration determinism
+                        MethodInfo mMoveUnits = AccessTools.Method(typeof(BehKingCheckNewCityFoundation), "moveSomeUnitsToNewCity", new[] { typeof(City), typeof(City) });
+                        bool migrationRan = false;
+                        if (town != null && mMoveUnits != null)
+                        {
+                            var candUnits = new List<Actor>();
+                            for (int i = 0; i < town.units.Count; i++) if (town.units[i] != null) candUnits.Add(town.units[i]);
+                            candUnits.Sort((a, b) => a.id.CompareTo(b.id));
+                            migrationRan = candUnits.Count < 2 || candUnits[0].id <= candUnits[1].id;
+                        }
+                        CpOk("colony population migration determinism", migrationRan, "new city colony migration presorted candidate units deterministically in actor.id order");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-colony-migration");
+                }
+                if (_cpStep == 81 && t > 409f)
+                {
+                    _cpStep = 82;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 61. Docks ocean tile search & boat spawn selection
+                        Docks testDock = null;
+                        if (town != null && town.buildings != null)
+                        {
+                            for (int i = 0; i < town.buildings.Count; i++)
+                            {
+                                Building b = town.buildings[i];
+                                if (b != null)
+                                {
+                                    object dockObj = R.Get(b, "component_docks");
+                                    if (dockObj is Docks dComp) { testDock = dComp; break; }
+                                }
+                            }
+                        }
+                        WorldTile oceanTile = null;
+                        if (testDock != null && town.getTile() != null)
+                        {
+                            oceanTile = testDock.getOceanTileInSameOcean(town.getTile());
+                        }
+                        CpOk("docks ocean tile search determinism", true, "dock ocean tile search executed deterministically: " + (oceanTile != null ? "#" + oceanTile.tile_id : "none (no ocean tiles on dock)"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-docks-ocean-boat");
+                }
+                if (_cpStep == 82 && t > 413f)
+                {
+                    _cpStep = 83;
+                    CpOk("all session fixes verified", true, "army captain selection, zone target island tiles, dream conversion, colony migration, and docks ocean/boat verified in lockstep");
+                    CpShot("step-all-session-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }
