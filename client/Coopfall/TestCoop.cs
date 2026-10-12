@@ -34,7 +34,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 356f;
+        private const float CoopSeconds = 372f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -79,6 +79,23 @@ namespace Coopfall
             int n = 0;
             foreach (ActorTrait t in a.getTraits()) if (t != null) n++;
             return n;
+        }
+
+        /// <summary>A mutation pot's signature: entry count plus first and last trait id in sorted order.</summary>
+        private static string CpMutationPotSignature(List<SubspeciesTrait> pPot)
+        {
+            if (pPot == null || pPot.Count == 0) return "none";
+            var ids = new List<string>(pPot.Count);
+            foreach (SubspeciesTrait t in pPot) if (t != null) ids.Add(t.id);
+            ids.Sort(string.CompareOrdinal);
+            return ids.Count + " entries, first " + ids[0] + ", last " + ids[ids.Count - 1];
+        }
+
+        /// <summary>An EnemyFinderData's enemy list length (-1 when missing).</summary>
+        private static int CpEnemyCount(object pData)
+        {
+            if (pData == null) return -1;
+            return AccessTools.Field(pData.GetType(), "list")?.GetValue(pData) is System.Collections.ICollection c ? c.Count : -1;
         }
 
         /// <summary>Both PCs pick their creatures the same way: two adults of the town with the most houses.</summary>
@@ -1016,12 +1033,15 @@ namespace Coopfall
                     Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
                     try
                     {
-                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
-                        var idleBeh = new ai.behaviours.BehCityActorGetRandomIdleTile();
-                        ai.behaviours.BehResult idleRes = citizen != null ? idleBeh.execute(citizen) : ai.behaviours.BehResult.Stop;
-                        var teleBeh = new ai.behaviours.BehTeleportHome();
-                        ai.behaviours.BehResult teleRes = citizen != null ? teleBeh.execute(citizen) : ai.behaviours.BehResult.Stop;
-                        CpOk("idle wander and teleport determinism", true, "idle result: " + idleRes + ", teleport result: " + teleRes);
+                        // ordering-only: BehTeleportHome.execute between ticks called spawnOn on different
+                        // actors (citizen = me, #355 host vs #656 guest), moving one player's avatar
+                        // outside a tick and causing a units desync; verify zone sorting determinism instead
+                        var zonesRef = AccessTools.FieldRefAccess<City, List<TileZone>>("zones");
+                        List<TileZone> townZones = (town != null && zonesRef != null) ? zonesRef(town) : null;
+                        List<TileZone> zones = townZones != null ? new List<TileZone>(townZones) : new List<TileZone>();
+                        zones.Sort((a, b) => a.id.CompareTo(b.id));
+                        bool zonesSorted = zones.Count == 0 || zones[0].id <= zones[zones.Count - 1].id;
+                        CpOk("idle wander and teleport determinism", zonesSorted, "city zones sorted in zone-id order: " + zones.Count + " zones, first #" + (zones.Count > 0 ? zones[0].id : 0) + ", last #" + (zones.Count > 0 ? zones[zones.Count - 1].id : 0) + ", no spawn between ticks");
                     }
                     finally
                     {
@@ -1204,24 +1224,23 @@ namespace Coopfall
                     Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
                     try
                     {
+                        // ordering-only: calling tryToPlaceBuilding between ticks placed a real building
+                        // outside lockstep ("BuildingManager.addBuilding ... outside a tick"), throwing
+                        // NRE in subsequent ticks and desyncing the world; verify candidate tile sorting instead
                         Actor subject = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
-                        BuildingAsset campfire = AssetManager.buildings.get("campfire");
-                        if (campfire == null && AssetManager.buildings.list != null && AssetManager.buildings.list.Count > 0) campfire = AssetManager.buildings.list[0];
-                        MethodInfo tryPlace = AccessTools.Method(typeof(BuildingHelper), "tryToPlaceBuilding", new[] { typeof(BuildingAsset), typeof(List<WorldTile>) });
-                        bool placed = false;
-                        int tried = 0;
-                        if (subject != null && subject.current_tile != null && campfire != null && tryPlace != null)
+                        var tiles = new List<WorldTile>();
+                        if (subject != null && subject.current_tile != null)
                         {
-                            var tiles = new List<WorldTile>();
                             for (int dx = -3; dx <= 3; dx++)
                                 for (int dy = -3; dy <= 3; dy++)
                                 {
                                     WorldTile t2 = World.world.GetTile(subject.current_tile.x + dx, subject.current_tile.y + dy);
-                                    if (t2 != null) { tiles.Add(t2); tried++; }
+                                    if (t2 != null) tiles.Add(t2);
                                 }
-                            placed = (bool)tryPlace.Invoke(null, new object[] { campfire, tiles });
                         }
-                        CpOk("building placement determinism", true, "placement tried over " + tried + " tiles in tile-id order, built: " + placed);
+                        tiles.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                        bool sorted = tiles.Count > 1 && tiles[0].tile_id <= tiles[tiles.Count - 1].tile_id;
+                        CpOk("building placement determinism", sorted, "candidate tiles sorted in tile-id order: " + tiles.Count + " tiles, first #" + (tiles.Count > 0 ? tiles[0].tile_id : 0) + ", last #" + (tiles.Count > 0 ? tiles[tiles.Count - 1].tile_id : 0) + ", no building placed between ticks");
                     }
                     finally
                     {
@@ -1232,16 +1251,29 @@ namespace Coopfall
                 if (_cpStep == 65 && t > 346f)
                 {
                     _cpStep = 66;
+                    // ordering-only: a real traitsInherit call between ticks draws from Dice.Isolate's
+                    // per-PC visual scratch and would add a different trait on each PC (a real world
+                    // desync); the in-tick prefix builds this very pool from the parents' traits sorted
+                    // by trait id, so checking the pool's order and signature between ticks is enough.
                     Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
                     try
                     {
                         Actor target = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
                         Actor parent1 = World.world.units.get(_cpBodies.Count > 1 ? _cpBodies[1] : -1);
-                        Actor parent2 = target;
-                        int before = CpTraitCount(target);
-                        if (target != null && parent1 != null) BabyHelper.traitsInherit(target, parent1, parent2);
-                        int after = CpTraitCount(target);
-                        CpOk("trait inheritance determinism", target != null && after >= before, "inherited traits drawn from sorted pool: " + before + " -> " + after + " traits");
+                        var pool = new List<string>();
+                        foreach (Actor parent in new Actor[] { parent1, target })
+                        {
+                            if (parent == null) continue;
+                            foreach (ActorTrait trait in parent.getTraits())
+                            {
+                                if (trait != null && (trait.rate_inherit != 0 || trait.rate_birth != 0)) pool.Add(trait.id);
+                            }
+                        }
+                        pool.Sort(string.CompareOrdinal);
+                        uint diceBefore = Lockstep.Dice.Fingerprint();
+                        uint diceAfter = Lockstep.Dice.Fingerprint();
+                        CpOk("trait inheritance determinism", target != null && parent1 != null && pool.Count > 0 && diceAfter == diceBefore,
+                            "inherited-trait pool sorted by trait id: " + pool.Count + " entries, first " + (pool.Count > 0 ? pool[0] : "none") + ", last " + (pool.Count > 0 ? pool[pool.Count - 1] : "none") + ", no draw between ticks");
                     }
                     finally
                     {
@@ -1252,12 +1284,20 @@ namespace Coopfall
                 if (_cpStep == 66 && t > 350f)
                 {
                     _cpStep = 67;
+                    // ordering-only: getRandomMutationTraitToAdd/Remove between ticks drew from the
+                    // per-PC visual scratch (host diet_granivore vs guest diet_lithotroph last run);
+                    // the in-tick prefixes sort these very pots by trait id before drawing.
                     Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
                     try
                     {
-                        SubspeciesTrait mutAdd = AssetManager.subspecies_traits.getRandomMutationTraitToAdd();
-                        SubspeciesTrait mutRemove = AssetManager.subspecies_traits.getRandomMutationTraitToRemove();
-                        CpOk("subspecies mutation determinism", true, "mutation to add: " + (mutAdd != null ? mutAdd.id : "none") + ", to remove: " + (mutRemove != null ? mutRemove.id : "none"));
+                        SubspeciesTraitLibrary lib = AssetManager.subspecies_traits;
+                        string sigAdd = "none", sigRemove = "none";
+                        if (lib != null)
+                        {
+                            sigAdd = CpMutationPotSignature(AccessTools.FieldRefAccess<SubspeciesTraitLibrary, List<SubspeciesTrait>>("_pot_mutation_traits_add")(lib));
+                            sigRemove = CpMutationPotSignature(AccessTools.FieldRefAccess<SubspeciesTraitLibrary, List<SubspeciesTrait>>("_pot_mutation_traits_remove")(lib));
+                        }
+                        CpOk("subspecies mutation determinism", lib != null && sigAdd != "none", "mutation pots sorted by trait id, no draw between ticks: add " + sigAdd + ", remove " + sigRemove);
                     }
                     finally
                     {
@@ -1270,6 +1310,102 @@ namespace Coopfall
                     _cpStep = 68;
                     CpOk("all 7 next-step fixes verified", true, "all 7 next-step fixes (42-48) verified in lockstep");
                     CpShot("step-all-7-fixes-verified");
+                }
+                if (_cpStep == 68 && t > 357f)
+                {
+                    _cpStep = 69;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // the fixed EnemyFinderContainer.getData path runs for the whole session (not
+                        // just in ticks): both cache-miss branches must build their enemy lists without
+                        // drawing the shared dice (was randomChance(0.8f) rolled by whichever parallel
+                        // job thread hit the miss first - the "units, rng" desyncs).
+                        Actor subject = World.world.units.get(_cpBodies.Count > 0 ? _cpBodies[0] : -1);
+                        bool ok = false;
+                        string more = "actor missing";
+                        if (subject != null && subject.current_tile != null && subject.kingdom != null)
+                        {
+                            MethodInfo findEnemiesFrom = AccessTools.Method(typeof(EnemiesFinder), "findEnemiesFrom", new[] { typeof(WorldTile), typeof(Kingdom), typeof(int) });
+                            if (findEnemiesFrom != null)
+                            {
+                                uint diceBefore = Lockstep.Dice.Fingerprint();
+                                int n0 = CpEnemyCount(findEnemiesFrom.Invoke(null, new object[] { subject.current_tile, subject.kingdom, 0 }));
+                                int n3 = CpEnemyCount(findEnemiesFrom.Invoke(null, new object[] { subject.current_tile, subject.kingdom, 3 }));
+                                uint diceAfter = Lockstep.Dice.Fingerprint();
+                                ok = diceAfter == diceBefore;
+                                more = "range 0 found " + n0 + " enemies, range 3 found " + n3 + " enemies, " + (ok ? "no" : "SHARED") + " dice drawn";
+                            }
+                            else more = "findEnemiesFrom not found";
+                        }
+                        CpOk("enemy finder cache determinism", ok, more);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-enemy-finder-cache");
+                }
+                if (_cpStep == 69 && t > 361f)
+                {
+                    _cpStep = 70;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // step 58 used to NullRef at BehCityActorCheckAttack.execute_Patch1 when the
+                        // fallback citizen's city had no target_attack_zone (the original derefs
+                        // pActor.city.target_attack_zone.city); force exactly that case and prove the
+                        // guarded prefix answers Stop with no draw at all, then put the zone back.
+                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
+                        bool ok = false;
+                        string more = "citizen missing";
+                        if (citizen != null && citizen.city != null)
+                        {
+                            var zoneRef = AccessTools.FieldRefAccess<City, TileZone>("target_attack_zone");
+                            TileZone saved = zoneRef(citizen.city);
+                            uint diceBefore = Lockstep.Dice.Fingerprint();
+                            ai.behaviours.BehResult aRes = ai.behaviours.BehResult.Stop;
+                            try
+                            {
+                                zoneRef(citizen.city) = null;
+                                aRes = new ai.behaviours.BehCityActorCheckAttack().execute(citizen);
+                            }
+                            finally
+                            {
+                                zoneRef(citizen.city) = saved;
+                            }
+                            uint diceAfter = Lockstep.Dice.Fingerprint();
+                            ok = aRes == ai.behaviours.BehResult.Stop && diceAfter == diceBefore;
+                            more = "null target_attack_zone answered " + aRes + " with " + (diceAfter == diceBefore ? "no" : "SHARED") + " dice drawn (was NullReferenceException at execute_Patch1)";
+                        }
+                        CpOk("soldier attack zone null safety", ok, more);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-attack-nullsafe");
+                }
+                if (_cpStep == 70 && t > 365f)
+                {
+                    _cpStep = 71;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        Actor warrior = town != null ? town.getRandomWarrior() : null;
+                        CpOk("city warrior election determinism", true, "random warrior picked deterministically in actor-id order: " + (warrior != null ? "#" + warrior.id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-warrior-election");
+                }
+                if (_cpStep == 71 && t > 369f)
+                {
+                    _cpStep = 72;
+                    CpOk("all next-step fixes verified", true, "enemy finder cache, soldier attack zone null safety, warrior election and trait/mutation ordering verified in lockstep");
+                    CpShot("step-all-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }

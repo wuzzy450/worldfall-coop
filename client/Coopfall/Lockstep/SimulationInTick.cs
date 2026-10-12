@@ -61,6 +61,8 @@ namespace Coopfall.Lockstep
     /// 46. BuildingHelper.tryToPlaceBuilding: candidate tiles sorted by tile_id before placement (was pList.LoopRandom).
     /// 47. BabyHelper.traitsInherit: inherited trait pool built from parents' traits sorted by trait id before GetRandom draws.
     /// 48. SubspeciesTraitLibrary.getRandomMutationTraitToAdd/Remove: mutation pots sorted by trait id before GetRandom draws.
+    /// 49. EnemyFinderContainer.getData: no shared PRNG draw and no racy Dictionary build from parallel job
+    ///     threads - a lock around the cache miss/build and a stable per-(kingdom, chunk, range) 0.8 roll.
     /// </summary>
     public static class SimulationInTick
     {
@@ -188,6 +190,16 @@ namespace Coopfall.Lockstep
         private static Func<BuildingManager, BuildingAsset, WorldTile, bool, bool, BuildPlacingType, Building> _addBuildingFunc;
         private static AccessTools.FieldRef<SubspeciesTraitLibrary, List<SubspeciesTrait>> _potMutationAddRef;
         private static AccessTools.FieldRef<SubspeciesTraitLibrary, List<SubspeciesTrait>> _potMutationRemoveRef;
+
+        // 49. Enemy finder shared cache field refs & delegates
+        private delegate void FindEnemiesOfKingdomDelegate(EnemyFinderData pData, MapChunk pChunk, Kingdom pKingdom);
+        private delegate void EnemyFinderCheckRangeDelegate(EnemyFinderContainer pSelf, EnemyFinderData pData, MapChunk pChunk, int pRange, int pSkipLessThan);
+        private static AccessTools.FieldRef<EnemyFinderContainer, Kingdom> _efcKingdomRef;
+        private static FindEnemiesOfKingdomDelegate _findEnemiesOfKingdomDel;
+        private static EnemyFinderCheckRangeDelegate _efcCheckRangeDel;
+
+        // 50. City random warrior captain selection field ref
+        private static AccessTools.FieldRef<City, Dictionary<UnitProfession, List<Actor>>> _professionsDictRef;
 
         public static void Install(Harmony h)
         {
@@ -555,6 +567,24 @@ namespace Coopfall.Lockstep
                 if (_findEnemiesFromMethod != null) _findEnemiesDel = (FindEnemiesDelegate)Delegate.CreateDelegate(typeof(FindEnemiesDelegate), _findEnemiesFromMethod);
                 _checkObjectListMethod = AccessTools.Method(typeof(BaseSimObject), "checkObjectList", new[] { typeof(IEnumerable<BaseSimObject>), typeof(bool), typeof(bool), typeof(bool), typeof(int) });
                 if (_checkObjectListMethod != null) _checkObjectListDel = (CheckObjectListDelegate)Delegate.CreateDelegate(typeof(CheckObjectListDelegate), _checkObjectListMethod);
+
+                // 49. Enemy finder shared cache roll and race (EnemyFinderContainer.getData)
+                MethodInfo efcGetData = AccessTools.Method(typeof(EnemyFinderContainer), "getData", new[] { typeof(MapChunk), typeof(int) });
+                if (efcGetData != null) h.Patch(efcGetData, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(EnemyFinderGetDataPrefix)));
+                else Log.Warn("lockstep: EnemyFinderContainer.getData not found");
+                _efcKingdomRef = AccessTools.FieldRefAccess<EnemyFinderContainer, Kingdom>("_kingdom");
+                MethodInfo findEnemiesOfKingdom = AccessTools.Method(typeof(EnemyFinderContainer), "findEnemiesOfKingdomInChunk");
+                if (findEnemiesOfKingdom != null) _findEnemiesOfKingdomDel = (FindEnemiesOfKingdomDelegate)Delegate.CreateDelegate(typeof(FindEnemiesOfKingdomDelegate), findEnemiesOfKingdom);
+                MethodInfo efcCheckRange = AccessTools.Method(typeof(EnemyFinderContainer), "checkRange");
+                if (efcCheckRange != null) _efcCheckRangeDel = (EnemyFinderCheckRangeDelegate)Delegate.CreateDelegate(typeof(EnemyFinderCheckRangeDelegate), efcCheckRange);
+                if (efcGetData != null && (_efcKingdomRef == null || _findEnemiesOfKingdomDel == null || _efcCheckRangeDel == null))
+                    Log.Warn("lockstep: EnemyFinderContainer internals not found (getData misses would still roll the shared dice)");
+
+                // 50. City random warrior captain selection over unsorted list
+                MethodInfo getRandWarrior = AccessTools.Method(typeof(City), "getRandomWarrior");
+                if (getRandWarrior != null) h.Patch(getRandWarrior, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CityGetRandomWarriorPrefix)));
+                else Log.Warn("lockstep: City.getRandomWarrior not found");
+                _professionsDictRef = AccessTools.FieldRefAccess<City, Dictionary<UnitProfession, List<Actor>>>("_professions_dict");
 
                 // 43. Sleeping units status iteration order
                 MethodInfo checkSleepUnits = AccessTools.Method(typeof(ActorManager), "checkSleepingUnits");
@@ -3535,9 +3565,22 @@ namespace Coopfall.Lockstep
         // ==========================================
         // 37. City Soldier Attack Zone Selection
         // ==========================================
+        /// <summary>WorldTile.isSameIsland derefs both tiles' region (pTile.region.island == region.island):
+        /// a tile with no region threw NullReferenceException inside this patch. A missing region on
+        /// either side reads as "not the same island" - deterministic on both PCs instead of throwing.</summary>
+        private static bool SameIslandSafe(WorldTile pA, WorldTile pB)
+        {
+            if (pA == null || pB == null) return false;
+            if (pA.region == null || pB.region == null) return false;
+            return pA.region.island == pB.region.island;
+        }
+
         private static bool BehCityActorCheckAttackExecutePrefix(BehCityActorCheckAttack __instance, Actor pActor, ref BehResult __result)
         {
-            if (!LockstepClock.InTick) return true;
+            // Active (not just InTick): test/manual calls between ticks fell through to the unguarded
+            // original (step 58 NullReferenceException at execute_Patch1 on both PCs); the guarded
+            // deterministic path now covers the whole lockstep session.
+            if (!LockstepClock.Active) return true;
             if (pActor == null || pActor.city == null)
             {
                 __result = BehResult.Stop;
@@ -3556,7 +3599,7 @@ namespace Coopfall.Lockstep
                 __result = BehResult.Stop;
                 return false;
             }
-            if (pActor.current_tile == null || target_attack_zone.centerTile == null || !target_attack_zone.centerTile.isSameIsland(pActor.current_tile))
+            if (pActor.current_tile == null || target_attack_zone.centerTile == null || !SameIslandSafe(target_attack_zone.centerTile, pActor.current_tile))
             {
                 __result = BehResult.Stop;
                 return false;
@@ -3570,8 +3613,12 @@ namespace Coopfall.Lockstep
                     return false;
                 }
             }
+            // was pActor.current_island: that property derefs current_tile.region.island, and a tile
+            // with no region (water/unzoned) crashed here (step 58 NRE); pass null instead -
+            // getBuildingOfType treats a null island as "any island", identically on both PCs
+            TileIsland actorIsland = (pActor.current_tile != null && pActor.current_tile.region != null) ? pActor.current_tile.region.island : null;
             Building buildingOfType = _getBuildingOfTypeMethod != null
-                ? (Building)_getBuildingOfTypeMethod.Invoke(city, new object[] { "type_watch_tower", false, false, false, pActor.current_island })
+                ? (Building)_getBuildingOfTypeMethod.Invoke(city, new object[] { "type_watch_tower", false, false, false, actorIsland })
                 : null;
             if (buildingOfType != null && buildingOfType.current_tile != null && buildingOfType.current_tile.region != null && buildingOfType.current_tile.region.tiles != null && buildingOfType.current_tile.region.tiles.Count > 0)
             {
@@ -3591,7 +3638,7 @@ namespace Coopfall.Lockstep
                     if (tileZone.city == city && tileZone.tiles != null && tileZone.tiles.Length > 0)
                     {
                         WorldTile random = tileZone.tiles[Randy.randomInt(0, tileZone.tiles.Length)];
-                        if (random.isSameIsland(pActor.current_tile))
+                        if (SameIslandSafe(random, pActor.current_tile))
                         {
                             if (_behTileTargetRef != null) _behTileTargetRef(pActor) = random;
                             __result = BehResult.Continue;
@@ -3611,7 +3658,7 @@ namespace Coopfall.Lockstep
                     if (zone.tiles != null && zone.tiles.Length > 0)
                     {
                         WorldTile random2 = zone.tiles[Randy.randomInt(0, zone.tiles.Length)];
-                        if (random2.isSameIsland(pActor.current_tile))
+                        if (SameIslandSafe(random2, pActor.current_tile))
                         {
                             if (_behTileTargetRef != null) _behTileTargetRef(pActor) = random2;
                             __result = BehResult.Continue;
@@ -3990,6 +4037,17 @@ namespace Coopfall.Lockstep
             return (x & 0xFFFFFF) / 16777216f;
         }
 
+        /// <summary>A stable draw per id pair, independent of the shared PRNG and of the tick.</summary>
+        private static float Det01x(long pIdA, long pIdB, int pSalt)
+        {
+            ulong a = (ulong)(uint)(pSalt ^ unchecked((int)pIdA)) * 0x9E3779B97F4A7C15UL ^ (ulong)(uint)(pIdA >> 32) * 0xC2B2AE3D27D4EB4FUL;
+            a ^= a >> 33; a *= 0xFF51AFD7ED558CCDUL; a ^= a >> 33;
+            ulong b = (ulong)(uint)(pSalt * 3 + 1) ^ (ulong)(uint)pIdB * 0xD6E8FEB86659FD93UL;
+            ulong x = a ^ (b + 0x9E3779B97F4A7C15UL + (b >> 29));
+            x ^= x >> 33; x *= 0xFF51AFD7ED558CCDUL; x ^= x >> 33;
+            return (x & 0xFFFFFF) / 16777216f;
+        }
+
         private static bool FindEnemyObjectTargetPrefix(BaseSimObject __instance, bool pAttackBuildings, ref BaseSimObject __result)
         {
             if (!LockstepClock.Active) return true;
@@ -4263,6 +4321,80 @@ namespace Coopfall.Lockstep
             foreach (SubspeciesTrait t in pool) if (t != null) candidates.Add(t);
             candidates.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
             return candidates.GetRandom();
+        }
+
+        // ==========================================
+        // 49. Enemy Finder Shared Cache Roll and Race
+        // ==========================================
+        private static bool EnemyFinderGetDataPrefix(EnemyFinderContainer __instance, MapChunk pChunk, int pRange, ref EnemyFinderData __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || pChunk == null) { __result = null; return false; }
+            if (_efcKingdomRef == null || _findEnemiesOfKingdomDel == null || _efcCheckRangeDel == null) return true;
+            Kingdom kingdom = _efcKingdomRef(__instance);
+            if (kingdom == null || kingdom.asset == null) { __result = null; return false; }
+            // getData is reached from the parallel b3_findEnemyTarget job threads (through every fixed
+            // findEnemyObjectTarget call): the original rolled Randy.randomChance(0.8f) from whichever
+            // thread hit a cache miss first (the "units, rng" desyncs) and built dict_data - a plain
+            // Dictionary - concurrently from those threads. Lock the whole lookup/build on the container
+            // and roll the 0.8 chance from a stable per-(kingdom, chunk, range) hash instead.
+            lock (__instance)
+            {
+                int key = pChunk.id * 10000 + pRange;
+                if (__instance.dict_data.TryGetValue(key, out EnemyFinderData value))
+                {
+                    EnemiesFinder.counter_reused++;
+                    __result = value;
+                    return false;
+                }
+                value = UnityEngine.Pool.UnsafeGenericPool<EnemyFinderData>.Get();
+                __instance.dict_data.Add(key, value);
+                if (!kingdom.asset.force_look_all_chunks)
+                {
+                    if (pRange == 0)
+                    {
+                        _findEnemiesOfKingdomDel(value, pChunk, kingdom);
+                        __result = value;
+                        return false;
+                    }
+                    // was Randy.randomChance(0.8f)
+                    if (Det01x(kingdom.id, pChunk.id, 0xEFACED ^ pRange) < 0.8f)
+                    {
+                        _findEnemiesOfKingdomDel(value, pChunk, kingdom);
+                    }
+                }
+                if (value.isEmpty())
+                {
+                    for (int i = 0; i <= pRange; i++)
+                    {
+                        _efcCheckRangeDel(__instance, value, pChunk, i, i);
+                        if (!value.isEmpty() && !kingdom.asset.force_look_all_chunks) break;
+                    }
+                }
+                __result = value;
+                return false;
+            }
+        }
+
+        // ==========================================
+        // 50. City Random Warrior Sorter
+        // ==========================================
+        private static bool CityGetRandomWarriorPrefix(City __instance, ref Actor __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || _professionsDictRef == null) return true;
+            Dictionary<UnitProfession, List<Actor>> dict = _professionsDictRef(__instance);
+            if (dict == null || !dict.TryGetValue(UnitProfession.Warrior, out List<Actor> list) || list == null || list.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            List<Actor> sorted = new List<Actor>(list.Count);
+            for (int i = 0; i < list.Count; i++) if (list[i] != null) sorted.Add(list[i]);
+            if (sorted.Count == 0) { __result = null; return false; }
+            sorted.Sort((a, b) => a.id.CompareTo(b.id));
+            __result = sorted.GetRandom();
+            return false;
         }
     }
 }
