@@ -115,6 +115,14 @@ namespace Coopfall.Lockstep
     /// 100. Toolbox.getRandomVectorWithinDistance & getRandomTileWithinDistance: deterministic vector offsets and tile candidate distance sorting.
     /// 101. WorldBehaviourActions.updateUnitSpawn: candidate islands and tiles selected deterministically via tick hash with deterministic creature spawn counts.
     /// 102. WorldBehaviourActions.growMinerals & TileActionLibrary.getGrowTypeRandomMineral: candidate regions, tiles, and mineral assets presorted and derived deterministically.
+    /// 103. CoreSystemManager.getRandom: unified candidate objects sorted by ID across all core managers with deterministic selection via tick hash.
+    /// 104. MapBox.newAttack: multi-target cleave and splash candidate enemies presorted by distance and ID without unseeded LoopRandom.
+    /// 105. DropsLibrary.trySpawnUnit: biome spawn and sapient candidates presorted and deterministically selected via tick hash without LoopRandom or unseeded randomBool.
+    /// 106. DropsLibrary.action_clone_rain: clone target actors and neighbor placement tiles sorted deterministically by ID without LoopRandom.
+    /// 107. MetaObject.getRandomActorForReaper & getRandomUnit: alive units presorted by actor.id before deterministic index selection.
+    /// 108. PlotsLibrary.plot_join_alliance: candidate alliances chosen deterministically without unseeded GetRandom and start requirements verified.
+    /// 109. TileZone.loopLava: lava tile types traversed by index instead of LoopRandom, isolating visual light blob rendering from simulation PRNG.
+    /// 110. Brush.getRandom: brush assets presorted and selected deterministically via tick hash without unseeded GetRandom or LoopRandom.
     /// </summary>
     public static class SimulationInTick
     {
@@ -215,6 +223,14 @@ namespace Coopfall.Lockstep
         private static readonly List<string> _unitSpawnCandidatePool = new List<string>();
         private static readonly List<string> _mineralSpawnCandidatePool = new List<string>();
         private static readonly List<MapRegion> _regionCandidatePool = new List<MapRegion>();
+        private static readonly List<BaseSimObject> _cleaveTargetsPool = new List<BaseSimObject>();
+        private static readonly List<string> _potUnitsSpawnPool = new List<string>();
+        private static readonly List<string> _potSapientUnitsSpawnPool = new List<string>();
+        private static readonly List<Actor> _cloneUnitsPool = new List<Actor>();
+        private static readonly List<WorldTile> _cloneTilesPool = new List<WorldTile>();
+        private static readonly List<Actor> _reaperUnitsPool = new List<Actor>();
+        private static readonly List<Actor> _metaUnitsPool = new List<Actor>();
+        private static readonly List<BrushData> _brushCandidatesPool = new List<BrushData>();
 
         private delegate void CalculateForceDelegate(Actor pActor, float pStartX, float pStartY, float pTargetX, float pTargetY, float pForceAmountDirection, float pForceHeight, bool pCheckCancelJobOnLand);
         private static CalculateForceDelegate _calculateForceDel;
@@ -1308,6 +1324,68 @@ namespace Coopfall.Lockstep
                 MethodInfo mGrowTypeMineral = AccessTools.Method(typeof(TileActionLibrary), "getGrowTypeRandomMineral", new[] { typeof(WorldTile) });
                 if (mGrowTypeMineral != null) h.Patch(mGrowTypeMineral, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TileActionLibraryGetGrowTypeRandomMineralPrefix)));
                 else Log.Warn("lockstep: TileActionLibrary.getGrowTypeRandomMineral not found");
+
+                // 103. CoreSystemManager Unified Object Random Selection Determinism
+                PatchCoreSystemManager<City, CityData>(h);
+                PatchCoreSystemManager<Kingdom, KingdomData>(h);
+                PatchCoreSystemManager<Clan, ClanData>(h);
+                PatchCoreSystemManager<Alliance, AllianceData>(h);
+                PatchCoreSystemManager<Culture, CultureData>(h);
+                PatchCoreSystemManager<Subspecies, SubspeciesData>(h);
+                PatchCoreSystemManager<Religion, ReligionData>(h);
+                PatchCoreSystemManager<Language, LanguageData>(h);
+                PatchCoreSystemManager<Army, ArmyData>(h);
+                PatchCoreSystemManager<Family, FamilyData>(h);
+                PatchCoreSystemManager<Plot, PlotData>(h);
+                PatchCoreSystemManager<War, WarData>(h);
+                PatchCoreSystemManager<Item, ItemData>(h);
+                PatchCoreSystemManager<Book, BookData>(h);
+                PatchCoreSystemManager<DiplomacyRelation, DiplomacyRelationData>(h);
+                PatchCoreSystemManager<Status, StatusData>(h);
+                PatchCoreSystemManager<Projectile, ProjectileData>(h);
+
+                // 104. MapBox Multi-Target Cleave & Splash Attack Target Search Determinism
+                MethodInfo mMapBoxNewAttack = AccessTools.Method(typeof(MapBox), "newAttack", new[] { typeof(AttackData) });
+                if (mMapBoxNewAttack != null) h.Patch(mMapBoxNewAttack, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(MapBoxNewAttackPrefix)));
+                else Log.Warn("lockstep: MapBox.newAttack not found");
+
+                // 105. Drops Rain of Life & Sapient Creature Selection Determinism
+                MethodInfo mDropsTrySpawnUnit = AccessTools.Method(typeof(DropsLibrary), "trySpawnUnit", new[] { typeof(WorldTile) });
+                if (mDropsTrySpawnUnit != null) h.Patch(mDropsTrySpawnUnit, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DropsLibraryTrySpawnUnitPrefix)));
+                else Log.Warn("lockstep: DropsLibrary.trySpawnUnit not found");
+
+                // 106. Drops Clone Rain Neighbour Tile & Unit Selection Determinism
+                MethodInfo mDropsCloneRain = AccessTools.Method(typeof(DropsLibrary), "action_clone_rain", new[] { typeof(WorldTile), typeof(string) });
+                if (mDropsCloneRain != null) h.Patch(mDropsCloneRain, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DropsLibraryActionCloneRainPrefix)));
+                else Log.Warn("lockstep: DropsLibrary.action_clone_rain not found");
+
+                // 107. MetaObject Reaper & Random Unit Selection Determinism
+                PatchMetaObjectReaper<CityData>(h);
+                PatchMetaObjectReaper<KingdomData>(h);
+                PatchMetaObjectReaper<ClanData>(h);
+                PatchMetaObjectReaper<AllianceData>(h);
+                PatchMetaObjectReaper<CultureData>(h);
+                PatchMetaObjectReaper<SubspeciesData>(h);
+                PatchMetaObjectReaper<ReligionData>(h);
+                PatchMetaObjectReaper<LanguageData>(h);
+                PatchMetaObjectReaper<FamilyData>(h);
+                PatchMetaObjectReaper<ArmyData>(h);
+                PatchMetaObjectReaper<PlotData>(h);
+                PatchMetaObjectReaper<WarData>(h);
+
+                // 109. Quantum / Visual Light Blob Tile Iteration PRNG Isolation Determinism
+                MethodInfo mLoopLava = AccessTools.Method(typeof(TileZone), "loopLava", Type.EmptyTypes);
+                if (mLoopLava != null) h.Patch(mLoopLava, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TileZoneLoopLavaPrefix)));
+                else Log.Warn("lockstep: TileZone.loopLava not found");
+
+                // 110. God Power Brush / Shape Placement Randomness Determinism
+                MethodInfo mBrushRand = AccessTools.Method(typeof(Brush), "getRandom", Type.EmptyTypes);
+                if (mBrushRand != null) h.Patch(mBrushRand, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BrushGetRandomNoArgsPrefix)));
+                else Log.Warn("lockstep: Brush.getRandom() not found");
+
+                MethodInfo mBrushRandMatch = AccessTools.Method(typeof(Brush), "getRandom", new[] { typeof(int), typeof(int), typeof(Predicate<BrushData>) });
+                if (mBrushRandMatch != null) h.Patch(mBrushRandMatch, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BrushGetRandomMatchPrefix)));
+                else Log.Warn("lockstep: Brush.getRandom(match) not found");
             }
             catch (Exception e)
             {
@@ -3320,7 +3398,9 @@ namespace Coopfall.Lockstep
                         }
                         if (_candidateAlliancesPool.Count > 0)
                         {
-                            alliance3 = _candidateAlliancesPool.GetRandom();
+                            int pick = (int)(Det01x((uint)pActor.id, (uint)LockstepClock.Tick, 0x51A8) * _candidateAlliancesPool.Count);
+                            if (pick >= _candidateAlliancesPool.Count) pick = _candidateAlliancesPool.Count - 1;
+                            alliance3 = _candidateAlliancesPool[pick];
                         }
                         _candidateAlliancesPool.Clear();
                         _alliancesPool.Clear();
@@ -3328,7 +3408,13 @@ namespace Coopfall.Lockstep
                         {
                             return false;
                         }
-                        World.world.plots.newPlot(pActor, pPlotAsset, pForced).target_alliance = alliance3;
+                        Plot plot7 = World.world.plots.newPlot(pActor, pPlotAsset, pForced);
+                        plot7.target_alliance = alliance3;
+                        if (!plot7.checkInitiatorAndTargets())
+                        {
+                            return true;
+                        }
+                        pActor.setPlot(plot7);
                         return true;
                     };
                 }
@@ -9057,6 +9143,487 @@ namespace Coopfall.Lockstep
             string chosen = _mineralSpawnCandidatePool[pick];
             _mineralSpawnCandidatePool.Clear();
             __result = AssetManager.buildings.get(chosen);
+            return false;
+        }
+
+        // ==========================================
+        // 103. CoreSystemManager Unified Object Random Selection Determinism
+        // ==========================================
+        private static class CoreSystemHelper<TObject, TData>
+            where TObject : CoreSystemObject<TData>, new()
+            where TData : BaseSystemData, new()
+        {
+            private static readonly List<TObject> _candidates = new List<TObject>(64);
+            private static readonly object _lock = new object();
+
+            public static bool GetRandomPrefix(CoreSystemManager<TObject, TData> __instance, ref TObject __result)
+            {
+                if (!LockstepClock.Active) return true;
+                if (__instance == null || __instance.Count == 0)
+                {
+                    __result = null;
+                    return false;
+                }
+
+                lock (_lock)
+                {
+                    _candidates.Clear();
+                    foreach (TObject obj in __instance)
+                    {
+                        if (obj != null && obj.isAlive())
+                        {
+                            _candidates.Add(obj);
+                        }
+                    }
+
+                    if (_candidates.Count == 0)
+                    {
+                        foreach (TObject obj in __instance)
+                        {
+                            if (obj != null) _candidates.Add(obj);
+                        }
+                    }
+
+                    if (_candidates.Count == 0)
+                    {
+                        __result = null;
+                        return false;
+                    }
+
+                    if (_candidates.Count == 1)
+                    {
+                        __result = _candidates[0];
+                        _candidates.Clear();
+                        return false;
+                    }
+
+                    _candidates.Sort((a, b) => a.id.CompareTo(b.id));
+                    int idx = (int)(Det01x((uint)LockstepClock.Tick, (uint)_candidates.Count, 0x5C08E) * _candidates.Count);
+                    if (idx >= _candidates.Count) idx = _candidates.Count - 1;
+                    __result = _candidates[idx];
+                    _candidates.Clear();
+                    return false;
+                }
+            }
+        }
+
+        private static void PatchCoreSystemManager<TObject, TData>(Harmony h)
+            where TObject : CoreSystemObject<TData>, new()
+            where TData : BaseSystemData, new()
+        {
+            MethodInfo target = AccessTools.Method(typeof(CoreSystemManager<TObject, TData>), "getRandom", Type.EmptyTypes);
+            MethodInfo prefix = AccessTools.Method(typeof(CoreSystemHelper<TObject, TData>), nameof(CoreSystemHelper<TObject, TData>.GetRandomPrefix));
+            if (target != null && prefix != null)
+            {
+                h.Patch(target, prefix: new HarmonyMethod(prefix));
+            }
+            else
+            {
+                Log.Warn($"lockstep: CoreSystemManager<{typeof(TObject).Name}, {typeof(TData).Name}>.getRandom not found");
+            }
+        }
+
+        // ==========================================
+        // 104. MapBox Multi-Target Cleave & Splash Attack Target Search Determinism
+        // ==========================================
+        private static bool MapBoxNewAttackPrefix(AttackData pData, ref AttackDataResult __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pData.hit_tile == null)
+            {
+                __result = new AttackDataResult(ApplyAttackState.Continue, -1L);
+                return false;
+            }
+
+            int num = pData.targets;
+            AttackDataResult result = new AttackDataResult(ApplyAttackState.Continue, -1L);
+            if (pData.target != null)
+            {
+                result = MapBox.checkAttackFor(pData, pData.target);
+                switch (result.state)
+                {
+                    case ApplyAttackState.Hit:
+                        num--;
+                        break;
+                    case ApplyAttackState.Block:
+                    case ApplyAttackState.Deflect:
+                        __result = result;
+                        return false;
+                }
+                if (num == 0)
+                {
+                    __result = result;
+                    return false;
+                }
+            }
+
+            if (num == 0)
+            {
+                __result = result;
+                return false;
+            }
+
+            if (_findEnemiesDel == null) return true;
+            EnemyFinderData finder = _findEnemiesDel(pData.hit_tile, pData.kingdom, 0);
+            List<BaseSimObject> list = finder != null ? finder.list : null;
+            if (list == null || list.Count == 0)
+            {
+                __result = result;
+                return false;
+            }
+
+            _cleaveTargetsPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                BaseSimObject item = list[i];
+                if (item != null && item != pData.target && !item.isRekt())
+                {
+                    _cleaveTargetsPool.Add(item);
+                }
+            }
+
+            if (_cleaveTargetsPool.Count > 1)
+            {
+                WorldTile hitTile = pData.hit_tile;
+                _cleaveTargetsPool.Sort((a, b) =>
+                {
+                    float distA = a.current_tile != null ? Toolbox.DistTile(a.current_tile, hitTile) : 9999f;
+                    float distB = b.current_tile != null ? Toolbox.DistTile(b.current_tile, hitTile) : 9999f;
+                    int c = distA.CompareTo(distB);
+                    if (c != 0) return c;
+                    return a.id.CompareTo(b.id);
+                });
+            }
+
+            for (int i = 0; i < _cleaveTargetsPool.Count; i++)
+            {
+                if (num == 0) break;
+                BaseSimObject item = _cleaveTargetsPool[i];
+                result = MapBox.checkAttackFor(pData, item);
+                switch (result.state)
+                {
+                    case ApplyAttackState.Hit:
+                        num--;
+                        break;
+                    case ApplyAttackState.Block:
+                    case ApplyAttackState.Deflect:
+                        _cleaveTargetsPool.Clear();
+                        __result = result;
+                        return false;
+                }
+            }
+            _cleaveTargetsPool.Clear();
+            __result = result;
+            return false;
+        }
+
+        // ==========================================
+        // 105. Drops Rain of Life & Sapient Creature Selection Determinism
+        // ==========================================
+        private static bool DropsLibraryTrySpawnUnitPrefix(WorldTile pTile)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pTile == null) return false;
+            BiomeAsset biome_asset = pTile.Type != null ? pTile.Type.biome_asset : null;
+            if (biome_asset == null || !biome_asset.pot_spawn_units_auto || biome_asset.pot_units_spawn == null || biome_asset.pot_units_spawn.Count == 0)
+            {
+                return false;
+            }
+            _potUnitsSpawnPool.Clear();
+            for (int i = 0; i < biome_asset.pot_units_spawn.Count; i++)
+            {
+                string u = biome_asset.pot_units_spawn[i];
+                if (!string.IsNullOrEmpty(u)) _potUnitsSpawnPool.Add(u);
+            }
+            if (_potUnitsSpawnPool.Count == 0) return false;
+            _potUnitsSpawnPool.Sort(StringComparer.Ordinal);
+            int idx = (int)(Det01x((uint)pTile.tile_id, (uint)LockstepClock.Tick, 0x489B) * _potUnitsSpawnPool.Count);
+            if (idx >= _potUnitsSpawnPool.Count) idx = _potUnitsSpawnPool.Count - 1;
+            string pID = _potUnitsSpawnPool[idx];
+            _potUnitsSpawnPool.Clear();
+
+            bool flag = false;
+            if (WorldLawLibrary.world_law_drop_of_thoughts.isEnabled() &&
+                (Det01x((uint)pTile.tile_id, (uint)LockstepClock.Tick, 0x1A8B) < 0.5f) &&
+                biome_asset.pot_sapient_units_spawn != null && biome_asset.pot_sapient_units_spawn.Count > 0)
+            {
+                _potSapientUnitsSpawnPool.Clear();
+                for (int i = 0; i < biome_asset.pot_sapient_units_spawn.Count; i++)
+                {
+                    string su = biome_asset.pot_sapient_units_spawn[i];
+                    if (!string.IsNullOrEmpty(su)) _potSapientUnitsSpawnPool.Add(su);
+                }
+                if (_potSapientUnitsSpawnPool.Count > 0)
+                {
+                    _potSapientUnitsSpawnPool.Sort(StringComparer.Ordinal);
+                    for (int i = 0; i < _potSapientUnitsSpawnPool.Count; i++)
+                    {
+                        string item = _potSapientUnitsSpawnPool[i];
+                        ActorAsset actorAsset = AssetManager.actor_library.get(item);
+                        if (actorAsset != null && actorAsset.isAvailable())
+                        {
+                            GodPower godPower = actorAsset.getGodPower();
+                            if (godPower == null || godPower.isAvailable())
+                            {
+                                pID = item;
+                                flag = true;
+                                break;
+                            }
+                        }
+                    }
+                    _potSapientUnitsSpawnPool.Clear();
+                }
+            }
+
+            ActorAsset actorAsset2 = AssetManager.actor_library.get(pID);
+            if (actorAsset2 == null || actorAsset2.units.Count > actorAsset2.max_random_amount)
+            {
+                return false;
+            }
+
+            int num = 0;
+            foreach (Actor item2 in Finder.getUnitsFromChunk(pTile, 1, pRandom: false))
+            {
+                if (num++ > 3)
+                {
+                    return false;
+                }
+            }
+
+            Actor actor = World.world.units.spawnNewUnit(actorAsset2.id, pTile);
+            if (flag && actor != null && actor.subspecies != null && actor.subspecies.isJustCreated())
+            {
+                actor.subspecies.makeSapient();
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 106. Drops Clone Rain Neighbour Tile & Unit Selection Determinism
+        // ==========================================
+        private static bool DropsLibraryActionCloneRainPrefix(WorldTile pTile, string pDropID)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pTile == null) return false;
+            _cloneUnitsPool.Clear();
+            foreach (Actor item in Finder.getUnitsFromChunk(pTile, 1, 1f, pRandom: false))
+            {
+                if (item != null && item.isAlive() && item.current_tile != null)
+                {
+                    _cloneUnitsPool.Add(item);
+                }
+            }
+            if (_cloneUnitsPool.Count > 1)
+            {
+                _cloneUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
+            }
+            for (int u = 0; u < _cloneUnitsPool.Count; u++)
+            {
+                Actor item = _cloneUnitsPool[u];
+                WorldTile worldTile = null;
+                if (item.current_tile != null && item.current_tile.neighboursAll != null)
+                {
+                    _cloneTilesPool.Clear();
+                    for (int n = 0; n < item.current_tile.neighboursAll.Length; n++)
+                    {
+                        WorldTile nt = item.current_tile.neighboursAll[n];
+                        if (nt != null && !nt.hasUnits())
+                        {
+                            _cloneTilesPool.Add(nt);
+                        }
+                    }
+                    if (_cloneTilesPool.Count > 0)
+                    {
+                        _cloneTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                        worldTile = _cloneTilesPool[0];
+                        _cloneTilesPool.Clear();
+                    }
+                }
+                if (worldTile != null && World.world.units.cloneUnit(item, worldTile))
+                {
+                    break;
+                }
+            }
+            _cloneUnitsPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 107. MetaObject Reaper & Random Unit Selection Determinism
+        // ==========================================
+        private static class MetaReaperHelper<TData>
+            where TData : MetaObjectData, new()
+        {
+            public static bool GetRandomActorForReaperPrefix(MetaObject<TData> __instance, ref Actor __result)
+            {
+                if (!LockstepClock.Active) return true;
+                if (__instance == null || __instance.units == null || __instance.units.Count == 0)
+                {
+                    __result = null;
+                    return false;
+                }
+                lock (_reaperUnitsPool)
+                {
+                    _reaperUnitsPool.Clear();
+                    for (int i = 0; i < __instance.units.Count; i++)
+                    {
+                        Actor a = __instance.units[i];
+                        if (a != null && a.isAlive())
+                        {
+                            _reaperUnitsPool.Add(a);
+                        }
+                    }
+                    if (_reaperUnitsPool.Count == 0)
+                    {
+                        __result = null;
+                        return false;
+                    }
+                    if (_reaperUnitsPool.Count == 1)
+                    {
+                        __result = _reaperUnitsPool[0];
+                        _reaperUnitsPool.Clear();
+                        return false;
+                    }
+                    _reaperUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                    int pick = (int)(Det01x((uint)LockstepClock.Tick, (uint)__instance.id, 0x93C2) * _reaperUnitsPool.Count);
+                    if (pick >= _reaperUnitsPool.Count) pick = _reaperUnitsPool.Count - 1;
+                    __result = _reaperUnitsPool[pick];
+                    _reaperUnitsPool.Clear();
+                    return false;
+                }
+            }
+
+            public static bool GetRandomUnitPrefix(MetaObject<TData> __instance, ref Actor __result)
+            {
+                if (!LockstepClock.Active) return true;
+                if (__instance == null || __instance.units == null || __instance.units.Count == 0)
+                {
+                    __result = null;
+                    return false;
+                }
+                lock (_metaUnitsPool)
+                {
+                    _metaUnitsPool.Clear();
+                    for (int i = 0; i < __instance.units.Count; i++)
+                    {
+                        Actor a = __instance.units[i];
+                        if (a != null && a.isAlive())
+                        {
+                            _metaUnitsPool.Add(a);
+                        }
+                    }
+                    if (_metaUnitsPool.Count == 0)
+                    {
+                        __result = null;
+                        return false;
+                    }
+                    if (_metaUnitsPool.Count == 1)
+                    {
+                        __result = _metaUnitsPool[0];
+                        _metaUnitsPool.Clear();
+                        return false;
+                    }
+                    _metaUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                    int pick = (int)(Det01x((uint)LockstepClock.Tick, (uint)__instance.id, 0x47B1) * _metaUnitsPool.Count);
+                    if (pick >= _metaUnitsPool.Count) pick = _metaUnitsPool.Count - 1;
+                    __result = _metaUnitsPool[pick];
+                    _metaUnitsPool.Clear();
+                    return false;
+                }
+            }
+        }
+
+        private static void PatchMetaObjectReaper<TData>(Harmony h)
+            where TData : MetaObjectData, new()
+        {
+            MethodInfo targetReaper = AccessTools.Method(typeof(MetaObject<TData>), "getRandomActorForReaper", Type.EmptyTypes);
+            MethodInfo prefixReaper = AccessTools.Method(typeof(MetaReaperHelper<TData>), nameof(MetaReaperHelper<TData>.GetRandomActorForReaperPrefix));
+            if (targetReaper != null && prefixReaper != null)
+            {
+                h.Patch(targetReaper, prefix: new HarmonyMethod(prefixReaper));
+            }
+
+            MethodInfo targetRandUnit = AccessTools.Method(typeof(MetaObject<TData>), "getRandomUnit", Type.EmptyTypes);
+            MethodInfo prefixRandUnit = AccessTools.Method(typeof(MetaReaperHelper<TData>), nameof(MetaReaperHelper<TData>.GetRandomUnitPrefix));
+            if (targetRandUnit != null && prefixRandUnit != null)
+            {
+                h.Patch(targetRandUnit, prefix: new HarmonyMethod(prefixRandUnit));
+            }
+        }
+
+        // ==========================================
+        // 109. Quantum / Visual Light Blob Tile Iteration PRNG Isolation Determinism
+        // ==========================================
+        private static bool TileZoneLoopLavaPrefix(TileZone __instance, ref IEnumerable<WorldTile> __result)
+        {
+            __result = LoopLavaDeterministic(__instance);
+            return false;
+        }
+
+        private static IEnumerable<WorldTile> LoopLavaDeterministic(TileZone zone)
+        {
+            if (zone == null) yield break;
+            List<TileType> lavaTypes = TileLibrary.lava_types;
+            if (lavaTypes == null) yield break;
+            for (int i = 0; i < lavaTypes.Count; i++)
+            {
+                TileType item = lavaTypes[i];
+                if (item == null) continue;
+                HashSet<WorldTile> tilesOfType = zone.getTilesOfType(item);
+                if (tilesOfType == null) continue;
+                foreach (WorldTile item2 in tilesOfType)
+                {
+                    yield return item2;
+                }
+            }
+        }
+
+        // ==========================================
+        // 110. God Power Brush / Shape Placement Randomness Determinism
+        // ==========================================
+        private static bool BrushGetRandomNoArgsPrefix(ref string __result)
+        {
+            if (!LockstepClock.Active) return true;
+            var list = AssetManager.brush_library?.list;
+            if (list == null || list.Count == 0)
+            {
+                __result = "circ_1";
+                return false;
+            }
+            int idx = (int)(Det01x((uint)LockstepClock.Tick, 0x3CA1, 0x11B) * list.Count);
+            if (idx >= list.Count) idx = list.Count - 1;
+            __result = list[idx].id;
+            return false;
+        }
+
+        private static bool BrushGetRandomMatchPrefix(int pMinSize, int pMaxSize, Predicate<BrushData> pMatch, ref string __result)
+        {
+            if (!LockstepClock.Active) return true;
+            var list = AssetManager.brush_library?.list;
+            if (list == null || list.Count == 0)
+            {
+                __result = "circ_1";
+                return false;
+            }
+            _brushCandidatesPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                BrushData item = list[i];
+                if (item != null && (pMatch == null || pMatch(item)) && item.sqr_size >= pMinSize && item.sqr_size <= pMaxSize)
+                {
+                    _brushCandidatesPool.Add(item);
+                }
+            }
+            if (_brushCandidatesPool.Count == 0)
+            {
+                __result = "circ_1";
+                return false;
+            }
+            _brushCandidatesPool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+            int idx = (int)(Det01x((uint)LockstepClock.Tick, (uint)pMinSize, 0x82C1) * _brushCandidatesPool.Count);
+            if (idx >= _brushCandidatesPool.Count) idx = _brushCandidatesPool.Count - 1;
+            __result = _brushCandidatesPool[idx].id;
+            _brushCandidatesPool.Clear();
             return false;
         }
     }

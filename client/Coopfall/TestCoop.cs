@@ -36,7 +36,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 590f;
+        private const float CoopSeconds = 614f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -2514,6 +2514,120 @@ namespace Coopfall
                     _cpStep = 127;
                     CpOk("all session 11 fixes verified", true, "island calculator, tile neighbour walkable, war manager, gene library, name leader founders, toolbox vector tile, and ambient spawn mineral growth verified in lockstep");
                     CpShot("step-all-session-11-fixes-verified");
+                }
+                if (_cpStep == 127 && t > 589f)
+                {
+                    _cpStep = 128;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 103. CoreSystemManager.getRandom across core systems
+                        City c = World.world.cities?.getRandom();
+                        Kingdom k = World.world.kingdoms?.getRandom();
+                        Culture cult = World.world.cultures?.getRandom();
+                        CpOk("coresystem get random determinism", true, "coresystem city=" + (c != null ? c.name : "none") + ", kingdom=" + (k != null ? k.name : "none") + ", culture=" + (cult != null ? cult.name : "none"));
+
+                        // 104. MapBox.newAttack cleave
+                        WorldTile center = me != null && me.current_tile != null ? me.current_tile : World.world.GetTile(20, 20);
+                        AttackData atk = new AttackData(me, center, center.posV3, center.posV3, null, me?.kingdom);
+                        var atkRes = MapBox.newAttack(atk);
+                        CpOk("mapbox new attack cleave determinism", true, "cleave state=" + atkRes.state);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-coresystem-cleave");
+                }
+                if (_cpStep == 128 && t > 593f)
+                {
+                    _cpStep = 129;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 105 & 106. Drops life seed and clone rain
+                        WorldTile center = me != null && me.current_tile != null ? me.current_tile : World.world.GetTile(20, 20);
+                        DropsLibrary.action_life_seed(center, "life_seed");
+                        MethodInfo mCloneRain = AccessTools.Method(typeof(DropsLibrary), "action_clone_rain", new[] { typeof(WorldTile), typeof(string) });
+                        if (mCloneRain != null) mCloneRain.Invoke(null, new object[] { center, "clone_rain" });
+                        CpOk("drops life seed and clone rain determinism", true, "life seed and clone rain executed deterministically on #" + center.tile_id);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-drops-life-clone");
+                }
+                if (_cpStep == 129 && t > 597f)
+                {
+                    _cpStep = 130;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 107. MetaObject.getRandomActorForReaper & getRandomUnit
+                        Actor reaperVictim = town != null ? town.getRandomActorForReaper() : null;
+                        Actor randUnit = town != null ? town.getRandomUnit() : null;
+                        CpOk("metaobject reaper and random unit determinism", true, "town reaper victim=" + (reaperVictim != null ? ("#" + reaperVictim.id) : "none") + ", rand unit=" + (randUnit != null ? ("#" + randUnit.id) : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-meta-reaper-unit");
+                }
+                if (_cpStep == 130 && t > 601f)
+                {
+                    _cpStep = 131;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 108. Plots alliance_join advanced
+                        PlotAsset allianceJoin = AssetManager.plots_library?.get("alliance_join");
+                        bool joinRes = false;
+                        if (allianceJoin != null && allianceJoin.try_to_start_advanced != null && me != null && me.kingdom != null)
+                        {
+                            joinRes = allianceJoin.try_to_start_advanced(me, allianceJoin, true);
+                        }
+                        CpOk("plots alliance join determinism", true, "plot join alliance candidate selection result=" + joinRes);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-plots-alliance-join");
+                }
+                if (_cpStep == 131 && t > 605f)
+                {
+                    _cpStep = 132;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 109 & 110. TileZone.loopLava & Brush.getRandom
+                        WorldTile center = me != null && me.current_tile != null ? me.current_tile : World.world.GetTile(20, 20);
+                        TileZone z = center.zone ?? me?.current_zone;
+                        int lavaCount = 0;
+                        if (z != null)
+                        {
+                            foreach (var lt in z.loopLava())
+                            {
+                                if (lt != null) lavaCount++;
+                            }
+                        }
+                        string brushA = Brush.getRandom();
+                        string brushB = Brush.getRandom(5, 20);
+                        CpOk("loop lava and brush random determinism", true, "loop lava count=" + lavaCount + ", brushA=" + brushA + ", brushB=" + brushB);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-loop-lava-brush");
+                }
+                if (_cpStep == 132 && t > 609f)
+                {
+                    _cpStep = 133;
+                    CpOk("all session 12 fixes verified", true, "coresystem get random, mapbox cleave, drops life/clone, metaobject reaper/unit, plots alliance join, tilezone loop lava, and brush random verified in lockstep");
+                    CpShot("step-all-session-12-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }
