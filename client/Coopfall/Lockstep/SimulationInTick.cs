@@ -123,6 +123,14 @@ namespace Coopfall.Lockstep
     /// 108. PlotsLibrary.plot_join_alliance: candidate alliances chosen deterministically without unseeded GetRandom and start requirements verified.
     /// 109. TileZone.loopLava: lava tile types traversed by index instead of LoopRandom, isolating visual light blob rendering from simulation PRNG.
     /// 110. Brush.getRandom: brush assets presorted and selected deterministically via tick hash without unseeded GetRandom or LoopRandom.
+    /// 111. Finder.getBuildingsFromChunk & getUnitsFromChunk: ordered coordinate traversal and deterministic tick permutation without unseeded LoopRandom.
+    /// 112. MapChunk.shuffleRegionTiles: center_region configured and regional tiles stably sorted by tile_id instead of unseeded Shuffle.
+    /// 113. WorldBehaviourActions.spawnRandomVegetation & tryGrowVegetation: deterministic chunk, region, and tile derivation with deterministic flora growth without unseeded LoopRandom or randomBool.
+    /// 114. Biome Tile Redraw Animation PRNG Isolation: inferno low/fire, swamp, singularity, and biomass animation redraws isolated from simulation PRNG.
+    /// 115. Communication Topic Sprite Selection Determinism: topics and traits stably sorted and selected deterministically across CommunicationTopicLibrary, MetaObjectWithTraits, and SubspeciesManager.
+    /// 116. WorldBehaviourClouds.spawnRandomCloud & Cloud.prepare: cloud weather selection and spawn coordinates derived deterministically without unseeded PRNG.
+    /// 117. WorldBehaviourActionFire.checkFireElementalSpawn: fire elemental spawn dice derived from tile_id and tick hash without PRNG dice leak.
+    /// 118. Item.transmute: equipment transmutation candidate assets presorted and permuted deterministically via tick hash without unseeded Shuffle.
     /// </summary>
     public static class SimulationInTick
     {
@@ -231,6 +239,25 @@ namespace Coopfall.Lockstep
         private static readonly List<Actor> _reaperUnitsPool = new List<Actor>();
         private static readonly List<Actor> _metaUnitsPool = new List<Actor>();
         private static readonly List<BrushData> _brushCandidatesPool = new List<BrushData>();
+        private static readonly List<MapRegion> _spreadFaunaPool = new List<MapRegion>();
+        private static readonly List<CommunicationAsset> _commAssetsPool = new List<CommunicationAsset>();
+        private static readonly List<Subspecies> _subspeciesPool = new List<Subspecies>();
+        private static readonly List<string> _cloudsBuffer = new List<string>();
+        private static readonly List<EquipmentAsset> _transmutePool = new List<EquipmentAsset>();
+
+        private static AccessTools.FieldRef<Cloud, float> _cloudSpeedRef;
+        private static AccessTools.FieldRef<Cloud, float> _cloudTextureWidthRef;
+        private static AccessTools.FieldRef<Cloud, float> _cloudTextureHeightRef;
+        private static AccessTools.FieldRef<Cloud, float> _cloudTimerAction1Ref;
+        private static AccessTools.FieldRef<Cloud, float> _cloudLifespanRef;
+        private static AccessTools.FieldRef<Cloud, float> _cloudAliveTimeRef;
+        private static AccessTools.FieldRef<BaseEffect, int> _baseEffectStateRef;
+        private static AccessTools.FieldRef<BaseEffect, float> _baseEffectAlphaRef;
+        private static AccessTools.FieldRef<BaseEffect, SpriteRenderer> _baseEffectSpriteRendererRef;
+        private static AccessTools.FieldRef<CloudAsset, Sprite[]> _cloudAssetCachedSpritesRef;
+        private static Action<Item, EquipmentAsset> _setItemAssetDel;
+        private static string[] _fireElementalsArray;
+        private static Func<WorldTile, BuildingAsset, bool, bool> _tryToGrowOnTileDel;
 
         private delegate void CalculateForceDelegate(Actor pActor, float pStartX, float pStartY, float pTargetX, float pTargetY, float pForceAmountDirection, float pForceHeight, bool pCheckCancelJobOnLand);
         private static CalculateForceDelegate _calculateForceDel;
@@ -1386,6 +1413,97 @@ namespace Coopfall.Lockstep
                 MethodInfo mBrushRandMatch = AccessTools.Method(typeof(Brush), "getRandom", new[] { typeof(int), typeof(int), typeof(Predicate<BrushData>) });
                 if (mBrushRandMatch != null) h.Patch(mBrushRandMatch, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BrushGetRandomMatchPrefix)));
                 else Log.Warn("lockstep: Brush.getRandom(match) not found");
+
+                // 111. Finder Chunk Traversal LoopRandom Determinism
+                MethodInfo mGetBldChunk = AccessTools.Method(typeof(Finder), "getBuildingsFromChunk", new[] { typeof(WorldTile), typeof(int), typeof(int), typeof(bool) });
+                if (mGetBldChunk != null) h.Patch(mGetBldChunk, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetBuildingsFromChunkPrefix)));
+                else Log.Warn("lockstep: Finder.getBuildingsFromChunk not found");
+
+                MethodInfo mGetUnitsChunk = AccessTools.Method(typeof(Finder), "getUnitsFromChunk", new[] { typeof(WorldTile), typeof(int), typeof(float), typeof(bool) });
+                if (mGetUnitsChunk != null) h.Patch(mGetUnitsChunk, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GetUnitsFromChunkPrefix)));
+                else Log.Warn("lockstep: Finder.getUnitsFromChunk not found");
+
+                // 112. MapChunk Region Tile Shuffle Determinism
+                MethodInfo mShuffleTiles = AccessTools.Method(typeof(MapChunk), "shuffleRegionTiles", Type.EmptyTypes);
+                if (mShuffleTiles != null) h.Patch(mShuffleTiles, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(MapChunkShuffleRegionTilesPrefix)));
+                else Log.Warn("lockstep: MapChunk.shuffleRegionTiles not found");
+
+                // 113. Ambient Plant & Tree Spread Determinism
+                MethodInfo mSpawnVeg = AccessTools.Method(typeof(WorldBehaviourActions), "spawnRandomVegetation", Type.EmptyTypes);
+                if (mSpawnVeg != null) h.Patch(mSpawnVeg, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SpawnRandomVegetationPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActions.spawnRandomVegetation not found");
+
+                MethodInfo mTryGrowVeg = AccessTools.Method(typeof(WorldBehaviourActions), "tryGrowVegetation", new[] { typeof(Building), typeof(bool) });
+                if (mTryGrowVeg != null) h.Patch(mTryGrowVeg, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TryGrowVegetationPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActions.tryGrowVegetation not found");
+
+                MethodInfo mTryGrowTile = AccessTools.Method(typeof(WorldBehaviourActions), "tryToGrowOnTile", new[] { typeof(WorldTile), typeof(BuildingAsset), typeof(bool) });
+                if (mTryGrowTile != null) _tryToGrowOnTileDel = (Func<WorldTile, BuildingAsset, bool, bool>)Delegate.CreateDelegate(typeof(Func<WorldTile, BuildingAsset, bool, bool>), mTryGrowTile);
+                else Log.Warn("lockstep: WorldBehaviourActions.tryToGrowOnTile not found");
+
+                // 114. Biome Tile Redraw Animation PRNG Isolation
+                MethodInfo mInfernoAnim = AccessTools.Method(typeof(WorldBehaviourActionInferno), "updateInfernalLowAnimations", Type.EmptyTypes);
+                if (mInfernoAnim != null) h.Patch(mInfernoAnim, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(InfernoUpdateInfernalLowAnimationsPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionInferno.updateInfernalLowAnimations not found");
+
+                MethodInfo mInfernoFire = AccessTools.Method(typeof(WorldBehaviourActionInferno), "updateInfernoFireAction", Type.EmptyTypes);
+                if (mInfernoFire != null) h.Patch(mInfernoFire, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(InfernoUpdateInfernoFireActionPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionInferno.updateInfernoFireAction not found");
+
+                MethodInfo mSwampAnim = AccessTools.Method(typeof(WorldBehaviourActionSwampAnimation), "updateSwampTiles", Type.EmptyTypes);
+                if (mSwampAnim != null) h.Patch(mSwampAnim, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SwampUpdateSwampTilesPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionSwampAnimation.updateSwampTiles not found");
+
+                MethodInfo mSingularityAnim = AccessTools.Method(typeof(WorldBehaviourActionSingularity), "updateSingularityTiles", Type.EmptyTypes);
+                if (mSingularityAnim != null) h.Patch(mSingularityAnim, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SingularityUpdateSingularityTilesPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionSingularity.updateSingularityTiles not found");
+
+                MethodInfo mBiomassAnim = AccessTools.Method(typeof(WorldBehaviourActionCreepBiomass), "updateBiomassTiles", Type.EmptyTypes);
+                if (mBiomassAnim != null) h.Patch(mBiomassAnim, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BiomassUpdateBiomassTilesPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionCreepBiomass.updateBiomassTiles not found");
+
+                // 115. Communication Topic Sprite Selection Determinism
+                MethodInfo mTopicSprite = AccessTools.Method(typeof(CommunicationTopicLibrary), "getTopicSprite", new[] { typeof(Actor) });
+                if (mTopicSprite != null) h.Patch(mTopicSprite, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CommunicationTopicLibraryGetTopicSpritePrefix)));
+                else Log.Warn("lockstep: CommunicationTopicLibrary.getTopicSprite not found");
+
+                MethodInfo mSubspeciesTopic = AccessTools.Method(typeof(SubspeciesManager), "getTopicSprite", Type.EmptyTypes);
+                if (mSubspeciesTopic != null) h.Patch(mSubspeciesTopic, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SubspeciesManagerGetTopicSpritePrefix)));
+                else Log.Warn("lockstep: SubspeciesManager.getTopicSprite not found");
+
+                // 116. Clouds Weather & Era Disaster Spawn Determinism
+                MethodInfo mSpawnCloud = AccessTools.Method(typeof(WorldBehaviourClouds), "spawnRandomCloud", Type.EmptyTypes);
+                if (mSpawnCloud != null) h.Patch(mSpawnCloud, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SpawnRandomCloudPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourClouds.spawnRandomCloud not found");
+
+                MethodInfo mCloudPrepare = AccessTools.Method(typeof(Cloud), "prepare", Type.EmptyTypes);
+                if (mCloudPrepare != null) h.Patch(mCloudPrepare, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CloudPreparePrefix)));
+                else Log.Warn("lockstep: Cloud.prepare not found");
+
+                _cloudSpeedRef = AccessTools.FieldRefAccess<Cloud, float>("speed");
+                _cloudTextureWidthRef = AccessTools.FieldRefAccess<Cloud, float>("effect_texture_width");
+                _cloudTextureHeightRef = AccessTools.FieldRefAccess<Cloud, float>("effect_texture_height");
+                _cloudTimerAction1Ref = AccessTools.FieldRefAccess<Cloud, float>("_timer_action_1");
+                _cloudLifespanRef = AccessTools.FieldRefAccess<Cloud, float>("_lifespan");
+                _cloudAliveTimeRef = AccessTools.FieldRefAccess<Cloud, float>("alive_time");
+                _baseEffectStateRef = AccessTools.FieldRefAccess<BaseEffect, int>("state");
+                _baseEffectAlphaRef = AccessTools.FieldRefAccess<BaseEffect, float>("alpha");
+                _baseEffectSpriteRendererRef = AccessTools.FieldRefAccess<BaseEffect, SpriteRenderer>("sprite_renderer");
+                _cloudAssetCachedSpritesRef = AccessTools.FieldRefAccess<CloudAsset, Sprite[]>("cached_sprites");
+
+                // 117. Ambient Fire Elemental Spawn Determinism
+                MethodInfo mCheckFireElem = AccessTools.Method(typeof(WorldBehaviourActionFire), "checkFireElementalSpawn", new[] { typeof(WorldTile) });
+                if (mCheckFireElem != null) h.Patch(mCheckFireElem, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CheckFireElementalSpawnPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionFire.checkFireElementalSpawn not found");
+
+                // 118. Item Equipment Transformation Determinism
+                MethodInfo mTransmute = AccessTools.Method(typeof(Item), "transmute", Type.EmptyTypes);
+                if (mTransmute != null) h.Patch(mTransmute, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ItemTransmutePrefix)));
+                else Log.Warn("lockstep: Item.transmute not found");
+
+                MethodInfo mSetItemAsset = AccessTools.Method(typeof(Item), "setAsset", new[] { typeof(EquipmentAsset) });
+                if (mSetItemAsset != null) _setItemAssetDel = (Action<Item, EquipmentAsset>)Delegate.CreateDelegate(typeof(Action<Item, EquipmentAsset>), mSetItemAsset);
+                else Log.Warn("lockstep: Item.setAsset not found");
             }
             catch (Exception e)
             {
@@ -4849,6 +4967,11 @@ namespace Coopfall.Lockstep
             return (x & 0xFFFFFF) / 16777216f;
         }
 
+        internal static float Det01x(long pIdA, int pSalt) => Det01(pIdA, pSalt);
+        internal static float Det01x(long pIdA, uint pSalt) => Det01(pIdA, unchecked((int)pSalt));
+        internal static float Det01x(long pIdA, long pIdB, uint pSalt) => Det01x(pIdA, pIdB, unchecked((int)pSalt));
+
+
         private static bool FindEnemyObjectTargetPrefix(BaseSimObject __instance, bool pAttackBuildings, ref BaseSimObject __result)
         {
             if (!LockstepClock.Active) return true;
@@ -7429,6 +7552,42 @@ namespace Coopfall.Lockstep
                 if (_recalcStatsMethod != null) _recalcStatsMethod.Invoke(__instance, null);
                 return false;
             }
+
+            private static readonly List<TBaseTrait> _traitsListPool = new List<TBaseTrait>(16);
+
+            public static bool GetTopicSpritePrefix(MetaObjectWithTraits<TData, TBaseTrait> __instance, ref Sprite __result)
+            {
+                if (!LockstepClock.Active) return true;
+                if (__instance == null) { __result = null; return false; }
+                HashSet<TBaseTrait> traits = _traitsRef != null ? _traitsRef(__instance) : null;
+                if (traits == null || traits.Count == 0)
+                {
+                    __result = null;
+                    return false;
+                }
+                lock (_traitsListPool)
+                {
+                    _traitsListPool.Clear();
+                    foreach (TBaseTrait t in traits)
+                    {
+                        if (t != null) _traitsListPool.Add(t);
+                    }
+                    if (_traitsListPool.Count == 0)
+                    {
+                        __result = null;
+                        return false;
+                    }
+                    if (_traitsListPool.Count > 1)
+                    {
+                        _traitsListPool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+                    }
+                    int pick = (int)(Det01x((uint)LockstepClock.Tick, (uint)__instance.id, 0x4D2A) * _traitsListPool.Count);
+                    if (pick >= _traitsListPool.Count) pick = _traitsListPool.Count - 1;
+                    __result = _traitsListPool[pick].getSprite();
+                    _traitsListPool.Clear();
+                    return false;
+                }
+            }
         }
 
         private static void PatchMetaTraits<TDerived, TData, TBaseTrait>(Harmony h)
@@ -7445,6 +7604,17 @@ namespace Coopfall.Lockstep
             else
             {
                 Log.Warn($"lockstep: fillTraitAssetsFromStringList for {typeof(TDerived).Name} not found");
+            }
+
+            MethodInfo targetTopic = AccessTools.Method(typeof(TDerived).BaseType, "getTopicSprite", Type.EmptyTypes);
+            MethodInfo prefixTopic = AccessTools.Method(typeof(MetaTraitHelper<TData, TBaseTrait>), nameof(MetaTraitHelper<TData, TBaseTrait>.GetTopicSpritePrefix));
+            if (targetTopic != null && prefixTopic != null)
+            {
+                h.Patch(targetTopic, prefix: new HarmonyMethod(prefixTopic));
+            }
+            else
+            {
+                Log.Warn($"lockstep: getTopicSprite for {typeof(TDerived).Name} not found");
             }
         }
 
@@ -9624,6 +9794,688 @@ namespace Coopfall.Lockstep
             if (idx >= _brushCandidatesPool.Count) idx = _brushCandidatesPool.Count - 1;
             __result = _brushCandidatesPool[idx].id;
             _brushCandidatesPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 111. Finder Chunk Traversal LoopRandom Determinism
+        // ==========================================
+        private static bool GetBuildingsFromChunkPrefix(WorldTile pTile, int pChunkRadius, int pTileRadius, bool pRandom, ref IEnumerable<Building> __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = GetBuildingsFromChunkDeterministic(pTile, pChunkRadius, pTileRadius, pRandom);
+            return false;
+        }
+
+        private static IEnumerable<Building> GetBuildingsFromChunkDeterministic(WorldTile pTile, int pChunkRadius, int pTileRadius, bool pRandom)
+        {
+            if (pTile == null || pTile.chunk == null) yield break;
+            MapChunkManager mcm = _mapChunkManagerRef != null ? _mapChunkManagerRef(World.world) : null;
+            if (mcm == null) yield break;
+            int startX = pTile.chunk.x - pChunkRadius;
+            int startY = pTile.chunk.y - pChunkRadius;
+            int size = pChunkRadius * 2 + 1;
+            int tTileRadius = pTileRadius * pTileRadius;
+
+            List<MapChunk> chunkList = new List<MapChunk>(size * size);
+            for (int dx = 0; dx < size; dx++)
+            {
+                for (int dy = 0; dy < size; dy++)
+                {
+                    MapChunk c = mcm.get(startX + dx, startY + dy);
+                    if (c != null) chunkList.Add(c);
+                }
+            }
+            if (chunkList.Count == 0) yield break;
+
+            if (pRandom)
+            {
+                chunkList.Sort((a, b) => a.id.CompareTo(b.id));
+                uint seed = (uint)pTile.tile_id ^ (uint)LockstepClock.Tick;
+                for (int i = chunkList.Count - 1; i > 0; i--)
+                {
+                    int j = (int)(Det01x(seed, (uint)i, 0x4B19) * (i + 1));
+                    if (j > i) j = i;
+                    var temp = chunkList[i];
+                    chunkList[i] = chunkList[j];
+                    chunkList[j] = temp;
+                }
+
+                for (int ci = 0; ci < chunkList.Count; ci++)
+                {
+                    MapChunk chunk = chunkList[ci];
+                    if (chunk == null || chunk.objects?.buildings_all == null) continue;
+                    List<Building> bList = chunk.objects.buildings_all;
+                    if (bList.Count == 0) continue;
+
+                    List<Building> bSorted = new List<Building>(bList.Count);
+                    for (int bi = 0; bi < bList.Count; bi++)
+                    {
+                        Building b = bList[bi];
+                        if (b != null && b.isAlive() && (tTileRadius == 0 || Toolbox.SquaredDistTile(b.current_tile, pTile) <= tTileRadius))
+                        {
+                            bSorted.Add(b);
+                        }
+                    }
+                    if (bSorted.Count > 1)
+                    {
+                        bSorted.Sort((a, b) => a.id.CompareTo(b.id));
+                        for (int i = bSorted.Count - 1; i > 0; i--)
+                        {
+                            int j = (int)(Det01x((uint)chunk.id, (uint)i, (uint)LockstepClock.Tick) * (i + 1));
+                            if (j > i) j = i;
+                            var temp = bSorted[i];
+                            bSorted[i] = bSorted[j];
+                            bSorted[j] = temp;
+                        }
+                    }
+                    for (int bi = 0; bi < bSorted.Count; bi++)
+                    {
+                        yield return bSorted[bi];
+                    }
+                }
+            }
+            else
+            {
+                for (int ci = 0; ci < chunkList.Count; ci++)
+                {
+                    MapChunk chunk = chunkList[ci];
+                    if (chunk == null || chunk.objects?.buildings_all == null) continue;
+                    List<Building> bList = chunk.objects.buildings_all;
+                    for (int bi = 0; bi < bList.Count; bi++)
+                    {
+                        Building b = bList[bi];
+                        if (b != null && b.isAlive() && (tTileRadius == 0 || Toolbox.SquaredDistTile(b.current_tile, pTile) <= tTileRadius))
+                        {
+                            yield return b;
+                        }
+                    }
+                }
+            }
+        }
+
+        private static bool GetUnitsFromChunkPrefix(WorldTile pTile, int pChunkRadius, float pTileRadius, bool pRandom, ref IEnumerable<Actor> __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = GetUnitsFromChunkDeterministic(pTile, pChunkRadius, pTileRadius, pRandom);
+            return false;
+        }
+
+        private static IEnumerable<Actor> GetUnitsFromChunkDeterministic(WorldTile pTile, int pChunkRadius, float pTileRadius, bool pRandom)
+        {
+            if (pTile == null || pTile.chunk == null) yield break;
+            MapChunkManager mcm = _mapChunkManagerRef != null ? _mapChunkManagerRef(World.world) : null;
+            if (mcm == null) yield break;
+            int startX = pTile.chunk.x - pChunkRadius;
+            int startY = pTile.chunk.y - pChunkRadius;
+            int size = pChunkRadius * 2 + 1;
+            float tTileRadius = pTileRadius * pTileRadius;
+
+            List<MapChunk> chunkList = new List<MapChunk>(size * size);
+            for (int dx = 0; dx < size; dx++)
+            {
+                for (int dy = 0; dy < size; dy++)
+                {
+                    MapChunk c = mcm.get(startX + dx, startY + dy);
+                    if (c != null) chunkList.Add(c);
+                }
+            }
+            if (chunkList.Count == 0) yield break;
+
+            if (pRandom)
+            {
+                chunkList.Sort((a, b) => a.id.CompareTo(b.id));
+                uint seed = (uint)pTile.tile_id ^ (uint)LockstepClock.Tick;
+                for (int i = chunkList.Count - 1; i > 0; i--)
+                {
+                    int j = (int)(Det01x(seed, (uint)i, 0x4B19) * (i + 1));
+                    if (j > i) j = i;
+                    var temp = chunkList[i];
+                    chunkList[i] = chunkList[j];
+                    chunkList[j] = temp;
+                }
+
+                for (int ci = 0; ci < chunkList.Count; ci++)
+                {
+                    MapChunk chunk = chunkList[ci];
+                    if (chunk == null || chunk.objects?.units_all == null) continue;
+                    List<Actor> uList = chunk.objects.units_all;
+                    if (uList.Count == 0) continue;
+
+                    List<Actor> uSorted = new List<Actor>(uList.Count);
+                    for (int ui = 0; ui < uList.Count; ui++)
+                    {
+                        Actor u = uList[ui];
+                        if (u != null && u.isAlive() && (tTileRadius == 0f || !((float)Toolbox.SquaredDistTile(u.current_tile, pTile) > tTileRadius)))
+                        {
+                            uSorted.Add(u);
+                        }
+                    }
+                    if (uSorted.Count > 1)
+                    {
+                        uSorted.Sort((a, b) => a.id.CompareTo(b.id));
+                        for (int i = uSorted.Count - 1; i > 0; i--)
+                        {
+                            int j = (int)(Det01x((uint)chunk.id, (uint)i, (uint)LockstepClock.Tick ^ 0x2A1B) * (i + 1));
+                            if (j > i) j = i;
+                            var temp = uSorted[i];
+                            uSorted[i] = uSorted[j];
+                            uSorted[j] = temp;
+                        }
+                    }
+                    for (int ui = 0; ui < uSorted.Count; ui++)
+                    {
+                        yield return uSorted[ui];
+                    }
+                }
+            }
+            else
+            {
+                for (int ci = 0; ci < chunkList.Count; ci++)
+                {
+                    MapChunk chunk = chunkList[ci];
+                    if (chunk == null || chunk.objects?.units_all == null) continue;
+                    List<Actor> uList = chunk.objects.units_all;
+                    for (int ui = 0; ui < uList.Count; ui++)
+                    {
+                        Actor u = uList[ui];
+                        if (u != null && u.isAlive() && (tTileRadius == 0f || !((float)Toolbox.SquaredDistTile(u.current_tile, pTile) > tTileRadius)))
+                        {
+                            yield return u;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // 112. MapChunk Region Tile Shuffle Determinism
+        // ==========================================
+        private static bool MapChunkShuffleRegionTilesPrefix(MapChunk __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.regions == null) return false;
+            for (int i = 0; i < __instance.regions.Count; i++)
+            {
+                MapRegion mapRegion = __instance.regions[i];
+                if (mapRegion == null) continue;
+                mapRegion.center_region = (__instance.regions.Count <= 1);
+                if (mapRegion.tiles != null && mapRegion.tiles.Count > 1)
+                {
+                    mapRegion.tiles.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 113. Ambient Plant & Tree Spread Determinism
+        // ==========================================
+        private static bool SpawnRandomVegetationPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            if (!WorldLawLibrary.world_law_vegetation_random_seeds.isEnabled() || !World.world_era.grow_vegetation)
+            {
+                return false;
+            }
+            MapChunkManager mcm = _mapChunkManagerRef != null ? _mapChunkManagerRef(World.world) : null;
+            MapChunk[] chunks = mcm?.chunks;
+            if (chunks == null || chunks.Length == 0) return false;
+            for (int i = 0; i < 5; i++)
+            {
+                int chunkIdx = (int)(Det01x((long)LockstepClock.Tick, (long)i, 0x5E2A) * chunks.Length);
+                if (chunkIdx >= chunks.Length) chunkIdx = chunks.Length - 1;
+                MapChunk chunk = chunks[chunkIdx];
+                if (chunk == null || chunk.regions == null || chunk.regions.Count == 0) continue;
+                int regIdx = (int)(Det01x((long)LockstepClock.Tick, (long)i, 0x8A1F) * chunk.regions.Count);
+                if (regIdx >= chunk.regions.Count) regIdx = chunk.regions.Count - 1;
+                MapRegion region = chunk.regions[regIdx];
+                if (region != null && region.island != null && region.island.type == TileLayerType.Ground)
+                {
+                    GrowVegetationAtDeterministic(region, 5, i);
+                }
+            }
+            return false;
+        }
+
+        private static void GrowVegetationAtDeterministic(MapRegion pRegion, int pAmount, int salt = 0)
+        {
+            if (pRegion == null || pRegion.tiles == null || pRegion.tiles.Count == 0) return;
+            for (int i = 0; i < pAmount; i++)
+            {
+                int tileIdx = (int)(Det01x((long)LockstepClock.Tick, (long)(salt * 16 + i), 0x3F7B) * pRegion.tiles.Count);
+                if (tileIdx >= pRegion.tiles.Count) tileIdx = pRegion.tiles.Count - 1;
+                WorldTile tile = pRegion.tiles[tileIdx];
+                if (tile != null && !tile.isOnFire())
+                {
+                    BiomeAsset biome_asset = tile.Type?.biome_asset;
+                    if (biome_asset != null && biome_asset.grow_vegetation_auto && (Det01x((long)tile.tile_id, (long)LockstepClock.Tick, (int)i) < 0.5f))
+                    {
+                        ActionLibrary.growRandomVegetation(tile, biome_asset);
+                    }
+                }
+            }
+        }
+
+        private static bool TryGrowVegetationPrefix(Building pBuilding, bool pCheckLimit, ref bool __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pBuilding == null || !pBuilding.isUsable())
+            {
+                __result = false;
+                return false;
+            }
+            List<WorldTile> bTiles = _buildingTilesRef != null ? _buildingTilesRef(pBuilding) : null;
+            if (bTiles == null || bTiles.Count == 0)
+            {
+                __result = false;
+                return false;
+            }
+            BuildingAsset asset = _buildingAssetRef != null ? _buildingAssetRef(pBuilding) : null;
+            if (asset == null)
+            {
+                __result = false;
+                return false;
+            }
+            int tileIdx = (int)(Det01x((long)pBuilding.id, (long)LockstepClock.Tick, 0x7A1C) * bTiles.Count);
+            if (tileIdx >= bTiles.Count) tileIdx = bTiles.Count - 1;
+            WorldTile curr = bTiles[tileIdx];
+            for (int step = 0; step < 6; step++)
+            {
+                if (curr?.neighboursAll == null || curr.neighboursAll.Length == 0) break;
+                int nbIdx = (int)(Det01x((long)pBuilding.id, (long)(LockstepClock.Tick + step), 0x9B2D) * curr.neighboursAll.Length);
+                if (nbIdx >= curr.neighboursAll.Length) nbIdx = curr.neighboursAll.Length - 1;
+                curr = curr.neighboursAll[nbIdx];
+            }
+            if (curr != null && _tryToGrowOnTileDel != null && _tryToGrowOnTileDel(curr, asset, pCheckLimit))
+            {
+                __result = true;
+                return false;
+            }
+            if (pBuilding.current_tile?.region != null)
+            {
+                _spreadFaunaPool.Clear();
+                if (pBuilding.current_tile.region.neighbours != null)
+                {
+                    _spreadFaunaPool.AddRange(pBuilding.current_tile.region.neighbours);
+                }
+                _spreadFaunaPool.Add(pBuilding.current_tile.region);
+                _spreadFaunaPool.Sort((a, b) => a.id.CompareTo(b.id));
+                int regIdx = (int)(Det01x((long)pBuilding.id, (long)LockstepClock.Tick, 0x4D3E) * _spreadFaunaPool.Count);
+                if (regIdx >= _spreadFaunaPool.Count) regIdx = _spreadFaunaPool.Count - 1;
+                MapRegion targetRegion = _spreadFaunaPool[regIdx];
+                _spreadFaunaPool.Clear();
+                if (targetRegion?.tiles != null && targetRegion.tiles.Count > 0)
+                {
+                    int rTileIdx = (int)(Det01x((long)pBuilding.id, (long)LockstepClock.Tick, 0x1F2A) * targetRegion.tiles.Count);
+                    if (rTileIdx >= targetRegion.tiles.Count) rTileIdx = targetRegion.tiles.Count - 1;
+                    WorldTile candidateTile = targetRegion.tiles[rTileIdx];
+                    if (candidateTile != null && _tryToGrowOnTileDel != null && _tryToGrowOnTileDel(candidateTile, asset, pCheckLimit))
+                    {
+                        __result = true;
+                        return false;
+                    }
+                }
+            }
+            __result = false;
+            return false;
+        }
+
+        // ==========================================
+        // 114. Biome Tile Redraw Animation PRNG Isolation
+        // ==========================================
+        private static bool InfernoUpdateInfernalLowAnimationsPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            if (TopTileLibrary.infernal_low.hashset.Count >= 10 && Det01x((uint)LockstepClock.Tick, 0x7E1A) < 0.4f)
+            {
+                var tiles = TopTileLibrary.infernal_low.getCurrentTiles();
+                if (tiles != null && tiles.Count > 0)
+                {
+                    int idx = (int)(Det01x((uint)LockstepClock.Tick, 0x1B82) * tiles.Count);
+                    if (idx >= tiles.Count) idx = tiles.Count - 1;
+                    WorldTile t = tiles[idx];
+                    if (t != null) World.world.redrawRenderedTile(t);
+                }
+            }
+            return false;
+        }
+
+        private static bool InfernoUpdateInfernoFireActionPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            TryFireActionDeterministic(TopTileLibrary.infernal_high, 0x11);
+            TryFireActionDeterministic(TopTileLibrary.infernal_low, 0x22);
+            return false;
+        }
+
+        private static void TryFireActionDeterministic(TopTileType pType, uint salt)
+        {
+            if (pType == null || pType.hashset.Count < 10) return;
+            if (Det01x((uint)LockstepClock.Tick, salt, 0x51A8) < 0.1f)
+            {
+                var tiles = pType.getCurrentTiles();
+                if (tiles != null && tiles.Count > 0)
+                {
+                    int idx = (int)(Det01x((uint)LockstepClock.Tick, salt, 0x93F2) * tiles.Count);
+                    if (idx >= tiles.Count) idx = tiles.Count - 1;
+                    WorldTile t = tiles[idx];
+                    if (t != null)
+                    {
+                        _startFireDel?.Invoke(t, true);
+                        _particlesFireRef?.Invoke(World.world)?.spawn(t.posV3);
+                    }
+                }
+            }
+        }
+
+        private static bool SwampUpdateSwampTilesPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            if (TopTileLibrary.swamp_low.hashset.Count >= 10)
+            {
+                var tiles = TopTileLibrary.swamp_low.getCurrentTiles();
+                if (tiles != null && tiles.Count > 0)
+                {
+                    int idx = (int)(Det01x((uint)LockstepClock.Tick, 0x47A2) * tiles.Count);
+                    if (idx >= tiles.Count) idx = tiles.Count - 1;
+                    WorldTile t = tiles[idx];
+                    if (t != null) World.world.redrawRenderedTile(t);
+                }
+            }
+            return false;
+        }
+
+        private static bool SingularityUpdateSingularityTilesPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            TryActionOnSingularityDeterministic(TopTileLibrary.singularity_low, 0x10);
+            TryActionOnSingularityDeterministic(TopTileLibrary.singularity_high, 0x20);
+            return false;
+        }
+
+        private static void TryActionOnSingularityDeterministic(TopTileType pType, uint salt)
+        {
+            if (pType == null || pType.hashset.Count < 10) return;
+            var tiles = pType.getCurrentTiles();
+            if (tiles == null || tiles.Count == 0) return;
+            for (int i = 0; i < 3; i++)
+            {
+                int idx = (int)(Det01x((uint)LockstepClock.Tick, (uint)(salt + i), 0x2E81) * tiles.Count);
+                if (idx >= tiles.Count) idx = tiles.Count - 1;
+                WorldTile t = tiles[idx];
+                if (t != null) World.world.redrawRenderedTile(t);
+            }
+        }
+
+        private static bool BiomassUpdateBiomassTilesPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            TryActionOnBiomassDeterministic(TopTileLibrary.biomass_low, 0x30);
+            TryActionOnBiomassDeterministic(TopTileLibrary.biomass_high, 0x40);
+            return false;
+        }
+
+        private static void TryActionOnBiomassDeterministic(TopTileType pType, uint salt)
+        {
+            if (pType == null || pType.hashset.Count < 10) return;
+            var tiles = pType.getCurrentTiles();
+            if (tiles == null || tiles.Count == 0) return;
+            for (int i = 0; i < 3; i++)
+            {
+                int idx = (int)(Det01x((uint)LockstepClock.Tick, (uint)(salt + i), 0x6A9D) * tiles.Count);
+                if (idx >= tiles.Count) idx = tiles.Count - 1;
+                WorldTile t = tiles[idx];
+                if (t != null) World.world.redrawRenderedTile(t);
+            }
+        }
+
+        // ==========================================
+        // 115. Communication Topic Sprite Selection Determinism
+        // ==========================================
+        private static bool CommunicationTopicLibraryGetTopicSpritePrefix(CommunicationTopicLibrary __instance, Actor pActor, ref Sprite __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.list == null || __instance.list.Count == 0 || pActor == null)
+            {
+                __result = null;
+                return false;
+            }
+            using ListPool<Sprite> listPool = new ListPool<Sprite>();
+            _commAssetsPool.Clear();
+            for (int i = 0; i < __instance.list.Count; i++)
+            {
+                CommunicationAsset ca = __instance.list[i];
+                if (ca != null) _commAssetsPool.Add(ca);
+            }
+            _commAssetsPool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+            for (int i = 0; i < _commAssetsPool.Count; i++)
+            {
+                CommunicationAsset item = _commAssetsPool[i];
+                float roll = Det01x((uint)pActor.id, (uint)LockstepClock.Tick, (uint)item.id.GetHashCode());
+                if (roll < item.rate && item.check(pActor))
+                {
+                    item.pot_fill(pActor, listPool);
+                    if (listPool.Count > 10) break;
+                }
+            }
+            _commAssetsPool.Clear();
+            if (listPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            int pick = (int)(Det01x((uint)pActor.id, (uint)LockstepClock.Tick, 0x8E19) * listPool.Count);
+            if (pick >= listPool.Count) pick = listPool.Count - 1;
+            __result = listPool[pick];
+            return false;
+        }
+
+        private static bool SubspeciesManagerGetTopicSpritePrefix(SubspeciesManager __instance, ref Sprite __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.list == null || __instance.list.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _subspeciesPool.Clear();
+            for (int i = 0; i < __instance.list.Count; i++)
+            {
+                Subspecies sub = __instance.list[i];
+                if (sub != null) _subspeciesPool.Add(sub);
+            }
+            if (_subspeciesPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _subspeciesPool.Sort((a, b) => a.id.CompareTo(b.id));
+            int pick = (int)(Det01x((uint)LockstepClock.Tick, 0x9A4F) * _subspeciesPool.Count);
+            if (pick >= _subspeciesPool.Count) pick = _subspeciesPool.Count - 1;
+            __result = _subspeciesPool[pick].getActorAsset()?.getSpriteIcon();
+            _subspeciesPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 116. Clouds Weather & Era Disaster Spawn Determinism
+        // ==========================================
+        private static bool SpawnRandomCloudPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            List<string> eraClouds = World.world_era?.clouds;
+            if (eraClouds != null && eraClouds.Count > 0)
+            {
+                _cloudsBuffer.Clear();
+                for (int i = 0; i < eraClouds.Count; i++)
+                {
+                    string c = eraClouds[i];
+                    if (!string.IsNullOrEmpty(c)) _cloudsBuffer.Add(c);
+                }
+                if (_cloudsBuffer.Count > 0)
+                {
+                    _cloudsBuffer.Sort(StringComparer.Ordinal);
+                    int idx = (int)(Det01x((uint)LockstepClock.Tick, 0xCE0D) * _cloudsBuffer.Count);
+                    if (idx >= _cloudsBuffer.Count) idx = _cloudsBuffer.Count - 1;
+                    string random = _cloudsBuffer[idx];
+                    _cloudsBuffer.Clear();
+
+                    CloudAsset cloudAsset = AssetManager.clouds.get(random);
+                    if (cloudAsset != null &&
+                        (!cloudAsset.normal_cloud || WorldLawLibrary.world_law_clouds.isEnabled()) &&
+                        (!cloudAsset.considered_disaster || WorldLawLibrary.world_law_disasters_nature.isEnabled()))
+                    {
+                        EffectsLibrary.spawn("fx_cloud", null, cloudAsset.id);
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static bool CloudPreparePrefix(Cloud __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.asset == null) return true;
+            CloudAsset asset = __instance.asset;
+            SpriteRenderer sr = _baseEffectSpriteRendererRef != null ? _baseEffectSpriteRendererRef(__instance) : __instance.GetComponent<SpriteRenderer>();
+            Sprite[] sprites = _cloudAssetCachedSpritesRef != null ? _cloudAssetCachedSpritesRef(asset) : null;
+            if (sprites != null && sprites.Length > 0)
+            {
+                int sIdx = (int)(Det01x((long)LockstepClock.Tick, 0x11A) * sprites.Length);
+                if (sIdx >= sprites.Length) sIdx = sprites.Length - 1;
+                if (sr != null) sr.sprite = sprites[sIdx];
+            }
+            if (sr != null)
+            {
+                sr.flipX = Det01x((long)LockstepClock.Tick, 0x22B) < 0.5f;
+            }
+            float speedRange = asset.speed_max - asset.speed_min;
+            float spd = asset.speed_min + (speedRange > 0f ? Det01x((long)LockstepClock.Tick, 0x33C) * speedRange : 0f);
+            if (_cloudSpeedRef != null) _cloudSpeedRef(__instance) = spd;
+
+            float w = (sr != null && sr.sprite != null) ? sr.sprite.rect.width * 0.08f : 1f;
+            float h = (sr != null && sr.sprite != null) ? sr.sprite.rect.height * 0.04f : 1f;
+            if (_cloudTextureWidthRef != null) _cloudTextureWidthRef(__instance) = w;
+            if (_cloudTextureHeightRef != null) _cloudTextureHeightRef(__instance) = h;
+            if (_cloudTimerAction1Ref != null) _cloudTimerAction1Ref(__instance) = asset.interval_action_1;
+            if (_cloudLifespanRef != null) _cloudLifespanRef(__instance) = 0f;
+            if (_cloudAliveTimeRef != null) _cloudAliveTimeRef(__instance) = 0f;
+
+            float posX = -50f + Det01x((long)LockstepClock.Tick, 0x44D) * 80f;
+            float posY = Det01x((long)LockstepClock.Tick, 0x55E) * (float)(MapBox.height + 25);
+            __instance.transform.position = new Vector3(posX, posY);
+            if (_baseEffectStateRef != null) _baseEffectStateRef(__instance) = 1;
+            if (_baseEffectAlphaRef != null) _baseEffectAlphaRef(__instance) = 0f;
+
+            if (sr != null)
+            {
+                Color c = sr.color;
+                c.a = 0f;
+                sr.color = c;
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 117. Ambient Fire Elemental Spawn Determinism
+        // ==========================================
+        private static bool CheckFireElementalSpawnPrefix(WorldTile pTile)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pTile == null) return false;
+            if (WorldLawLibrary.world_law_disasters_other.isEnabled() &&
+                World.world_era.era_disaster_fire_elemental_spawn_on_fire &&
+                (Det01x((uint)pTile.tile_id, (uint)LockstepClock.Tick, 0xFE1A) < World.world_era.fire_elemental_spawn_chance) &&
+                ActorTool.countUnitsFrom("fire_elemental") <= 100)
+            {
+                if (_fireElementalsArray == null || _fireElementalsArray.Length == 0)
+                {
+                    Type saType = AccessTools.TypeByName("strings.SA") ?? AccessTools.TypeByName("SA");
+                    if (saType != null)
+                    {
+                        FieldInfo f = AccessTools.Field(saType, "fire_elementals");
+                        _fireElementalsArray = f?.GetValue(null) as string[];
+                    }
+                    if (_fireElementalsArray == null || _fireElementalsArray.Length == 0)
+                    {
+                        _fireElementalsArray = AssetManager.powers?.get("fire_elemental")?.actor_asset_ids ?? new[] { "fire_elemental", "fire_elemental_blob", "fire_elemental_horse" };
+                    }
+                }
+                string[] elementals = _fireElementalsArray;
+                string randomElem = null;
+                if (elementals != null && elementals.Length > 0)
+                {
+                    int idx = (int)(Det01x((uint)pTile.tile_id, (uint)LockstepClock.Tick, 0x3C41) * elementals.Length);
+                    if (idx >= elementals.Length) idx = elementals.Length - 1;
+                    randomElem = elementals[idx];
+                }
+                if (!string.IsNullOrEmpty(randomElem))
+                {
+                    World.world.units.spawnNewUnit(randomElem, pTile, pSpawnSound: false, pMiracleSpawn: false, 6f, null, pGiveOwnerlessItems: false, pAdultAge: true);
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 118. Item Equipment Transformation Determinism
+        // ==========================================
+        private static bool ItemTransmutePrefix(Item __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.asset == null) return false;
+            __instance.data?.modifiers?.Clear();
+
+            bool flag = DebugConfig.isOn(DebugOption.UnlockAllEquipment) || WorldLawLibrary.world_law_cursed_world.isEnabled();
+            EquipmentAsset curAsset = __instance.asset;
+            List<EquipmentAsset> list = curAsset.is_pool_weapon ?
+                (!flag ? AssetManager.items.pot_weapon_assets_unlocked : AssetManager.items.pot_weapon_assets_all) :
+                (!flag ? AssetManager.items.pot_equipment_by_groups_unlocked[curAsset.group_id] : AssetManager.items.pot_equipment_by_groups_all[curAsset.group_id]);
+
+            _transmutePool.Clear();
+            if (list != null)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    EquipmentAsset item = list[i];
+                    if (item != null && item.isAvailable())
+                    {
+                        _transmutePool.Add(item);
+                    }
+                }
+            }
+            if (_transmutePool.Count == 0) return false;
+
+            _transmutePool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+            uint itemId = (uint)(__instance.data != null ? __instance.data.id : 0);
+            for (int i = _transmutePool.Count - 1; i > 0; i--)
+            {
+                int j = (int)(Det01x(itemId, (uint)LockstepClock.Tick, (uint)(i ^ 0x7E4)) * (i + 1));
+                if (j > i) j = i;
+                var temp = _transmutePool[i];
+                _transmutePool[i] = _transmutePool[j];
+                _transmutePool[j] = temp;
+            }
+
+            EquipmentAsset targetAsset = null;
+            for (int i = 0; i < _transmutePool.Count; i++)
+            {
+                EquipmentAsset eq = _transmutePool[i];
+                if (eq != curAsset)
+                {
+                    targetAsset = eq;
+                    break;
+                }
+            }
+            _transmutePool.Clear();
+
+            if (targetAsset != null)
+            {
+                _setItemAssetDel?.Invoke(__instance, targetAsset);
+            }
+            __instance.reforge(5);
+            __instance.calculateValues();
             return false;
         }
     }

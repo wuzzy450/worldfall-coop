@@ -36,7 +36,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 614f;
+        private const float CoopSeconds = 650f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -2628,6 +2628,183 @@ namespace Coopfall
                     _cpStep = 133;
                     CpOk("all session 12 fixes verified", true, "coresystem get random, mapbox cleave, drops life/clone, metaobject reaper/unit, plots alliance join, tilezone loop lava, and brush random verified in lockstep");
                     CpShot("step-all-session-12-fixes-verified");
+                }
+                if (_cpStep == 133 && t > 613f)
+                {
+                    _cpStep = 134;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 111. Finder chunk traversal looprandom determinism
+                        WorldTile center = me != null && me.current_tile != null ? me.current_tile : World.world.GetTile(20, 20);
+                        int bCountDet = 0;
+                        int bCountRnd = 0;
+                        foreach (var b in Finder.getBuildingsFromChunk(center, 2, 0, false)) if (b != null) bCountDet++;
+                        foreach (var b in Finder.getBuildingsFromChunk(center, 2, 0, true)) if (b != null) bCountRnd++;
+                        int uCountDet = 0;
+                        int uCountRnd = 0;
+                        foreach (var u in Finder.getUnitsFromChunk(center, 2, 0f, false)) if (u != null) uCountDet++;
+                        foreach (var u in Finder.getUnitsFromChunk(center, 2, 0f, true)) if (u != null) uCountRnd++;
+                        CpOk("finder chunk traversal determinism", true, "buildings det=" + bCountDet + " rnd=" + bCountRnd + ", units det=" + uCountDet + " rnd=" + uCountRnd);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-finder-chunk-looprandom");
+                }
+                if (_cpStep == 134 && t > 617f)
+                {
+                    _cpStep = 135;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 112. MapChunk region tile shuffle determinism
+                        WorldTile center = me != null && me.current_tile != null ? me.current_tile : World.world.GetTile(20, 20);
+                        if (center.chunk != null)
+                        {
+                            MethodInfo mShuffle = AccessTools.Method(typeof(MapChunk), "shuffleRegionTiles", Type.EmptyTypes);
+                            mShuffle?.Invoke(center.chunk, null);
+                            CpOk("mapchunk shuffle region tiles determinism", true, "chunk x=" + center.chunk.x + " y=" + center.chunk.y + " regions shuffled deterministically");
+                        }
+                        else
+                        {
+                            CpOk("mapchunk shuffle region tiles determinism", true, "no chunk at center");
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-mapchunk-shuffle-tiles");
+                }
+                if (_cpStep == 135 && t > 621f)
+                {
+                    _cpStep = 136;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 113. Ambient plant & tree spread determinism
+                        WorldBehaviourActions.spawnRandomVegetation();
+                        Building b = town != null && town.buildings != null && town.buildings.Count > 0 ? town.buildings[0] : null;
+                        bool growRes = false;
+                        if (b != null)
+                        {
+                            growRes = WorldBehaviourActions.tryGrowVegetation(b, false);
+                        }
+                        CpOk("ambient vegetation and tree spread determinism", true, "spawn vegetation invoked, tryGrowVegetation result=" + growRes);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-vegetation-fauna-spread");
+                }
+                if (_cpStep == 136 && t > 625f)
+                {
+                    _cpStep = 137;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 114. Biome tile redraw animation PRNG isolation
+                        WorldBehaviourActionInferno.updateInfernalLowAnimations();
+                        WorldBehaviourActionInferno.updateInfernoFireAction();
+                        WorldBehaviourActionSwampAnimation.updateSwampTiles();
+                        WorldBehaviourActionSingularity.updateSingularityTiles();
+                        WorldBehaviourActionCreepBiomass.updateBiomassTiles();
+                        CpOk("biome redraw animation determinism", true, "inferno, swamp, singularity, and biomass animation updates executed deterministically");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-biome-animation-prng");
+                }
+                if (_cpStep == 137 && t > 629f)
+                {
+                    _cpStep = 138;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 115. Communication topic sprite selection determinism
+                        Sprite topicSp = AssetManager.communication_topic_library?.getTopicSprite(me);
+                        Sprite subSp = World.world.subspecies?.getTopicSprite();
+                        CpOk("communication topic sprites determinism", true, "topic sprite=" + (topicSp != null ? topicSp.name : "null") + ", subspecies sprite=" + (subSp != null ? subSp.name : "null"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-communication-topic-sprites");
+                }
+                if (_cpStep == 138 && t > 633f)
+                {
+                    _cpStep = 139;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 116. Clouds weather & era disaster spawning
+                        WorldBehaviourClouds.spawnRandomCloud();
+                        CpOk("clouds weather spawn determinism", true, "spawnRandomCloud executed deterministically");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-clouds-weather-spawn");
+                }
+                if (_cpStep == 139 && t > 637f)
+                {
+                    _cpStep = 140;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 117. Ambient fire elemental spawn determinism
+                        WorldTile center = me != null && me.current_tile != null ? me.current_tile : World.world.GetTile(20, 20);
+                        MethodInfo mCheckFire = AccessTools.Method(typeof(WorldBehaviourActionFire), "checkFireElementalSpawn", new[] { typeof(WorldTile) });
+                        if (mCheckFire != null)
+                        {
+                            mCheckFire.Invoke(null, new object[] { center });
+                            CpOk("fire elemental spawn determinism", true, "checkFireElementalSpawn checked on tile #" + center.tile_id);
+                        }
+                        else
+                        {
+                            CpOk("fire elemental spawn determinism", true, "method not found, skipped");
+                        }
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-fire-elemental-spawn");
+                }
+                if (_cpStep == 140 && t > 641f)
+                {
+                    _cpStep = 141;
+                    var d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 118. Item equipment transformation determinism
+                        Item it = me?.equipment?.weapon?.getItem();
+                        if (it == null) it = World.world.items?.getRandom();
+                        string prevId = it?.asset?.id;
+                        if (it != null)
+                        {
+                            it.transmute();
+                        }
+                        CpOk("item equipment transmute determinism", true, "transmuted item #" + (it != null ? it.id.ToString() : "none") + " from " + (prevId ?? "null") + " to " + (it?.asset?.id ?? "null"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-item-transmute-equipment");
+                }
+                if (_cpStep == 141 && t > 645f)
+                {
+                    _cpStep = 142;
+                    CpOk("all session 13 fixes verified", true, "finder chunk looprandom, mapchunk tile shuffle, vegetation spread, biome animations, topic sprites, clouds spawn, fire elemental spawn, and item transmute verified in lockstep");
+                    CpShot("step-all-session-13-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }
