@@ -94,6 +94,11 @@ namespace Coopfall.Lockstep
     /// 79. Chromosome.generateAmplifiers & shuffleGenes: deterministic amplifier count and Fisher-Yates shuffle seeded by tick and hash.
     /// 80. MetaObjectWithTraits.fillTraitAssetsFromStringList: candidate traits sorted alphabetically for deterministic opposite conflict resolution.
     /// 81. NameGeneratorReplacers.replaceEnemyKing & replaceEnemyKingdom: candidate enemy kingdoms sorted by ID before selecting monarch/kingdom name.
+    /// 82. Actor.takeItems: candidate target equipment slots presorted by value and type before looting up to pMaxItems without LoopRandom.
+    /// 83. Projectile.checkHitOnNearbyUnits: candidate target enemies presorted by 3D distance and actor.id before hit evaluation without LoopRandom.
+    /// 84. WorldAgeLibrary.extremeEnvironmentAction: nature buildings presorted by building.id and deterministically selected via tick hash without LoopRandom(5).
+    /// 85. WorldBehaviourActions.updateRuinRatSpawn: ruin housing buildings presorted by building.id and deterministic rat count without LoopRandom or unseeded randomInt.
+    /// 86. Ant.randomNeighbour & BehFindRandomTile4Directions/8Directions: deterministic cardinal/8-way tile selection and step counts via tick hash without unseeded LoopRandom or PRNG.
     /// </summary>
     public static class SimulationInTick
     {
@@ -159,6 +164,23 @@ namespace Coopfall.Lockstep
         private static AccessTools.FieldRef<Chromosome, List<int>> _lociAmplifiersRef;
         private static AccessTools.FieldRef<Chromosome, List<int>> _lociEmptyRef;
         private static readonly List<Kingdom> _enemyKingdomsPool = new List<Kingdom>();
+        private static readonly List<ActorEquipmentSlot> _equipmentSlotsPool = new List<ActorEquipmentSlot>();
+        private static readonly List<BaseSimObject> _projHitCandidatesPool = new List<BaseSimObject>();
+        private static readonly List<Building> _extremeEnvBuildingsPool = new List<Building>();
+        private static readonly List<Building> _ruinBuildingsPool = new List<Building>();
+        private static readonly List<WorldTile> _axisNeighboursPool = new List<WorldTile>(4);
+
+        private static Action<ActorEquipmentSlot, Item, Actor> _setItemDel;
+        private static Action<Building> _startMakingRuinsDel;
+        private static Func<Building, bool> _isRuinDel;
+        private static AccessTools.FieldRef<Projectile, BaseSimObject> _projByWhoRef;
+        private static AccessTools.FieldRef<Projectile, BaseSimObject> _projMainTargetRef;
+        private static AccessTools.FieldRef<Projectile, long> _projMainTargetIdRef;
+        private static AccessTools.FieldRef<Projectile, bool> _projIsTargetReachedRef;
+        private static AccessTools.FieldRef<Projectile, Vector3> _projCurrentPos3dRef;
+        private static AccessTools.FieldRef<Projectile, Kingdom> _projKingdomRef;
+        private delegate AttackDataResult CheckHitForUnitDelegate(Projectile proj, BaseSimObject pObject, AttackData pData);
+        private static CheckHitForUnitDelegate _checkHitForUnitDel;
 
         private static Action<Actor, Kingdom> _setKingdomDel;
         private static Action<Actor, City> _setCityDel;
@@ -225,6 +247,7 @@ namespace Coopfall.Lockstep
         private static AccessTools.FieldRef<int> _lastUsedWorldIdRef;
         private static AccessTools.FieldRef<List<WorldTile>> _tempWheatListRef;
         private static AccessTools.FieldRef<Building, BuildingAsset> _buildingAssetRef;
+        private static AccessTools.FieldRef<Building, BuildingData> _buildingDataRef;
         private static MethodInfo _startDestroyBuildingMethod;
 
         // 2. Boat passenger field refs & methods
@@ -317,6 +340,7 @@ namespace Coopfall.Lockstep
                 MethodInfo updateFarmDecay = AccessTools.Method(typeof(WorldBehaviourActions), "updateFarmDecay");
                 _startDestroyBuildingMethod = AccessTools.Method(typeof(Building), "startDestroyBuilding");
                 _buildingAssetRef = AccessTools.FieldRefAccess<Building, BuildingAsset>("asset");
+                _buildingDataRef = AccessTools.FieldRefAccess<Building, BuildingData>("data");
                 if (lastWorldIdField != null && tempWheatField != null && updateFarmDecay != null)
                 {
                     _lastUsedWorldIdRef = AccessTools.StaticFieldRefAccess<int>(lastWorldIdField);
@@ -1024,6 +1048,65 @@ namespace Coopfall.Lockstep
                 else Log.Warn("lockstep: NameGeneratorReplacers.replaceEnemyKing not found");
                 if (mReplEnemyKingdom != null) h.Patch(mReplEnemyKingdom, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceEnemyKingdomPrefix)));
                 else Log.Warn("lockstep: NameGeneratorReplacers.replaceEnemyKingdom not found");
+
+                // 82. Actor Equipment Looting Selection Determinism
+                MethodInfo mSetItem = AccessTools.Method(typeof(ActorEquipmentSlot), "setItem", new[] { typeof(Item), typeof(Actor) });
+                if (mSetItem != null) _setItemDel = (Action<ActorEquipmentSlot, Item, Actor>)Delegate.CreateDelegate(typeof(Action<ActorEquipmentSlot, Item, Actor>), mSetItem);
+                MethodInfo mTakeItems = AccessTools.Method(typeof(Actor), "takeItems", new[] { typeof(Actor), typeof(float), typeof(int) });
+                if (mTakeItems != null) h.Patch(mTakeItems, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ActorTakeItemsPrefix)));
+                else Log.Warn("lockstep: Actor.takeItems not found");
+
+                // 83. Projectile Collision Target Search Determinism
+                FieldInfo fByWho = AccessTools.Field(typeof(Projectile), "by_who");
+                FieldInfo fMainTarget = AccessTools.Field(typeof(Projectile), "_main_target");
+                FieldInfo fMainTargetId = AccessTools.Field(typeof(Projectile), "_main_target_id");
+                FieldInfo fTargetReached = AccessTools.Field(typeof(Projectile), "_is_target_reached");
+                FieldInfo fPos3d = AccessTools.Field(typeof(Projectile), "_current_position_3d");
+                FieldInfo fProjKingdom = AccessTools.Field(typeof(Projectile), "kingdom");
+                if (fByWho != null) _projByWhoRef = AccessTools.FieldRefAccess<Projectile, BaseSimObject>(fByWho);
+                if (fMainTarget != null) _projMainTargetRef = AccessTools.FieldRefAccess<Projectile, BaseSimObject>(fMainTarget);
+                if (fMainTargetId != null) _projMainTargetIdRef = AccessTools.FieldRefAccess<Projectile, long>(fMainTargetId);
+                if (fTargetReached != null) _projIsTargetReachedRef = AccessTools.FieldRefAccess<Projectile, bool>(fTargetReached);
+                if (fPos3d != null) _projCurrentPos3dRef = AccessTools.FieldRefAccess<Projectile, Vector3>(fPos3d);
+                if (fProjKingdom != null) _projKingdomRef = AccessTools.FieldRefAccess<Projectile, Kingdom>(fProjKingdom);
+                MethodInfo mCheckHitForUnit = AccessTools.Method(typeof(Projectile), "checkHitForUnit", new[] { typeof(BaseSimObject), typeof(AttackData) });
+                if (mCheckHitForUnit != null) _checkHitForUnitDel = (CheckHitForUnitDelegate)Delegate.CreateDelegate(typeof(CheckHitForUnitDelegate), mCheckHitForUnit);
+                MethodInfo mCheckHitNearby = AccessTools.Method(typeof(Projectile), "checkHitOnNearbyUnits", Type.EmptyTypes);
+                if (mCheckHitNearby != null) h.Patch(mCheckHitNearby, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ProjectileCheckHitOnNearbyUnitsPrefix)));
+                else Log.Warn("lockstep: Projectile.checkHitOnNearbyUnits not found");
+
+                // 84. World Age Extreme Environment Nature Building Ruining Determinism
+                MethodInfo mMakeRuins = AccessTools.Method(typeof(Building), "startMakingRuins", Type.EmptyTypes);
+                if (mMakeRuins != null) _startMakingRuinsDel = (Action<Building>)Delegate.CreateDelegate(typeof(Action<Building>), mMakeRuins);
+                MethodInfo mIsRuin = AccessTools.Method(typeof(Building), "isRuin", Type.EmptyTypes);
+                if (mIsRuin != null) _isRuinDel = (Func<Building, bool>)Delegate.CreateDelegate(typeof(Func<Building, bool>), mIsRuin);
+
+                MethodInfo mExtremeEnv = AccessTools.Method(typeof(WorldAgeLibrary), "extremeEnvironmentAction", new[] { typeof(EnvironmentAction) });
+                if (mExtremeEnv != null) h.Patch(mExtremeEnv, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldAgeLibraryExtremeEnvironmentActionPrefix)));
+                else Log.Warn("lockstep: WorldAgeLibrary.extremeEnvironmentAction not found");
+
+                // 85. Ruin Rat Ambient Spawning Determinism
+                MethodInfo mRuinRat = AccessTools.Method(typeof(WorldBehaviourActions), "updateRuinRatSpawn", Type.EmptyTypes);
+                if (mRuinRat != null) h.Patch(mRuinRat, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionsUpdateRuinRatSpawnPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActions.updateRuinRatSpawn not found");
+
+                // 86. Insect & Burrowing Creature Directional Tile Selection Determinism
+                Type antType = AccessTools.TypeByName("Ant");
+                if (antType != null)
+                {
+                    MethodInfo mAntRandom = AccessTools.Method(antType, "randomNeighbour", new[] { typeof(WorldTile) });
+                    if (mAntRandom != null) h.Patch(mAntRandom, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(AntRandomNeighbourPrefix)));
+                    else Log.Warn("lockstep: Ant.randomNeighbour not found");
+                }
+                else Log.Warn("lockstep: Ant type not found");
+
+                MethodInfo mFindRandom4 = AccessTools.Method(typeof(BehFindRandomTile4Directions), "execute", new[] { typeof(Actor) });
+                if (mFindRandom4 != null) h.Patch(mFindRandom4, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindRandomTile4DirectionsExecutePrefix)));
+                else Log.Warn("lockstep: BehFindRandomTile4Directions.execute not found");
+
+                MethodInfo mFindRandom8 = AccessTools.Method(typeof(BehFindRandomTile8Directions), "execute", new[] { typeof(Actor) });
+                if (mFindRandom8 != null) h.Patch(mFindRandom8, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindRandomTile8DirectionsExecutePrefix)));
+                else Log.Warn("lockstep: BehFindRandomTile8Directions.execute not found");
             }
             catch (Exception e)
             {
@@ -7158,5 +7241,443 @@ namespace Coopfall.Lockstep
             pName = "";
             return false;
         }
+
+        // ==========================================
+        // 82. Actor Equipment Looting Selection Determinism
+        // ==========================================
+        private static bool ActorTakeItemsPrefix(Actor __instance, ref bool __result, Actor pActorTarget, float pChance, int pMaxItems)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || !__instance.understandsHowToUseItems() || pActorTarget == null || !pActorTarget.hasEquipment())
+            {
+                __result = false;
+                return false;
+            }
+            _equipmentSlotsPool.Clear();
+            foreach (ActorEquipmentSlot slot in pActorTarget.equipment)
+            {
+                if (slot != null) _equipmentSlotsPool.Add(slot);
+            }
+            if (_equipmentSlotsPool.Count == 0)
+            {
+                __result = false;
+                return false;
+            }
+            _equipmentSlotsPool.Sort((a, b) =>
+            {
+                bool aEmpty = a.isEmpty();
+                bool bEmpty = b.isEmpty();
+                if (aEmpty != bEmpty) return aEmpty ? 1 : -1;
+                if (!aEmpty)
+                {
+                    int valA = a.getItem()?.getValue() ?? 0;
+                    int valB = b.getItem()?.getValue() ?? 0;
+                    if (valA != valB) return valB.CompareTo(valA);
+                    long idA = a.getItem()?.data != null ? a.getItem().data.id : 0L;
+                    long idB = b.getItem()?.data != null ? b.getItem().data.id : 0L;
+                    int cmpId = idA.CompareTo(idB);
+                    if (cmpId != 0) return cmpId;
+                }
+                return ((int)a.type).CompareTo((int)b.type);
+            });
+
+            bool result = false;
+            int limit = (pMaxItems <= 0) ? _equipmentSlotsPool.Count : pMaxItems;
+            int taken = 0;
+            for (int i = 0; i < _equipmentSlotsPool.Count && taken < limit; i++)
+            {
+                ActorEquipmentSlot targetSlot = _equipmentSlotsPool[i];
+                if (!targetSlot.isEmpty())
+                {
+                    ActorEquipmentSlot mySlot = __instance.equipment.getSlot(targetSlot.type);
+                    if (mySlot != null)
+                    {
+                        Item myItem = mySlot.getItem();
+                        Item targetItem = targetSlot.getItem();
+                        if (targetItem != null && !targetItem.isCursed() && (mySlot.isEmpty() || (!myItem.isCursed() && targetItem.getValue() > myItem.getValue())))
+                        {
+                            result = true;
+                            targetSlot.takeAwayItem();
+                            if (_setItemDel != null) _setItemDel(mySlot, targetItem, __instance);
+                            __instance.setStatsDirty();
+                            pActorTarget.setStatsDirty();
+                            taken++;
+                        }
+                    }
+                }
+            }
+            _equipmentSlotsPool.Clear();
+            __result = result;
+            return false;
+        }
+
+        // ==========================================
+        // 83. Projectile Collision Target Search Determinism
+        // ==========================================
+        private static AttackDataResult CheckHitForUnitSafe(Projectile proj, BaseSimObject pObject, AttackData pData, Vector3 current_position_3d)
+        {
+            if (_checkHitForUnitDel != null)
+            {
+                return _checkHitForUnitDel(proj, pObject, pData);
+            }
+            if (pObject == null || !pObject.isAlive())
+            {
+                return AttackDataResult.Continue;
+            }
+            float z = current_position_3d.z;
+            float height = pObject.position_height;
+            if (Mathf.Abs(z - height) > 3f)
+            {
+                return AttackDataResult.Continue;
+            }
+            Vector3 vector = pObject.current_position;
+            float num = Toolbox.Dist(current_position_3d.x, current_position_3d.y + current_position_3d.z, vector.x, vector.y + pObject.position_height);
+            float sizeObj = _baseStatsRef != null && _baseStatsRef(pObject) != null ? _baseStatsRef(pObject)["size"] : 0f;
+            float num2 = (proj.asset != null ? proj.asset.size : 0f) + sizeObj;
+            if (num > num2)
+            {
+                return AttackDataResult.Continue;
+            }
+            return MapBox.checkAttackFor(pData, pObject);
+        }
+
+        private static bool ProjectileCheckHitOnNearbyUnitsPrefix(Projectile __instance, ref AttackDataResult __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null) { __result = AttackDataResult.Continue; return false; }
+            if (_projIsTargetReachedRef != null && _projIsTargetReachedRef(__instance))
+            {
+                __result = AttackDataResult.Continue;
+                return false;
+            }
+            Vector3 pos3d = _projCurrentPos3dRef != null ? _projCurrentPos3dRef(__instance) : Vector3.zero;
+            bool isOnGround = pos3d.z <= 0f;
+            WorldTile tile = World.world != null ? World.world.GetTile((int)pos3d.x, (int)pos3d.y) : null;
+            if (tile == null)
+            {
+                __result = isOnGround ? AttackDataResult.Miss : AttackDataResult.Continue;
+                return false;
+            }
+            BaseSimObject byWho = _projByWhoRef != null ? _projByWhoRef(__instance) : null;
+            if (byWho == null || byWho.isRekt())
+            {
+                __result = AttackDataResult.Miss;
+                return false;
+            }
+            Kingdom projKingdom = _projKingdomRef != null ? _projKingdomRef(__instance) : null;
+            if (_findEnemiesDel == null) return true;
+            EnemyFinderData enemyFinderData = _findEnemiesDel(tile, projKingdom, -1);
+            if (enemyFinderData == null)
+            {
+                __result = isOnGround ? AttackDataResult.Miss : AttackDataResult.Continue;
+                return false;
+            }
+
+            bool mainValid = false;
+            BaseSimObject mainTarget = _projMainTargetRef != null ? _projMainTargetRef(__instance) : null;
+            long mainTargetId = _projMainTargetIdRef != null ? _projMainTargetIdRef(__instance) : -1L;
+            if (mainTarget != null && !mainTarget.isRekt() && mainTarget.id == mainTargetId)
+            {
+                mainValid = true;
+            }
+            else
+            {
+                if (_projMainTargetRef != null) _projMainTargetRef(__instance) = null;
+                if (_projMainTargetIdRef != null) _projMainTargetIdRef(__instance) = -1L;
+            }
+            if (mainValid && !enemyFinderData.list.Contains(mainTarget))
+            {
+                enemyFinderData.list.Add(mainTarget);
+            }
+            if (enemyFinderData.isEmpty())
+            {
+                __result = isOnGround ? AttackDataResult.Miss : AttackDataResult.Continue;
+                return false;
+            }
+
+            Vector3 initiatorPosition = byWho.current_position;
+            AttackData pData = new AttackData(byWho, tile, pos3d, initiatorPosition, null, projKingdom, AttackType.Weapon, pMetallicWeapon: false, pSkipShake: false, pProjectile: true, __instance.asset != null ? __instance.asset.id : "");
+            if (isOnGround)
+            {
+                AttackDataResult result = MapBox.newAttack(pData);
+                if (result.state == ApplyAttackState.Continue)
+                {
+                    result.state = ApplyAttackState.Miss;
+                }
+                __result = result;
+                return false;
+            }
+
+            _projHitCandidatesPool.Clear();
+            for (int i = 0; i < enemyFinderData.list.Count; i++)
+            {
+                BaseSimObject obj = enemyFinderData.list[i];
+                if (obj != null) _projHitCandidatesPool.Add(obj);
+            }
+            _projHitCandidatesPool.Sort((a, b) =>
+            {
+                float dxA = pos3d.x - a.current_position.x;
+                float dyA = (pos3d.y + pos3d.z) - (a.current_position.y + a.position_height);
+                float distA = dxA * dxA + dyA * dyA;
+
+                float dxB = pos3d.x - b.current_position.x;
+                float dyB = (pos3d.y + pos3d.z) - (b.current_position.y + b.position_height);
+                float distB = dxB * dxB + dyB * dyB;
+
+                int cmp = distA.CompareTo(distB);
+                if (cmp != 0) return cmp;
+                return a.id.CompareTo(b.id);
+            });
+
+            for (int i = 0; i < _projHitCandidatesPool.Count; i++)
+            {
+                BaseSimObject item = _projHitCandidatesPool[i];
+                AttackDataResult result2 = CheckHitForUnitSafe(__instance, item, pData, pos3d);
+                ApplyAttackState state = result2.state;
+                if (state == ApplyAttackState.Hit || (uint)(state - 2) <= 1u)
+                {
+                    _projHitCandidatesPool.Clear();
+                    __result = result2;
+                    return false;
+                }
+            }
+            _projHitCandidatesPool.Clear();
+            __result = AttackDataResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 84. World Age Extreme Environment Nature Building Ruining Determinism
+        // ==========================================
+        private static bool WorldAgeLibraryExtremeEnvironmentActionPrefix(WorldAgeLibrary __instance, EnvironmentAction pCheckAsset)
+        {
+            if (!LockstepClock.Active) return true;
+            Kingdom nature = World.world?.kingdoms_wild?.get("nature");
+            if (nature == null || nature.buildings == null || nature.buildings.Count == 0 || pCheckAsset == null) return false;
+            _extremeEnvBuildingsPool.Clear();
+            var bList = nature.buildings;
+            for (int i = 0; i < bList.Count; i++)
+            {
+                Building b = bList[i];
+                if (b != null && _buildingDataRef != null && _buildingDataRef(b) != null && b.isAlive())
+                {
+                    _extremeEnvBuildingsPool.Add(b);
+                }
+            }
+            if (_extremeEnvBuildingsPool.Count == 0) return false;
+            _extremeEnvBuildingsPool.Sort((a, b) =>
+            {
+                long idA = _buildingDataRef != null && a != null && _buildingDataRef(a) != null ? _buildingDataRef(a).id : 0L;
+                long idB = _buildingDataRef != null && b != null && _buildingDataRef(b) != null ? _buildingDataRef(b).id : 0L;
+                return idA.CompareTo(idB);
+            });
+            int pickCount = Math.Min(5, _extremeEnvBuildingsPool.Count);
+            for (int i = 0; i < pickCount; i++)
+            {
+                int j = i + (int)(Det01x(LockstepClock.Tick, i, 0x57A7) * (_extremeEnvBuildingsPool.Count - i));
+                if (j >= _extremeEnvBuildingsPool.Count) j = _extremeEnvBuildingsPool.Count - 1;
+                Building temp = _extremeEnvBuildingsPool[i];
+                _extremeEnvBuildingsPool[i] = _extremeEnvBuildingsPool[j];
+                _extremeEnvBuildingsPool[j] = temp;
+
+                Building item = _extremeEnvBuildingsPool[i];
+                BuildingAsset bAsset = _buildingAssetRef != null ? _buildingAssetRef(item) : null;
+                bool isRuin = _isRuinDel != null ? _isRuinDel(item) : !item.isNormal();
+                if (item.isAlive() && !isRuin && bAsset != null && pCheckAsset(bAsset))
+                {
+                    if (_startMakingRuinsDel != null) _startMakingRuinsDel(item);
+                }
+            }
+            _extremeEnvBuildingsPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 85. Ruin Rat Ambient Spawning Determinism
+        // ==========================================
+        private static bool WorldBehaviourActionsUpdateRuinRatSpawnPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            MapChunkManager mcm = _mapChunkManagerRef != null ? _mapChunkManagerRef(World.world) : null;
+            if (!WorldLawLibrary.world_law_animals_spawn.isEnabled() || mcm == null || mcm.chunks == null || mcm.chunks.Length == 0)
+                return false;
+            ActorAsset actorAsset = AssetManager.actor_library.get("rat");
+            if (actorAsset == null || actorAsset.units.Count > actorAsset.max_random_amount * 3)
+                return false;
+            Kingdom kingdom = World.world.kingdoms_wild?.get("ruins");
+            if (kingdom == null || kingdom.buildings == null || kingdom.buildings.Count == 0)
+                return false;
+            _ruinBuildingsPool.Clear();
+            for (int i = 0; i < kingdom.buildings.Count; i++)
+            {
+                Building item = kingdom.buildings[i];
+                BuildingAsset bAsset = item != null && _buildingAssetRef != null ? _buildingAssetRef(item) : null;
+                if (item != null && _buildingDataRef != null && _buildingDataRef(item) != null && item.isAlive() && bAsset != null && bAsset.city_building && bAsset.hasHousingSlots())
+                {
+                    _ruinBuildingsPool.Add(item);
+                }
+            }
+            if (_ruinBuildingsPool.Count == 0) return false;
+            _ruinBuildingsPool.Sort((a, b) =>
+            {
+                long idA = _buildingDataRef != null && a != null && _buildingDataRef(a) != null ? _buildingDataRef(a).id : 0L;
+                long idB = _buildingDataRef != null && b != null && _buildingDataRef(b) != null ? _buildingDataRef(b).id : 0L;
+                return idA.CompareTo(idB);
+            });
+            int chosenIndex = (int)(Det01x(LockstepClock.Tick, _ruinBuildingsPool.Count, 0x7A75) * _ruinBuildingsPool.Count);
+            if (chosenIndex >= _ruinBuildingsPool.Count) chosenIndex = _ruinBuildingsPool.Count - 1;
+            Building building = _ruinBuildingsPool[chosenIndex];
+            _ruinBuildingsPool.Clear();
+            if (building != null && building.current_tile != null)
+            {
+                WorldTile current_tile = building.current_tile;
+                long bId = _buildingDataRef != null && _buildingDataRef(building) != null ? _buildingDataRef(building).id : 0L;
+                int num = 2 + (int)(Det01x(LockstepClock.Tick, bId, 0x8A7) * 3);
+                if (num > 4) num = 4;
+                for (int i = 0; i < num; i++)
+                {
+                    World.world.units.spawnNewUnit(actorAsset.id, current_tile);
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 86. Insect & Burrowing Creature Directional Tile Selection Determinism
+        // ==========================================
+        private static WorldTile GetNextTileDirection(WorldTile pTile, ActorDirection pDirection)
+        {
+            if (pTile == null) return null;
+            return pDirection switch
+            {
+                ActorDirection.Up => pTile.tile_up,
+                ActorDirection.UpRight => pTile.tile_up != null ? pTile.tile_up.tile_right : null,
+                ActorDirection.UpLeft => pTile.tile_up != null ? pTile.tile_up.tile_left : null,
+                ActorDirection.Right => pTile.tile_right,
+                ActorDirection.Down => pTile.tile_down,
+                ActorDirection.DownRight => pTile.tile_down != null ? pTile.tile_down.tile_right : null,
+                ActorDirection.DownLeft => pTile.tile_down != null ? pTile.tile_down.tile_left : null,
+                ActorDirection.Left => pTile.tile_left,
+                _ => null,
+            };
+        }
+
+        private static bool AntRandomNeighbourPrefix(ref WorldTile __result, WorldTile pTile)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pTile == null) { __result = null; return false; }
+            _axisNeighboursPool.Clear();
+            if (pTile.tile_up != null) _axisNeighboursPool.Add(pTile.tile_up);
+            if (pTile.tile_right != null) _axisNeighboursPool.Add(pTile.tile_right);
+            if (pTile.tile_left != null) _axisNeighboursPool.Add(pTile.tile_left);
+            if (pTile.tile_down != null) _axisNeighboursPool.Add(pTile.tile_down);
+            if (_axisNeighboursPool.Count == 0) { __result = null; return false; }
+            _axisNeighboursPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            int pick = (int)(Det01x(pTile.tile_id, LockstepClock.Tick, 0x4E7) * _axisNeighboursPool.Count);
+            if (pick >= _axisNeighboursPool.Count) pick = _axisNeighboursPool.Count - 1;
+            __result = _axisNeighboursPool[pick];
+            _axisNeighboursPool.Clear();
+            return false;
+        }
+
+        private static bool BehFindRandomTile4DirectionsExecutePrefix(ref BehResult __result, BehFindRandomTile4Directions __instance, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.current_tile == null) { __result = BehResult.Continue; return false; }
+            ActorData aData = _actorDataRef != null ? _actorDataRef(pActor) : null;
+            if (aData == null) { __result = BehResult.Continue; return false; }
+            aData.get("direction", out var pResult, -1);
+            ActorDirection actorDirection;
+            if (pResult == -1)
+            {
+                int dirCount = Toolbox.directions.Length;
+                int dirIdx = (int)(Det01x(pActor.id, LockstepClock.Tick, 0x3A41) * dirCount);
+                if (dirIdx >= dirCount) dirIdx = dirCount - 1;
+                actorDirection = Toolbox.directions[dirIdx];
+                pResult = dirIdx;
+                aData.set("direction", pResult);
+            }
+            else
+            {
+                if (pResult >= 0 && pResult < Toolbox.directions.Length)
+                    actorDirection = Toolbox.directions[pResult];
+                else
+                    actorDirection = Toolbox.directions[0];
+            }
+            WorldTile nextTile = GetNextTileDirection(pActor.current_tile, actorDirection);
+            if (nextTile == null)
+            {
+                WorldTile altTile = null;
+                AntRandomNeighbourPrefix(ref altTile, pActor.current_tile);
+                nextTile = altTile;
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = nextTile;
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        private static bool BehFindRandomTile8DirectionsExecutePrefix(ref BehResult __result, BehFindRandomTile8Directions __instance, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.current_tile == null) { __result = BehResult.Continue; return false; }
+            ActorData aData = _actorDataRef != null ? _actorDataRef(pActor) : null;
+            if (aData == null) { __result = BehResult.Continue; return false; }
+            aData.get("random_steps", out var pResult, 0);
+            aData.get("direction", out var pResult2, -1);
+            ActorDirection actorDirection;
+            WorldTile curTarget = _behTileTargetRef != null ? _behTileTargetRef(pActor) : null;
+            if (pResult > 0)
+            {
+                if (curTarget != null && pActor.current_tile != curTarget)
+                {
+                    __result = BehResult.Continue;
+                    return false;
+                }
+                if (pResult2 >= 0 && pResult2 < Toolbox.directions_all.Length)
+                    actorDirection = Toolbox.directions_all[pResult2];
+                else
+                    actorDirection = Toolbox.directions_all[0];
+            }
+            else
+            {
+                int pMinInclusive = 1 + (int)(Det01x(pActor.id, LockstepClock.Tick, 0x11A) * 5);
+                int pMaxExclusive = 10 + (int)(Det01x(pActor.id, LockstepClock.Tick, 0x22B) * 50);
+                int pSpan = Math.Max(1, pMaxExclusive - pMinInclusive);
+                pResult = pMinInclusive + (int)(Det01x(pActor.id, LockstepClock.Tick, 0x33C) * pSpan);
+                if (pResult2 < 0 || pResult2 >= Toolbox.directions_all.Length)
+                {
+                    int dirIdx = (int)(Det01x(pActor.id, LockstepClock.Tick, 0x44D) * Toolbox.directions_all.Length);
+                    if (dirIdx >= Toolbox.directions_all.Length) dirIdx = Toolbox.directions_all.Length - 1;
+                    actorDirection = Toolbox.directions_all[dirIdx];
+                    pResult2 = dirIdx;
+                }
+                else
+                {
+                    actorDirection = Toolbox.directions_all[pResult2];
+                    if (Toolbox.directions_all_turns.TryGetValue(actorDirection, out var turns) && turns != null && turns.Length > 0)
+                    {
+                        int turnIdx = (int)(Det01x(pActor.id, LockstepClock.Tick, 0x55E) * turns.Length);
+                        if (turnIdx >= turns.Length) turnIdx = turns.Length - 1;
+                        actorDirection = turns[turnIdx];
+                        pResult2 = Array.IndexOf(Toolbox.directions_all, actorDirection);
+                    }
+                }
+                aData.set("direction", pResult2);
+            }
+            pResult--;
+            WorldTile nextTarget = GetNextTileDirection(pActor.current_tile, actorDirection);
+            if (nextTarget == null)
+            {
+                aData.set("random_steps", 0);
+                aData.set("direction", -1);
+                __result = BehResult.RepeatStep;
+                return false;
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = nextTarget;
+            aData.set("random_steps", pResult);
+            __result = BehResult.Continue;
+            return false;
+        }
     }
 }
+
