@@ -84,6 +84,11 @@ namespace Coopfall.Lockstep
     /// 69. BehShortRandomMove.execute: candidate layer neighbours sorted by tile_id before GetRandom() selection.
     /// 70. WorldBehaviourActionCreepDecay.destroyNonCheckedCreep: disconnected creep tiles sorted by tile_id before LoopRandom(3).
     /// 71. WorldBehaviourActionErosion.updateErosion: ground islands sorted by island.id and island regions and tiles sorted deterministically.
+    /// 72. WorldBehaviourActions.updateMigrants: cities sorted by city.id before deterministic migrant spawn.
+    /// 73. WorldBehaviourActionLava.moveLava: lava neighbours sorted by tile_id with stable render_z / tile_id tie-breaking and Det01x particle hashing.
+    /// 74. Finder.findTileInChunk: chunk regions and matching tiles sorted deterministically by region.id and tile_id.
+    /// 75. OceanHelper.findTileInWholeIsland & findWaterTileInRegion: island regions sorted by region.id and edge tiles sorted by tile_id.
+    /// 76. BehMoveAwayFromBlock.execute & getBestTileToMove: neighbour regions sorted by id and edge tiles sorted by tile_id with stable tie-breaking.
     /// </summary>
     public static class SimulationInTick
     {
@@ -132,6 +137,27 @@ namespace Coopfall.Lockstep
         private static AccessTools.FieldRef<List<WorldTile>> _creepDisconnectedTilesRef;
         private static AccessTools.FieldRef<List<WorldTile>> _erosionListRef;
         private static readonly List<TileIsland> _erosionIslandsPool = new List<TileIsland>();
+        private static readonly List<City> _migrantCitiesPool = new List<City>();
+        private static readonly List<WorldTile> _lavaNeighboursPool = new List<WorldTile>();
+        private static readonly List<MapChunk> _finderChunksPool = new List<MapChunk>();
+        private static readonly List<MapRegion> _finderRegionsPool = new List<MapRegion>();
+        private static readonly List<WorldTile> _finderTilesPool = new List<WorldTile>();
+        private static readonly List<MapRegion> _oceanRegionsPool = new List<MapRegion>();
+        private static readonly List<WorldTile> _oceanEdgeTilesPool = new List<WorldTile>();
+        private static readonly List<MapRegion> _blockNeighbourRegionsPool = new List<MapRegion>();
+        private static readonly List<MapRegion> _blockInsideEdgesPool = new List<MapRegion>();
+        private static readonly List<WorldTile> _blockEdgeTilesPool = new List<WorldTile>();
+
+        private static Action<Actor, Kingdom> _setKingdomDel;
+        private static Action<Actor, City> _setCityDel;
+        private static Func<BaseSimObject, string, float, bool, bool> _addStatusEffectDel;
+        private static Func<WorldTile, bool, bool> _startFireDel;
+        private static Action<WorldTile, string> _changeLavaTileStrDel;
+        private static Action<WorldTile, TileType> _changeLavaTileTypeDel;
+        private static AccessTools.FieldRef<MapBox, GlowParticles> _particlesFireRef;
+        private static AccessTools.FieldRef<MapBox, Heat> _heatRef;
+        private static Action<Heat, WorldTile, int> _heatAddTileDel;
+        private static AccessTools.FieldRef<MapBox, PixelFlashEffects> _flashEffectsRef;
 
         private static Func<DisasterLibrary, DisasterAsset, bool> _checkUnitSpawnLimitsDel;
         private static Func<DisasterLibrary, DisasterAsset, WorldTile, Building> _spawnDisasterBuildingDel;
@@ -891,6 +917,59 @@ namespace Coopfall.Lockstep
                 if (fErosionList != null) _erosionListRef = AccessTools.StaticFieldRefAccess<List<WorldTile>>(fErosionList);
                 if (mUpdateErosion != null) h.Patch(mUpdateErosion, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionErosionUpdateErosionPrefix)));
                 else Log.Warn("lockstep: WorldBehaviourActionErosion.updateErosion not found");
+
+                // 72. City migrant citizen spawns determinism
+                MethodInfo mSetKingdom = AccessTools.Method(typeof(Actor), "setKingdom", new[] { typeof(Kingdom) });
+                if (mSetKingdom != null) _setKingdomDel = (Action<Actor, Kingdom>)Delegate.CreateDelegate(typeof(Action<Actor, Kingdom>), mSetKingdom);
+                MethodInfo mSetCity = AccessTools.Method(typeof(Actor), "setCity", new[] { typeof(City) });
+                if (mSetCity != null) _setCityDel = (Action<Actor, City>)Delegate.CreateDelegate(typeof(Action<Actor, City>), mSetCity);
+                MethodInfo mAddStatusEffect = AccessTools.Method(typeof(BaseSimObject), "addStatusEffect", new[] { typeof(string), typeof(float), typeof(bool) });
+                if (mAddStatusEffect != null) _addStatusEffectDel = (Func<BaseSimObject, string, float, bool, bool>)Delegate.CreateDelegate(typeof(Func<BaseSimObject, string, float, bool, bool>), mAddStatusEffect);
+
+                MethodInfo mUpdateMigrants = AccessTools.Method(typeof(WorldBehaviourActions), "updateMigrants");
+                if (mUpdateMigrants != null) h.Patch(mUpdateMigrants, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionsUpdateMigrantsPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActions.updateMigrants not found");
+
+                // 73. Lava flow direction & fire particle dice leak determinism
+                FieldInfo fParticlesFire = AccessTools.Field(typeof(MapBox), "particles_fire");
+                if (fParticlesFire != null) _particlesFireRef = AccessTools.FieldRefAccess<MapBox, GlowParticles>(fParticlesFire);
+                FieldInfo fHeat = AccessTools.Field(typeof(MapBox), "heat");
+                if (fHeat != null) _heatRef = AccessTools.FieldRefAccess<MapBox, Heat>(fHeat);
+                MethodInfo mHeatAddTile = AccessTools.Method(typeof(Heat), "addTile", new[] { typeof(WorldTile), typeof(int) });
+                if (mHeatAddTile != null) _heatAddTileDel = (Action<Heat, WorldTile, int>)Delegate.CreateDelegate(typeof(Action<Heat, WorldTile, int>), mHeatAddTile);
+                FieldInfo fFlash = AccessTools.Field(typeof(MapBox), "flash_effects");
+                if (fFlash != null) _flashEffectsRef = AccessTools.FieldRefAccess<MapBox, PixelFlashEffects>(fFlash);
+                MethodInfo mStartFire = AccessTools.Method(typeof(WorldTile), "startFire", new[] { typeof(bool) });
+                if (mStartFire != null) _startFireDel = (Func<WorldTile, bool, bool>)Delegate.CreateDelegate(typeof(Func<WorldTile, bool, bool>), mStartFire);
+                MethodInfo mChangeLavaTileStr = AccessTools.Method(typeof(WorldBehaviourActionLava), "changeLavaTile", new[] { typeof(WorldTile), typeof(string) });
+                if (mChangeLavaTileStr != null) _changeLavaTileStrDel = (Action<WorldTile, string>)Delegate.CreateDelegate(typeof(Action<WorldTile, string>), mChangeLavaTileStr);
+                MethodInfo mChangeLavaTileType = AccessTools.Method(typeof(WorldBehaviourActionLava), "changeLavaTile", new[] { typeof(WorldTile), typeof(TileType) });
+                if (mChangeLavaTileType != null) _changeLavaTileTypeDel = (Action<WorldTile, TileType>)Delegate.CreateDelegate(typeof(Action<WorldTile, TileType>), mChangeLavaTileType);
+
+                MethodInfo mMoveLava = AccessTools.Method(typeof(WorldBehaviourActionLava), "moveLava", new[] { typeof(WorldTile) });
+                if (mMoveLava != null) h.Patch(mMoveLava, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionLavaMoveLavaPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionLava.moveLava not found");
+
+                // 74. Finder chunk & region free tile search determinism
+                MethodInfo mFindTileInChunk = AccessTools.Method(typeof(Finder), "findTileInChunk", new[] { typeof(WorldTile), typeof(TileFinderType) });
+                if (mFindTileInChunk != null) h.Patch(mFindTileInChunk, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(FinderFindTileInChunkPrefix)));
+                else Log.Warn("lockstep: Finder.findTileInChunk not found");
+
+                // 75. Ocean island boat path & region edge tile navigation determinism
+                MethodInfo mFindTileInWholeIsland = AccessTools.Method(typeof(OceanHelper), "findTileInWholeIsland", new[] { typeof(TileIsland), typeof(WorldTile) });
+                MethodInfo mFindWaterTileInRegion = AccessTools.Method(typeof(OceanHelper), "findWaterTileInRegion", new[] { typeof(MapRegion), typeof(WorldTile) });
+                if (mFindTileInWholeIsland != null) h.Patch(mFindTileInWholeIsland, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(OceanHelperFindTileInWholeIslandPrefix)));
+                else Log.Warn("lockstep: OceanHelper.findTileInWholeIsland not found");
+                if (mFindWaterTileInRegion != null) h.Patch(mFindWaterTileInRegion, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(OceanHelperFindWaterTileInRegionPrefix)));
+                else Log.Warn("lockstep: OceanHelper.findWaterTileInRegion not found");
+
+                // 76. Repulsion & block evacuation tile tie-breaking determinism
+                MethodInfo mMoveAwayFromBlock = AccessTools.Method(typeof(BehMoveAwayFromBlock), "execute", new[] { typeof(Actor) });
+                MethodInfo mGetBestTileToMove = AccessTools.Method(typeof(BehMoveAwayFromBlock), "getBestTileToMove", new[] { typeof(MapRegion), typeof(Actor) });
+                if (mMoveAwayFromBlock != null) h.Patch(mMoveAwayFromBlock, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehMoveAwayFromBlockExecutePrefix)));
+                else Log.Warn("lockstep: BehMoveAwayFromBlock.execute not found");
+                if (mGetBestTileToMove != null) h.Patch(mGetBestTileToMove, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehMoveAwayFromBlockGetBestTileToMovePrefix)));
+                else Log.Warn("lockstep: BehMoveAwayFromBlock.getBestTileToMove not found");
             }
             catch (Exception e)
             {
@@ -6135,6 +6214,515 @@ namespace Coopfall.Lockstep
                     MapAction.terraformMain(erosionList[j], TileLibrary.sand, flashAsset);
                 }
             }
+            return false;
+        }
+
+        // ==========================================
+        // 72. City Migrant Citizen Spawns Determinism
+        // ==========================================
+        private static bool WorldBehaviourActionsUpdateMigrantsPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            if (WorldLawLibrary.world_law_civ_migrants == null || !WorldLawLibrary.world_law_civ_migrants.isEnabled() || World.world.cities == null || World.world.cities.list == null || World.world.cities.list.Count == 0)
+            {
+                return false;
+            }
+
+            _migrantCitiesPool.Clear();
+            List<City> citiesList = World.world.cities.list;
+            for (int i = 0; i < citiesList.Count; i++)
+            {
+                City c = citiesList[i];
+                if (c != null)
+                {
+                    _migrantCitiesPool.Add(c);
+                }
+            }
+            if (_migrantCitiesPool.Count == 0) return false;
+
+            _migrantCitiesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            int pMax = Randy.randomInt(1, _migrantCitiesPool.Count);
+            foreach (City item in _migrantCitiesPool.LoopRandom(pMax))
+            {
+                if (item.isNeutral() || item.getPopulationPeople() > 100 || item.countFoodTotal() < 10)
+                {
+                    continue;
+                }
+                Building buildingOfType = _getBuildingOfTypeMethod != null ? (Building)_getBuildingOfTypeMethod.Invoke(item, new object[] { "type_bonfire", true, false, false, null }) : null;
+                if (buildingOfType == null || buildingOfType.current_tile == null)
+                {
+                    continue;
+                }
+                Subspecies mainSubspecies = item.getMainSubspecies();
+                if (mainSubspecies != null && !mainSubspecies.hasReachedPopulationLimit())
+                {
+                    Kingdom kingdom = _cityKingdomRef != null ? _cityKingdomRef(item) : null;
+                    if (kingdom == null) continue;
+                    ActorAsset actorAsset = mainSubspecies.getActorAsset();
+                    if (actorAsset == null) continue;
+                    int num = Randy.randomInt(1, 4);
+                    for (int i = 0; i < num; i++)
+                    {
+                        Actor actor = World.world.units.spawnNewUnit(actorAsset.id, buildingOfType.current_tile, pSpawnSound: false, pMiracleSpawn: false, 0f, mainSubspecies, pGiveOwnerlessItems: true);
+                        if (actor != null)
+                        {
+                            ActorData aData = _actorDataRef != null ? _actorDataRef(actor) : null;
+                            if (aData != null)
+                            {
+                                aData.age_overgrowth = Randy.randomInt(actorAsset.age_spawn, actorAsset.age_spawn * 2);
+                            }
+                            actor.addTrait("attractive");
+                            actor.addTrait("soft_skin");
+                            actor.setMetasFromCity(item);
+                            kingdom.increaseMigrants();
+                            _setKingdomDel?.Invoke(actor, kingdom);
+                            item.increaseMigrants();
+                            _setCityDel?.Invoke(actor, item);
+                            _addStatusEffectDel?.Invoke(actor, "handsome_migrant", 0f, true);
+                        }
+                    }
+                }
+            }
+            _migrantCitiesPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 73. Lava Flow Direction & Fire Particle Dice Leak Determinism
+        // ==========================================
+        private static bool WorldBehaviourActionLavaMoveLavaPrefix(WorldTile pLavaTile, ref bool __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pLavaTile == null || pLavaTile.Type == null || pLavaTile.neighbours == null)
+            {
+                __result = false;
+                return false;
+            }
+
+            if (Det01x(pLavaTile.tile_id, LockstepClock.Tick, 0x1A84D3) < 0.1f)
+            {
+                GlowParticles gp = _particlesFireRef != null ? _particlesFireRef(World.world) : null;
+                if (gp != null)
+                {
+                    gp.spawn(pLavaTile.posV3);
+                }
+            }
+
+            _lavaNeighboursPool.Clear();
+            WorldTile[] neighbours = pLavaTile.neighbours;
+            for (int i = 0; i < neighbours.Length; i++)
+            {
+                WorldTile nb = neighbours[i];
+                if (nb != null && nb.Type != null)
+                {
+                    _lavaNeighboursPool.Add(nb);
+                }
+            }
+            if (_lavaNeighboursPool.Count == 0)
+            {
+                __result = false;
+                return false;
+            }
+            _lavaNeighboursPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+
+            WorldTile worldTile = null;
+            for (int i = 0; i < _lavaNeighboursPool.Count; i++)
+            {
+                WorldTile item = _lavaNeighboursPool[i];
+                if (!item.Type.lava)
+                {
+                    if (item.isTemporaryFrozen())
+                    {
+                        Heat heat = _heatRef != null ? _heatRef(World.world) : null;
+                        if (heat != null)
+                        {
+                            _heatAddTileDel?.Invoke(heat, item, 15);
+                        }
+                        item.unfreeze(99);
+                    }
+                    else
+                    {
+                        _startFireDel?.Invoke(item, false);
+                    }
+                }
+                if (item.Type.hold_lava || item.Type.lava_level == pLavaTile.Type.lava_level || (item.Type.lava && string.IsNullOrEmpty(item.Type.lava_increase)))
+                {
+                    continue;
+                }
+                if (worldTile == null)
+                {
+                    worldTile = item;
+                }
+                else
+                {
+                    if (worldTile.Type.render_z < item.Type.render_z)
+                    {
+                        continue;
+                    }
+                    if (worldTile.Type.lava)
+                    {
+                        if (item.Type.lava_level < worldTile.Type.lava_level || (item.Type.lava_level == worldTile.Type.lava_level && item.tile_id < worldTile.tile_id))
+                        {
+                            worldTile = item;
+                        }
+                    }
+                    else
+                    {
+                        if (item.Type.render_z < worldTile.Type.render_z || (item.Type.render_z == worldTile.Type.render_z && item.tile_id < worldTile.tile_id))
+                        {
+                            worldTile = item;
+                        }
+                    }
+                }
+            }
+            _lavaNeighboursPool.Clear();
+
+            if (worldTile == null)
+            {
+                __result = false;
+                return false;
+            }
+
+            _changeLavaTileStrDel?.Invoke(pLavaTile, pLavaTile.Type.lava_decrease);
+            if (!worldTile.Type.lava)
+            {
+                _changeLavaTileTypeDel?.Invoke(worldTile, TileLibrary.lava0);
+            }
+            else
+            {
+                _changeLavaTileStrDel?.Invoke(worldTile, pLavaTile.Type.lava_increase);
+            }
+            PixelFlashEffects pfe = _flashEffectsRef != null ? _flashEffectsRef(World.world) : null;
+            if (pfe != null)
+            {
+                pfe.flashPixel(worldTile, 10);
+            }
+            __result = true;
+            return false;
+        }
+
+        // ==========================================
+        // 74. Finder Chunk & Region Free Tile Search Determinism
+        // ==========================================
+        private static bool IsMatchingFinderTile(WorldTile pTile, WorldTile item3, TileFinderType pTileType)
+        {
+            if (item3 == null || item3.Type == null) return false;
+            switch (pTileType)
+            {
+                case TileFinderType.FreeTile:
+                    return item3.isSameIsland(pTile) && !item3.hasBuilding() && item3.Type.ground;
+                case TileFinderType.Sand:
+                    return item3.Type.sand;
+                case TileFinderType.Water:
+                    return !item3.isTargeted() && item3.Type.ocean;
+                case TileFinderType.Grass:
+                    return item3.isSameIsland(pTile) && !item3.isTargeted() && item3.Type.grass && !item3.hasBuilding();
+                case TileFinderType.Dirt:
+                    return item3.isSameIsland(pTile) && !item3.isTargeted() && item3.Type.can_be_farm && !item3.hasBuilding();
+                case TileFinderType.Biome:
+                    return item3.isSameIsland(pTile) && !item3.isTargeted() && item3.Type.is_biome && !item3.hasBuilding();
+                default:
+                    return item3.isSameIsland(pTile);
+            }
+        }
+
+        private static bool FinderFindTileInChunkPrefix(WorldTile pTile, TileFinderType pTileType, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pTile == null || pTile.chunk == null)
+            {
+                __result = null;
+                return false;
+            }
+
+            _finderChunksPool.Clear();
+            if (pTile.chunk != null)
+            {
+                _finderChunksPool.Add(pTile.chunk);
+                if (pTile.chunk.neighbours_all != null)
+                {
+                    for (int i = 0; i < pTile.chunk.neighbours_all.Length; i++)
+                    {
+                        MapChunk nbChunk = pTile.chunk.neighbours_all[i];
+                        if (nbChunk != null) _finderChunksPool.Add(nbChunk);
+                    }
+                }
+            }
+            if (_finderChunksPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _finderChunksPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            for (int c = 0; c < _finderChunksPool.Count; c++)
+            {
+                MapChunk chk = _finderChunksPool[c];
+                if (chk.regions == null || chk.regions.Count == 0) continue;
+
+                _finderRegionsPool.Clear();
+                for (int r = 0; r < chk.regions.Count; r++)
+                {
+                    MapRegion reg = chk.regions[r];
+                    if (reg != null && reg.tiles != null && reg.tiles.Count > 0)
+                    {
+                        if (pTileType == TileFinderType.Water && reg.type != TileLayerType.Ocean) continue;
+                        if ((pTileType == TileFinderType.FreeTile || pTileType == TileFinderType.Grass || pTileType == TileFinderType.Dirt) && reg.type != TileLayerType.Ground) continue;
+                        _finderRegionsPool.Add(reg);
+                    }
+                }
+                if (_finderRegionsPool.Count == 0) continue;
+
+                _finderRegionsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                for (int regIdx = 0; regIdx < _finderRegionsPool.Count; regIdx++)
+                {
+                    MapRegion reg = _finderRegionsPool[regIdx];
+                    _finderTilesPool.Clear();
+                    for (int t = 0; t < reg.tiles.Count; t++)
+                    {
+                        WorldTile item3 = reg.tiles[t];
+                        if (IsMatchingFinderTile(pTile, item3, pTileType))
+                        {
+                            _finderTilesPool.Add(item3);
+                        }
+                    }
+                    if (_finderTilesPool.Count > 0)
+                    {
+                        _finderTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+                        WorldTile chosen = _finderTilesPool.GetRandom();
+                        _finderTilesPool.Clear();
+                        _finderRegionsPool.Clear();
+                        _finderChunksPool.Clear();
+                        __result = chosen;
+                        return false;
+                    }
+                }
+                _finderRegionsPool.Clear();
+            }
+            _finderChunksPool.Clear();
+            __result = null;
+            return false;
+        }
+
+        // ==========================================
+        // 75. Ocean Island Boat Path & Region Edge Tile Navigation Determinism
+        // ==========================================
+        private static WorldTile FindWaterTileInRegionDeterministic(MapRegion pRegion, WorldTile pBoatTile)
+        {
+            if (pRegion == null || pBoatTile == null) return null;
+            List<WorldTile> edgeTiles = pRegion.getEdgeTiles();
+            if (edgeTiles == null || edgeTiles.Count == 0) return null;
+
+            _oceanEdgeTilesPool.Clear();
+            for (int i = 0; i < edgeTiles.Count; i++)
+            {
+                WorldTile item = edgeTiles[i];
+                if (item != null && item.isSameIsland(pBoatTile))
+                {
+                    _oceanEdgeTilesPool.Add(item);
+                }
+            }
+            if (_oceanEdgeTilesPool.Count == 0) return null;
+
+            _oceanEdgeTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            WorldTile chosen = _oceanEdgeTilesPool.GetRandom();
+            _oceanEdgeTilesPool.Clear();
+            return chosen;
+        }
+
+        private static WorldTile FindTileInWholeIslandDeterministic(TileIsland pIslandTarget, WorldTile pTileBoat)
+        {
+            if (pIslandTarget == null || pIslandTarget.regions == null || pTileBoat == null) return null;
+            List<MapRegion> regList = pIslandTarget.regions.getSimpleList();
+            if (regList == null || regList.Count == 0) return null;
+
+            _oceanRegionsPool.Clear();
+            for (int i = 0; i < regList.Count; i++)
+            {
+                MapRegion reg = regList[i];
+                if (reg != null) _oceanRegionsPool.Add(reg);
+            }
+            if (_oceanRegionsPool.Count == 0) return null;
+
+            _oceanRegionsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            WorldTile result = null;
+            int num = 10;
+            float num2 = float.MaxValue;
+            for (int i = 0; i < _oceanRegionsPool.Count; i++)
+            {
+                MapRegion item = _oceanRegionsPool[i];
+                WorldTile worldTile = FindWaterTileInRegionDeterministic(item, pTileBoat);
+                if (worldTile == null) continue;
+
+                float num3 = Toolbox.DistTile(pTileBoat, worldTile);
+                if (num3 < num2 || (num3 == num2 && result != null && worldTile.tile_id < result.tile_id))
+                {
+                    result = worldTile;
+                    num2 = num3;
+                    num--;
+                    if (num <= 0) break;
+                }
+            }
+            _oceanRegionsPool.Clear();
+            return result;
+        }
+
+        private static bool OceanHelperFindWaterTileInRegionPrefix(MapRegion pRegion, WorldTile pBoatTile, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = FindWaterTileInRegionDeterministic(pRegion, pBoatTile);
+            return false;
+        }
+
+        private static bool OceanHelperFindTileInWholeIslandPrefix(TileIsland pIslandTarget, WorldTile pTileBoat, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = FindTileInWholeIslandDeterministic(pIslandTarget, pTileBoat);
+            return false;
+        }
+
+        // ==========================================
+        // 76. Repulsion & Block Evacuation Tile Tie-Breaking Determinism
+        // ==========================================
+        private static bool IsGoodTileRegionForMoveAwayFromBlock(MapRegion pRegion, Actor pActor)
+        {
+            if (pRegion == null || pActor == null) return false;
+            if (pRegion.type == TileLayerType.Ocean && pActor.isDamagedByOcean()) return false;
+            if (pRegion.type == TileLayerType.Lava && pActor.asset != null && pActor.asset.die_in_lava) return false;
+            return true;
+        }
+
+        private static WorldTile GetBestTileToMoveDeterministic(MapRegion pRegion, Actor pActor)
+        {
+            if (pRegion == null || pActor == null || pActor.current_tile == null || pActor.current_tile.region == null || pActor.current_tile.region.island == null)
+            {
+                return null;
+            }
+            List<WorldTile> edgeTiles = pRegion.getEdgeTiles();
+            if (edgeTiles == null || edgeTiles.Count == 0) return null;
+
+            WorldTile current_tile = pActor.current_tile;
+            WorldTile result = null;
+            int num = int.MaxValue;
+            TileIsland island = current_tile.region.island;
+
+            _blockEdgeTilesPool.Clear();
+            for (int i = 0; i < edgeTiles.Count; i++)
+            {
+                WorldTile t = edgeTiles[i];
+                if (t != null) _blockEdgeTilesPool.Add(t);
+            }
+            if (_blockEdgeTilesPool.Count == 0) return null;
+
+            _blockEdgeTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+
+            for (int i = 0; i < _blockEdgeTilesPool.Count; i++)
+            {
+                WorldTile item = _blockEdgeTilesPool[i];
+                int num2 = Toolbox.SquaredDistTile(current_tile, item);
+                if (num2 < num || (num2 == num && result != null && item.tile_id < result.tile_id))
+                {
+                    MapRegion region = item.region;
+                    if (region != null && IsGoodTileRegionForMoveAwayFromBlock(region, pActor) && region.island != null && region.island != island && region.island.getTileCount() > 5)
+                    {
+                        result = item;
+                        num = num2;
+                    }
+                }
+            }
+            _blockEdgeTilesPool.Clear();
+            return result;
+        }
+
+        private static bool BehMoveAwayFromBlockExecutePrefix(BehMoveAwayFromBlock __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.current_tile == null || pActor.current_tile.region == null || pActor.current_tile.region.island == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (pActor.current_tile.region.island.type != TileLayerType.Block)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+
+            WorldTile worldTile = null;
+            int num = int.MaxValue;
+            worldTile = GetBestTileToMoveDeterministic(pActor.current_tile.region, pActor);
+
+            if (worldTile == null && pActor.current_tile.region.neighbours != null)
+            {
+                _blockNeighbourRegionsPool.Clear();
+                List<MapRegion> neighbours = pActor.current_tile.region.neighbours;
+                for (int i = 0; i < neighbours.Count; i++)
+                {
+                    MapRegion reg = neighbours[i];
+                    if (reg != null) _blockNeighbourRegionsPool.Add(reg);
+                }
+                _blockNeighbourRegionsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                for (int i = 0; i < _blockNeighbourRegionsPool.Count; i++)
+                {
+                    MapRegion neighbour = _blockNeighbourRegionsPool[i];
+                    WorldTile bestTileToMove = GetBestTileToMoveDeterministic(neighbour, pActor);
+                    if (bestTileToMove != null)
+                    {
+                        int num2 = Toolbox.SquaredDistTile(pActor.current_tile, bestTileToMove);
+                        if (num2 < num || (num2 == num && worldTile != null && bestTileToMove.tile_id < worldTile.tile_id))
+                        {
+                            worldTile = bestTileToMove;
+                            num = num2;
+                        }
+                    }
+                }
+                _blockNeighbourRegionsPool.Clear();
+            }
+
+            if (worldTile == null && pActor.current_tile.region.island.insideRegionEdges != null)
+            {
+                _blockInsideEdgesPool.Clear();
+                foreach (MapRegion reg in pActor.current_tile.region.island.insideRegionEdges)
+                {
+                    if (reg != null) _blockInsideEdgesPool.Add(reg);
+                }
+                _blockInsideEdgesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                for (int i = 0; i < _blockInsideEdgesPool.Count; i++)
+                {
+                    MapRegion insideRegionEdge = _blockInsideEdgesPool[i];
+                    WorldTile bestTileToMove2 = GetBestTileToMoveDeterministic(insideRegionEdge, pActor);
+                    if (bestTileToMove2 != null)
+                    {
+                        int num3 = Toolbox.SquaredDistTile(pActor.current_tile, bestTileToMove2);
+                        if (num3 < num || (num3 == num && worldTile != null && bestTileToMove2.tile_id < worldTile.tile_id))
+                        {
+                            worldTile = bestTileToMove2;
+                            num = num3;
+                        }
+                    }
+                }
+                _blockInsideEdgesPool.Clear();
+            }
+
+            if (worldTile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        private static bool BehMoveAwayFromBlockGetBestTileToMovePrefix(MapRegion pRegion, Actor pActor, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = GetBestTileToMoveDeterministic(pRegion, pActor);
             return false;
         }
     }

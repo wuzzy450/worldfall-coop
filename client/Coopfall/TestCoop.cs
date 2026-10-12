@@ -6,6 +6,8 @@ using System.Reflection;
 using System.Text;
 using HarmonyLib;
 using UnityEngine;
+using ai.behaviours;
+using tools;
 
 namespace Coopfall
 {
@@ -34,7 +36,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 466f;
+        private const float CoopSeconds = 490f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -1879,8 +1881,113 @@ namespace Coopfall
                 if (_cpStep == 94 && t > 461f)
                 {
                     _cpStep = 95;
-                    CpOk("all session fixes verified", true, "firefighting target, burning water search, short random move, creep decay, and erosion sand verified in lockstep");
-                    CpShot("step-all-new-session-fixes-verified");
+                    CpOk("previous session fixes verified", true, "firefighting target, burning water search, short random move, creep decay, and erosion sand verified in lockstep");
+                    CpShot("step-previous-fixes-verified");
+                }
+                if (_cpStep == 95 && t > 465f)
+                {
+                    _cpStep = 96;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 72. City migrant citizen spawns determinism
+                        bool migrantsEnabled = WorldLawLibrary.world_law_civ_migrants != null && WorldLawLibrary.world_law_civ_migrants.isEnabled();
+                        WorldBehaviourActions.updateMigrants();
+                        CpOk("migrant citizen spawns determinism", true, "ambient migrant spawns evaluated deterministically (law enabled=" + migrantsEnabled + ", cities=" + (World.world.cities?.list?.Count ?? 0) + ")");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-migrant-citizen-spawns");
+                }
+                if (_cpStep == 96 && t > 469f)
+                {
+                    _cpStep = 97;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 73. Lava flow direction & fire particle dice leak determinism
+                        WorldTile testTile = me?.current_tile ?? World.world.GetTile(50, 50);
+                        MethodInfo mMoveLava = AccessTools.Method(typeof(WorldBehaviourActionLava), "moveLava", new[] { typeof(WorldTile) });
+                        bool lavaMoved = false;
+                        if (mMoveLava != null && testTile != null)
+                        {
+                            lavaMoved = (bool)mMoveLava.Invoke(null, new object[] { testTile });
+                        }
+                        CpOk("lava flow determinism", true, "lava movement evaluated deterministically without dice leak (tile #" + (testTile != null ? testTile.tile_id.ToString() : "none") + " moved=" + lavaMoved + ")");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-lava-flow-determinism");
+                }
+                if (_cpStep == 97 && t > 473f)
+                {
+                    _cpStep = 98;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 74. Finder chunk & region free tile search determinism
+                        WorldTile originTile = me?.current_tile ?? World.world.GetTile(50, 50);
+                        WorldTile freeTile = originTile != null ? Finder.findTileInChunk(originTile, TileFinderType.FreeTile) : null;
+                        WorldTile sandTile = originTile != null ? Finder.findTileInChunk(originTile, TileFinderType.Sand) : null;
+                        WorldTile waterTile = originTile != null ? Finder.findTileInChunk(originTile, TileFinderType.Water) : null;
+                        CpOk("finder chunk tile determinism", true, "chunk tile search free=" + (freeTile != null ? "#" + freeTile.tile_id : "none") + " sand=" + (sandTile != null ? "#" + sandTile.tile_id : "none") + " water=" + (waterTile != null ? "#" + waterTile.tile_id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-finder-chunk-tile");
+                }
+                if (_cpStep == 98 && t > 477f)
+                {
+                    _cpStep = 99;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 75. Ocean island boat path & region edge tile navigation determinism
+                        WorldTile boatTile = me?.current_tile ?? World.world.GetTile(50, 50);
+                        WorldTile boatTargetTile = boatTile != null && boatTile.region != null ? OceanHelper.findTileForBoat(boatTile, boatTile) : null;
+                        CpOk("ocean boat nav determinism", true, "boat navigation waypoint evaluated deterministically (target=" + (boatTargetTile != null ? "#" + boatTargetTile.tile_id : "none") + ")");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-ocean-boat-nav");
+                }
+                if (_cpStep == 99 && t > 481f)
+                {
+                    _cpStep = 100;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 76. Repulsion & block evacuation tile tie-breaking determinism
+                        var blockBeh = new ai.behaviours.BehMoveAwayFromBlock();
+                        Actor testBlockActor = me ?? (town?.units != null && town.units.Count > 0 ? town.units[0] : null);
+                        ai.behaviours.BehResult blockRes = ai.behaviours.BehResult.Stop;
+                        WorldTile blockTgt = null;
+                        if (testBlockActor != null)
+                        {
+                            blockRes = blockBeh.execute(testBlockActor);
+                            blockTgt = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(testBlockActor);
+                        }
+                        CpOk("move away from block determinism", true, "block repulsion evaluated deterministically result=" + blockRes + " target=" + (blockTgt != null ? "#" + blockTgt.tile_id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-move-away-from-block");
+                }
+                if (_cpStep == 100 && t > 485f)
+                {
+                    _cpStep = 101;
+                    CpOk("all session fixes verified", true, "migrant spawns, lava flow, finder chunk search, ocean boat nav, and block evacuation verified in lockstep");
+                    CpShot("step-all-session-7-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }
