@@ -89,6 +89,11 @@ namespace Coopfall.Lockstep
     /// 74. Finder.findTileInChunk: chunk regions and matching tiles sorted deterministically by region.id and tile_id.
     /// 75. OceanHelper.findTileInWholeIsland & findWaterTileInRegion: island regions sorted by region.id and edge tiles sorted by tile_id.
     /// 76. BehMoveAwayFromBlock.execute & getBestTileToMove: neighbour regions sorted by id and edge tiles sorted by tile_id with stable tie-breaking.
+    /// 77. BehTryNewPlot.fillRandomPlots: candidate basic plots and rites sorted by ID before deterministic Fisher-Yates shuffle.
+    /// 78. BehFindBuilding.findBuildingType: chunks and candidate buildings sorted by ID with stable distance and ID tie-breaking.
+    /// 79. Chromosome.generateAmplifiers & shuffleGenes: deterministic amplifier count and Fisher-Yates shuffle seeded by tick and hash.
+    /// 80. MetaObjectWithTraits.fillTraitAssetsFromStringList: candidate traits sorted alphabetically for deterministic opposite conflict resolution.
+    /// 81. NameGeneratorReplacers.replaceEnemyKing & replaceEnemyKingdom: candidate enemy kingdoms sorted by ID before selecting monarch/kingdom name.
     /// </summary>
     public static class SimulationInTick
     {
@@ -147,6 +152,13 @@ namespace Coopfall.Lockstep
         private static readonly List<MapRegion> _blockNeighbourRegionsPool = new List<MapRegion>();
         private static readonly List<MapRegion> _blockInsideEdgesPool = new List<MapRegion>();
         private static readonly List<WorldTile> _blockEdgeTilesPool = new List<WorldTile>();
+        private static readonly List<MapChunk> _findBuildingChunksPool = new List<MapChunk>();
+        private static readonly List<Building> _findBuildingsCandidatesPool = new List<Building>();
+        private static AccessTools.FieldRef<BehFindBuilding, bool> _findBuildingOnlyNonTargetedRef;
+        private static AccessTools.FieldRef<BehFindBuilding, bool> _findBuildingOnlyWithResourcesRef;
+        private static AccessTools.FieldRef<Chromosome, List<int>> _lociAmplifiersRef;
+        private static AccessTools.FieldRef<Chromosome, List<int>> _lociEmptyRef;
+        private static readonly List<Kingdom> _enemyKingdomsPool = new List<Kingdom>();
 
         private static Action<Actor, Kingdom> _setKingdomDel;
         private static Action<Actor, City> _setCityDel;
@@ -970,6 +982,48 @@ namespace Coopfall.Lockstep
                 else Log.Warn("lockstep: BehMoveAwayFromBlock.execute not found");
                 if (mGetBestTileToMove != null) h.Patch(mGetBestTileToMove, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehMoveAwayFromBlockGetBestTileToMovePrefix)));
                 else Log.Warn("lockstep: BehMoveAwayFromBlock.getBestTileToMove not found");
+
+                // 77. AI Plot Selection & Rites Candidate Shuffle Determinism
+                MethodInfo mFillRandomPlots = AccessTools.Method(typeof(BehTryNewPlot), "fillRandomPlots", new[] { typeof(Actor), typeof(ListPool<PlotAsset>) });
+                if (mFillRandomPlots != null) h.Patch(mFillRandomPlots, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehTryNewPlotFillRandomPlotsPrefix)));
+                else Log.Warn("lockstep: BehTryNewPlot.fillRandomPlots not found");
+
+                // 78. AI Building Target Search Determinism
+                FieldInfo fNonTargeted = AccessTools.Field(typeof(BehFindBuilding), "_only_non_targeted");
+                FieldInfo fWithRes = AccessTools.Field(typeof(BehFindBuilding), "_only_with_resources");
+                if (fNonTargeted != null) _findBuildingOnlyNonTargetedRef = AccessTools.FieldRefAccess<BehFindBuilding, bool>(fNonTargeted);
+                if (fWithRes != null) _findBuildingOnlyWithResourcesRef = AccessTools.FieldRefAccess<BehFindBuilding, bool>(fWithRes);
+                MethodInfo mFindBuildingType = AccessTools.Method(typeof(BehFindBuilding), "findBuildingType", new[] { typeof(Actor), typeof(string) });
+                if (mFindBuildingType != null) h.Patch(mFindBuildingType, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindBuildingFindBuildingTypePrefix)));
+                else Log.Warn("lockstep: BehFindBuilding.findBuildingType not found");
+
+                // 79. Subspecies Chromosome Amplifier & Gene Shuffle Determinism
+                FieldInfo fLociAmp = AccessTools.Field(typeof(Chromosome), "_loci_amplifiers");
+                FieldInfo fLociEmpty = AccessTools.Field(typeof(Chromosome), "_loci_empty");
+                if (fLociAmp != null) _lociAmplifiersRef = AccessTools.FieldRefAccess<Chromosome, List<int>>(fLociAmp);
+                if (fLociEmpty != null) _lociEmptyRef = AccessTools.FieldRefAccess<Chromosome, List<int>>(fLociEmpty);
+                MethodInfo mGenAmplifiers = AccessTools.Method(typeof(Chromosome), "generateAmplifiers", new[] { typeof(string) });
+                if (mGenAmplifiers != null) h.Patch(mGenAmplifiers, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ChromosomeGenerateAmplifiersPrefix)));
+                else Log.Warn("lockstep: Chromosome.generateAmplifiers not found");
+                MethodInfo mShuffleGenes = AccessTools.Method(typeof(Chromosome), "shuffleGenes", Type.EmptyTypes);
+                if (mShuffleGenes != null) h.Patch(mShuffleGenes, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ChromosomeShuffleGenesPrefix)));
+                else Log.Warn("lockstep: Chromosome.shuffleGenes not found");
+
+                // 80. Meta Object Trait Loading & Opposite Conflict Resolution Determinism
+                PatchMetaTraits<Clan, ClanData, ClanTrait>(h);
+                PatchMetaTraits<Culture, CultureData, CultureTrait>(h);
+                PatchMetaTraits<Kingdom, KingdomData, KingdomTrait>(h);
+                PatchMetaTraits<Language, LanguageData, LanguageTrait>(h);
+                PatchMetaTraits<Religion, ReligionData, ReligionTrait>(h);
+                PatchMetaTraits<Subspecies, SubspeciesData, SubspeciesTrait>(h);
+
+                // 81. Enemy King & Kingdom Name Replacer Determinism
+                MethodInfo mReplEnemyKing = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceEnemyKing", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                MethodInfo mReplEnemyKingdom = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceEnemyKingdom", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
+                if (mReplEnemyKing != null) h.Patch(mReplEnemyKing, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceEnemyKingPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceEnemyKing not found");
+                if (mReplEnemyKingdom != null) h.Patch(mReplEnemyKingdom, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceEnemyKingdomPrefix)));
+                else Log.Warn("lockstep: NameGeneratorReplacers.replaceEnemyKingdom not found");
             }
             catch (Exception e)
             {
@@ -6723,6 +6777,385 @@ namespace Coopfall.Lockstep
         {
             if (!LockstepClock.Active) return true;
             __result = GetBestTileToMoveDeterministic(pRegion, pActor);
+            return false;
+        }
+
+        // ==========================================
+        // 77. AI Plot Selection & Rites Candidate Shuffle Determinism
+        // ==========================================
+        private static void FillPlotsToTryDeterministic(Actor pActor, List<PlotAsset> pPlotList, ListPool<PlotAsset> pPotPossiblePlots)
+        {
+            if (pPlotList == null) return;
+            for (int i = 0; i < pPlotList.Count; i++)
+            {
+                PlotAsset plotAsset = pPlotList[i];
+                if (plotAsset != null && plotAsset.checkIsPossible(pActor))
+                {
+                    pPotPossiblePlots.AddTimes(plotAsset.pot_rate, plotAsset);
+                }
+            }
+        }
+
+        private static bool BehTryNewPlotFillRandomPlotsPrefix(BehTryNewPlot __instance, Actor pActor, ListPool<PlotAsset> pPotPlots)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pPotPlots == null) return false;
+
+            pPotPlots.Clear();
+            FillPlotsToTryDeterministic(pActor, AssetManager.plots_library.basic_plots, pPotPlots);
+            if (pActor.hasReligion() && WorldLawLibrary.world_law_rites.isEnabled() && pActor.religion != null && pActor.religion.possible_rites != null)
+            {
+                FillPlotsToTryDeterministic(pActor, pActor.religion.possible_rites, pPotPlots);
+            }
+            if (pPotPlots.Count > 1)
+            {
+                pPotPlots.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+                int count = pPotPlots.Count;
+                for (int i = 0; i < count; i++)
+                {
+                    float r = Det01x(pActor.id, i, 0x5107 ^ (int)LockstepClock.Tick);
+                    int j = i + (int)(r * (count - i));
+                    if (j >= count) j = count - 1;
+                    PlotAsset temp = pPotPlots[i];
+                    pPotPlots[i] = pPotPlots[j];
+                    pPotPlots[j] = temp;
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 78. AI Building Target Search Determinism
+        // ==========================================
+        private static bool BehFindBuildingFindBuildingTypePrefix(BehFindBuilding __instance, Actor pActor, string pType, ref Building __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.current_tile == null || pActor.current_tile.chunk == null)
+            {
+                __result = null;
+                return false;
+            }
+            bool onlyNonTargeted = _findBuildingOnlyNonTargetedRef != null && _findBuildingOnlyNonTargetedRef(__instance);
+            bool onlyWithResources = _findBuildingOnlyWithResourcesRef != null && _findBuildingOnlyWithResourcesRef(__instance);
+
+            _findBuildingChunksPool.Clear();
+            if (pActor.current_tile.chunk != null)
+            {
+                _findBuildingChunksPool.Add(pActor.current_tile.chunk);
+                if (pActor.current_tile.chunk.neighbours_all != null)
+                {
+                    for (int i = 0; i < pActor.current_tile.chunk.neighbours_all.Length; i++)
+                    {
+                        MapChunk nbChunk = pActor.current_tile.chunk.neighbours_all[i];
+                        if (nbChunk != null) _findBuildingChunksPool.Add(nbChunk);
+                    }
+                }
+            }
+            if (_findBuildingChunksPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _findBuildingChunksPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            Building fallbackResult = null;
+            Building sameIslandResult = null;
+            int minSameIslandDist = int.MaxValue;
+
+            for (int c = 0; c < _findBuildingChunksPool.Count; c++)
+            {
+                MapChunk chunk = _findBuildingChunksPool[c];
+                if (chunk.objects == null || chunk.objects.buildings_all == null || chunk.objects.buildings_all.Count == 0) continue;
+
+                _findBuildingsCandidatesPool.Clear();
+                List<Building> bList = chunk.objects.buildings_all;
+                for (int b = 0; b < bList.Count; b++)
+                {
+                    Building item2 = bList[b];
+                    if (item2 == null || !item2.isAlive() || !item2.isUsable()) continue;
+                    BuildingAsset bAsset = _buildingAssetRef != null ? _buildingAssetRef(item2) : null;
+                    if (bAsset == null || bAsset.type != pType) continue;
+                    if (onlyWithResources && !item2.hasResourcesToCollect()) continue;
+                    if (onlyNonTargeted && item2.current_tile != null && item2.current_tile.isTargeted()) continue;
+                    _findBuildingsCandidatesPool.Add(item2);
+                }
+                if (_findBuildingsCandidatesPool.Count == 0) continue;
+
+                _findBuildingsCandidatesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+                for (int b = 0; b < _findBuildingsCandidatesPool.Count; b++)
+                {
+                    Building candidate = _findBuildingsCandidatesPool[b];
+                    if (candidate.current_tile != null && candidate.current_tile.isSameIsland(pActor.current_tile))
+                    {
+                        int dist = Toolbox.SquaredDistTile(pActor.current_tile, candidate.current_tile);
+                        if (sameIslandResult == null || dist < minSameIslandDist || (dist == minSameIslandDist && candidate.id < sameIslandResult.id))
+                        {
+                            sameIslandResult = candidate;
+                            minSameIslandDist = dist;
+                        }
+                    }
+                    else if (sameIslandResult == null && (fallbackResult == null || candidate.id < fallbackResult.id))
+                    {
+                        fallbackResult = candidate;
+                    }
+                }
+            }
+            _findBuildingsCandidatesPool.Clear();
+            _findBuildingChunksPool.Clear();
+
+            __result = sameIslandResult != null ? sameIslandResult : fallbackResult;
+            return false;
+        }
+
+        // ==========================================
+        // 79. Subspecies Chromosome Amplifier & Gene Shuffle Determinism
+        // ==========================================
+        private static bool ChromosomeGenerateAmplifiersPrefix(Chromosome __instance, string pType)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || string.IsNullOrEmpty(pType)) return false;
+
+            ChromosomeTypeAsset chromosomeTypeAsset = AssetManager.chromosome_type_library.get(pType);
+            if (chromosomeTypeAsset == null) return false;
+
+            List<int> lociAmp = _lociAmplifiersRef != null ? _lociAmplifiersRef(__instance) : null;
+            List<int> lociEmpty = _lociEmptyRef != null ? _lociEmptyRef(__instance) : null;
+            if (lociAmp == null || lociEmpty == null) return false;
+
+            lociAmp.Clear();
+            lociEmpty.Clear();
+
+            using ListPool<int> listPool = new ListPool<int>();
+            for (int i = 0; i < chromosomeTypeAsset.amount_loci; i++)
+            {
+                listPool.Add(i);
+            }
+
+            int typeHash = pType.GetHashCode();
+            int count = listPool.Count;
+            for (int i = 0; i < count; i++)
+            {
+                float r = Det01x(LockstepClock.Tick, i, 0xCAFE ^ typeHash);
+                int j = i + (int)(r * (count - i));
+                if (j >= count) j = count - 1;
+                int temp = listPool[i];
+                listPool[i] = listPool[j];
+                listPool[j] = temp;
+            }
+
+            int minAmp = chromosomeTypeAsset.amount_loci_min_amplifier;
+            int maxAmp = chromosomeTypeAsset.amount_loci_max_amplifier;
+            int minEmpty = chromosomeTypeAsset.amount_loci_min_empty;
+            int maxEmpty = chromosomeTypeAsset.amount_loci_max_empty;
+
+            int ampSpan = maxAmp - minAmp + 1;
+            int emptySpan = maxEmpty - minEmpty + 1;
+            int num = ampSpan > 0 ? minAmp + (int)(Det01x(LockstepClock.Tick, 1, 0xA1B2 ^ typeHash) * ampSpan) : minAmp;
+            if (num > maxAmp) num = maxAmp;
+            int num2 = emptySpan > 0 ? minEmpty + (int)(Det01x(LockstepClock.Tick, 2, 0xB2C3 ^ typeHash) * emptySpan) : minEmpty;
+            if (num2 > maxEmpty) num2 = maxEmpty;
+
+            for (int j = 0; j < num && listPool.Count > 0; j++)
+            {
+                lociAmp.Add(listPool.Pop());
+            }
+            for (int k = 0; k < num2 && listPool.Count > 0; k++)
+            {
+                lociEmpty.Add(listPool.Pop());
+            }
+
+            return false;
+        }
+
+        private static bool ChromosomeShuffleGenesPrefix(Chromosome __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || __instance.genes == null || __instance.genes.Count == 0) return false;
+
+            GeneAsset gene_for_generation = GeneLibrary.gene_for_generation;
+            using ListPool<GeneAsset> listPool = new ListPool<GeneAsset>();
+            for (int i = 0; i < __instance.genes.Count; i++)
+            {
+                GeneAsset geneAsset = __instance.genes[i];
+                if (geneAsset != null && !geneAsset.is_empty)
+                {
+                    listPool.Add(geneAsset);
+                    __instance.genes[i] = gene_for_generation;
+                }
+            }
+            if (listPool.Count > 1)
+            {
+                listPool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+                int count = listPool.Count;
+                int typeHash = __instance.chromosome_type != null ? __instance.chromosome_type.GetHashCode() : 0;
+                for (int i = 0; i < count; i++)
+                {
+                    float r = Det01x(LockstepClock.Tick, i, 0x6E4E ^ typeHash);
+                    int j = i + (int)(r * (count - i));
+                    if (j >= count) j = count - 1;
+                    GeneAsset temp = listPool[i];
+                    listPool[i] = listPool[j];
+                    listPool[j] = temp;
+                }
+            }
+            for (int j = 0; j < __instance.genes.Count; j++)
+            {
+                if (listPool.Count == 0) break;
+                if (__instance.genes[j] != null && __instance.genes[j].for_generation)
+                {
+                    __instance.genes[j] = listPool.Pop();
+                }
+            }
+            __instance.setDirty();
+            return false;
+        }
+
+        // ==========================================
+        // 80. Meta Object Trait Loading & Opposite Conflict Resolution Determinism
+        // ==========================================
+        private static class MetaTraitHelper<TData, TBaseTrait>
+            where TData : MetaObjectData
+            where TBaseTrait : BaseTrait<TBaseTrait>
+        {
+            private static readonly AccessTools.FieldRef<MetaObjectWithTraits<TData, TBaseTrait>, HashSet<TBaseTrait>> _traitsRef =
+                AccessTools.FieldRefAccess<MetaObjectWithTraits<TData, TBaseTrait>, HashSet<TBaseTrait>>("_traits");
+            private static readonly MethodInfo _hasOppositeMethod =
+                AccessTools.Method(typeof(MetaObjectWithTraits<TData, TBaseTrait>), "hasOppositeTrait", new[] { typeof(TBaseTrait) });
+            private static readonly MethodInfo _recalcStatsMethod =
+                AccessTools.Method(typeof(MetaObjectWithTraits<TData, TBaseTrait>), "recalcBaseStats");
+            private static readonly PropertyInfo _traitLibProp =
+                AccessTools.Property(typeof(MetaObjectWithTraits<TData, TBaseTrait>), "trait_library");
+
+            public static bool FillTraitAssetsPrefix(MetaObjectWithTraits<TData, TBaseTrait> __instance, List<string> pList)
+            {
+                if (!LockstepClock.Active) return true;
+                if (__instance == null || pList == null || pList.Count == 0) return false;
+
+                List<string> sorted = new List<string>(pList);
+                sorted.Sort(StringComparer.Ordinal);
+
+                AssetLibrary<TBaseTrait> lib = _traitLibProp != null ? _traitLibProp.GetValue(__instance, null) as AssetLibrary<TBaseTrait> : null;
+                if (lib == null) return true;
+
+                HashSet<TBaseTrait> traits = _traitsRef != null ? _traitsRef(__instance) : null;
+                if (traits == null) return true;
+
+                object[] args = new object[1];
+                for (int i = 0; i < sorted.Count; i++)
+                {
+                    string traitId = sorted[i];
+                    TBaseTrait val = lib.get(traitId);
+                    if (val != null)
+                    {
+                        args[0] = val;
+                        bool hasOpposite = _hasOppositeMethod != null && (bool)_hasOppositeMethod.Invoke(__instance, args);
+                        if (!hasOpposite)
+                        {
+                            traits.Add(val);
+                        }
+                    }
+                }
+                if (_recalcStatsMethod != null) _recalcStatsMethod.Invoke(__instance, null);
+                return false;
+            }
+        }
+
+        private static void PatchMetaTraits<TDerived, TData, TBaseTrait>(Harmony h)
+            where TDerived : MetaObjectWithTraits<TData, TBaseTrait>
+            where TData : MetaObjectData
+            where TBaseTrait : BaseTrait<TBaseTrait>
+        {
+            MethodInfo target = AccessTools.Method(typeof(TDerived).BaseType, "fillTraitAssetsFromStringList", new[] { typeof(List<string>) });
+            MethodInfo prefix = AccessTools.Method(typeof(MetaTraitHelper<TData, TBaseTrait>), nameof(MetaTraitHelper<TData, TBaseTrait>.FillTraitAssetsPrefix));
+            if (target != null && prefix != null)
+            {
+                h.Patch(target, prefix: new HarmonyMethod(prefix));
+            }
+            else
+            {
+                Log.Warn($"lockstep: fillTraitAssetsFromStringList for {typeof(TDerived).Name} not found");
+            }
+        }
+
+        // ==========================================
+        // 81. Enemy King & Kingdom Name Replacer Determinism
+        // ==========================================
+        private static bool NameGeneratorReplacersReplaceEnemyKingPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$king$") || pActor == null || !pActor.hasKingdom() || pActor.kingdom == null)
+            {
+                pName = "";
+                return false;
+            }
+            using ListPool<Kingdom> list = pActor.kingdom.getEnemiesKingdoms();
+            if (list == null || list.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _enemyKingdomsPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Kingdom k = list[i];
+                if (k != null) _enemyKingdomsPool.Add(k);
+            }
+            _enemyKingdomsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            for (int i = 0; i < _enemyKingdomsPool.Count; i++)
+            {
+                Kingdom item = _enemyKingdomsPool[i];
+                if (item.hasKing() && item.king != null && Toolbox.isFirstLatin(item.king.getName()))
+                {
+                    pName = pName.Replace("$king$", "King " + item.king.getName());
+                    _enemyKingdomsPool.Clear();
+                    return false;
+                }
+            }
+            _enemyKingdomsPool.Clear();
+            pName = "";
+            return false;
+        }
+
+        private static bool NameGeneratorReplacersReplaceEnemyKingdomPrefix(ref string pName, Actor pActor)
+        {
+            if (!LockstepClock.Active) return true;
+            if (string.IsNullOrEmpty(pName) || !pName.Contains("$kingdom$"))
+            {
+                return false;
+            }
+            if (pActor == null || !pActor.hasKingdom() || pActor.kingdom == null)
+            {
+                pName = "";
+                return false;
+            }
+            using ListPool<Kingdom> list = pActor.kingdom.getEnemiesKingdoms();
+            if (list == null || list.Count == 0)
+            {
+                pName = "";
+                return false;
+            }
+            _enemyKingdomsPool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Kingdom k = list[i];
+                if (k != null) _enemyKingdomsPool.Add(k);
+            }
+            _enemyKingdomsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            for (int i = 0; i < _enemyKingdomsPool.Count; i++)
+            {
+                Kingdom item = _enemyKingdomsPool[i];
+                if (Toolbox.isFirstLatin(item.name))
+                {
+                    pName = pName.Replace("$kingdom$", item.name);
+                    _enemyKingdomsPool.Clear();
+                    return false;
+                }
+            }
+            _enemyKingdomsPool.Clear();
+            pName = "";
             return false;
         }
     }

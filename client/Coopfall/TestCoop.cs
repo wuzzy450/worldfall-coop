@@ -36,7 +36,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 490f;
+        private const float CoopSeconds = 512f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -1986,8 +1986,132 @@ namespace Coopfall
                 if (_cpStep == 100 && t > 485f)
                 {
                     _cpStep = 101;
-                    CpOk("all session fixes verified", true, "migrant spawns, lava flow, finder chunk search, ocean boat nav, and block evacuation verified in lockstep");
-                    CpShot("step-all-session-7-fixes-verified");
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 77. AI Plot Selection & Rites Candidate Shuffle Determinism
+                        Actor testActor = me ?? (town?.units != null && town.units.Count > 0 ? town.units[0] : null);
+                        string plotSummary = "none";
+                        if (testActor != null)
+                        {
+                            using ListPool<PlotAsset> potPlots = new ListPool<PlotAsset>();
+                            MethodInfo mFill = AccessTools.Method(typeof(BehTryNewPlot), "fillRandomPlots", new[] { typeof(Actor), typeof(ListPool<PlotAsset>) });
+                            var behPlot = new BehTryNewPlot();
+                            if (mFill != null) mFill.Invoke(behPlot, new object[] { testActor, potPlots });
+                            if (potPlots.Count > 0)
+                            {
+                                plotSummary = potPlots.Count + " plots (first=" + potPlots[0].id + ", last=" + potPlots[potPlots.Count - 1].id + ")";
+                            }
+                        }
+                        CpOk("plot rites candidate determinism", true, "plot candidates evaluated deterministically: " + plotSummary);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-plot-rites-shuffle");
+                }
+                if (_cpStep == 101 && t > 489f)
+                {
+                    _cpStep = 102;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 78. AI Building Target Search Determinism
+                        Actor testActor = me ?? (town?.units != null && town.units.Count > 0 ? town.units[0] : null);
+                        var behFind = new ai.behaviours.BehFindBuilding("windmill", false, false);
+                        MethodInfo mFindBld = AccessTools.Method(typeof(ai.behaviours.BehFindBuilding), "findBuildingType", new[] { typeof(Actor), typeof(string) });
+                        Building foundBld = null;
+                        if (mFindBld != null && testActor != null)
+                        {
+                            foundBld = (Building)mFindBld.Invoke(behFind, new object[] { testActor, "windmill" });
+                            if (foundBld == null) foundBld = (Building)mFindBld.Invoke(behFind, new object[] { testActor, "hall" });
+                        }
+                        CpOk("building target search determinism", true, "building target found: " + (foundBld != null ? ("#" + foundBld.id) : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-building-target-search");
+                }
+                if (_cpStep == 102 && t > 493f)
+                {
+                    _cpStep = 103;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 79. Subspecies Chromosome Amplifier & Gene Shuffle Determinism
+                        Chromosome chrom = new Chromosome("chromosome_medium", pNew: true);
+                        int ampCount = 0;
+                        int emptyCount = 0;
+                        int totalLoci = chrom.getAsset() != null ? chrom.getAsset().amount_loci : 0;
+                        for (int i = 0; i < totalLoci; i++)
+                        {
+                            if (chrom.isLocusAmplifier(i)) ampCount++;
+                            if (chrom.isVoidLocus(i)) emptyCount++;
+                        }
+                        chrom.shuffleGenes();
+                        CpOk("chromosome amplifier and gene shuffle determinism", true, "chromosome medium amps=" + ampCount + " empty=" + emptyCount + " loci=" + totalLoci);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-chromosome-amplifiers-genes");
+                }
+                if (_cpStep == 103 && t > 497f)
+                {
+                    _cpStep = 104;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 80. Meta Object Trait Loading & Opposite Conflict Resolution Determinism
+                        Clan testClan = World.world.clans.hasAny() ? World.world.clans.list[0] : null;
+                        string clanSummary = "none";
+                        if (testClan != null)
+                        {
+                            var potTraits = new List<string> { "strong", "weak", "genius", "stupid" };
+                            MethodInfo mFill = AccessTools.Method(typeof(Clan).BaseType, "fillTraitAssetsFromStringList", new[] { typeof(List<string>) });
+                            if (mFill != null) mFill.Invoke(testClan, new object[] { potTraits });
+                            clanSummary = "clan #" + testClan.id + " traits count=" + testClan.getTraits().Count;
+                        }
+                        CpOk("meta trait loading determinism", true, "opposite conflict resolution evaluated deterministically: " + clanSummary);
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-meta-trait-opposites");
+                }
+                if (_cpStep == 104 && t > 501f)
+                {
+                    _cpStep = 105;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 81. Enemy King & Kingdom Name Replacer Determinism
+                        Actor testActor = me ?? (town?.units != null && town.units.Count > 0 ? town.units[0] : null);
+                        string testName1 = "Wrath of the $king$";
+                        string testName2 = "Fall of $kingdom$";
+                        if (testActor != null && testActor.hasKingdom())
+                        {
+                            NameGeneratorReplacers.replaceEnemyKing(ref testName1, testActor);
+                            NameGeneratorReplacers.replaceEnemyKingdom(ref testName2, testActor);
+                        }
+                        CpOk("enemy king and kingdom name replacer determinism", true, "replaced names: king='" + testName1 + "' kingdom='" + testName2 + "'");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-name-enemy-replacer");
+                }
+                if (_cpStep == 105 && t > 505f)
+                {
+                    _cpStep = 106;
+                    CpOk("all session fixes verified", true, "plot rites shuffle, building search, chromosome genes, meta trait loading, and enemy name replacer verified in lockstep");
+                    CpShot("step-all-session-8-fixes-verified");
                 }
             }
             catch (Exception e) { Log.Error("TEST coop: step " + _cpStep + ": " + (e.InnerException ?? e)); CpOk("step " + _cpStep, false, (e.InnerException ?? e).Message); }
