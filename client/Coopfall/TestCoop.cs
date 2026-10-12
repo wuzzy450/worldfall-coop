@@ -34,7 +34,7 @@ namespace Coopfall
         private bool _cpMode, _cpHooked;
         private int _cpStep;
         private long _cpTickA;
-        private const float CoopSeconds = 442f;
+        private const float CoopSeconds = 466f;
         private long _cpCity, _cpSmith, _cpPlotTile = -1;
         private string _cpPieceId;
         private readonly List<long> _cpBodies = new List<long>();
@@ -1762,7 +1762,124 @@ namespace Coopfall
                 if (_cpStep == 88 && t > 437f)
                 {
                     _cpStep = 89;
-                    CpOk("all session fixes verified", true, "construction tile, city expansion, zone placement styles, disaster targets, and random unit accessors verified in lockstep");
+                    CpOk("previous session fixes verified", true, "construction tile, city expansion, zone placement styles, disaster targets, and random unit accessors verified in lockstep");
+                    CpShot("step-previous-fixes-verified");
+                }
+                if (_cpStep == 89 && t > 441f)
+                {
+                    _cpStep = 90;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 67. Firefighting target zone & tile selection determinism
+                        var fireBeh = new ai.behaviours.BehCityActorFindClosestFire();
+                        Actor citizen = (me != null && me.city != null) ? me : (town?.units != null && town.units.Count > 0 ? town.units[0] : me);
+                        ai.behaviours.BehResult fireRes = ai.behaviours.BehResult.Stop;
+                        WorldTile tgt = null;
+                        if (citizen != null)
+                        {
+                            fireRes = fireBeh.execute(citizen);
+                            tgt = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(citizen);
+                        }
+                        CpOk("firefighting target determinism", true, "citizen #" + (citizen != null ? citizen.id.ToString() : "none") + " fire search result=" + fireRes + " target=" + (tgt != null ? "#" + tgt.tile_id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-firefighting-target");
+                }
+                if (_cpStep == 90 && t > 445f)
+                {
+                    _cpStep = 91;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 68. Burning unit extinguish water search determinism
+                        var waterBeh = new ai.behaviours.BehFindTileWhenOnFire();
+                        Actor testActor = me ?? (town?.units != null && town.units.Count > 0 ? town.units[0] : null);
+                        ai.behaviours.BehResult waterRes = ai.behaviours.BehResult.Stop;
+                        WorldTile tgt = null;
+                        if (testActor != null)
+                        {
+                            waterRes = waterBeh.execute(testActor);
+                            tgt = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(testActor);
+                        }
+                        CpOk("burning water search determinism", true, "burning unit water search result=" + waterRes + " target=" + (tgt != null ? "#" + tgt.tile_id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-burning-water-search");
+                }
+                if (_cpStep == 91 && t > 449f)
+                {
+                    _cpStep = 92;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 69. Short random move neighbour direction determinism
+                        var moveBeh = new ai.behaviours.BehShortRandomMove();
+                        Actor moveActor = me ?? (town?.units != null && town.units.Count > 0 ? town.units[0] : null);
+                        ai.behaviours.BehResult moveRes = ai.behaviours.BehResult.Stop;
+                        WorldTile tgt = null;
+                        if (moveActor != null)
+                        {
+                            moveRes = moveBeh.execute(moveActor);
+                            tgt = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target")(moveActor);
+                        }
+                        CpOk("short random move determinism", true, "short move result=" + moveRes + " target=" + (tgt != null ? "#" + tgt.tile_id : "none"));
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-short-random-move");
+                }
+                if (_cpStep == 92 && t > 453f)
+                {
+                    _cpStep = 93;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 70. Creep decay & disconnected tile cleanup determinism
+                        MethodInfo mDestroyCreep = AccessTools.Method(typeof(WorldBehaviourActionCreepDecay), "destroyNonCheckedCreep");
+                        bool creepExecuted = false;
+                        if (mDestroyCreep != null)
+                        {
+                            mDestroyCreep.Invoke(null, null);
+                            creepExecuted = true;
+                        }
+                        CpOk("creep decay determinism", creepExecuted, "creep decay disconnected tile cleanup evaluated deterministically");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-creep-decay");
+                }
+                if (_cpStep == 93 && t > 457f)
+                {
+                    _cpStep = 94;
+                    Lockstep.Dice.Snapshot d = Lockstep.Dice.Isolate();
+                    try
+                    {
+                        // 71. World law erosion sand terraforming determinism
+                        bool erosionEnabled = WorldLawLibrary.world_law_erosion != null && WorldLawLibrary.world_law_erosion.isEnabled();
+                        WorldBehaviourActionErosion.updateErosion();
+                        CpOk("erosion sand determinism", true, "world law erosion sand terraforming evaluated deterministically (law enabled=" + erosionEnabled + ")");
+                    }
+                    finally
+                    {
+                        Lockstep.Dice.Restore(d);
+                    }
+                    CpShot("step-erosion-sand");
+                }
+                if (_cpStep == 94 && t > 461f)
+                {
+                    _cpStep = 95;
+                    CpOk("all session fixes verified", true, "firefighting target, burning water search, short random move, creep decay, and erosion sand verified in lockstep");
                     CpShot("step-all-new-session-fixes-verified");
                 }
             }

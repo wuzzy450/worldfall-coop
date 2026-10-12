@@ -79,6 +79,11 @@ namespace Coopfall.Lockstep
     /// 64. CityBehBuild.tryToBuildInZoneRandomly & tryToBuildInZoneDrunk: candidate tiles sorted by tile_id and stable hash drunk roll.
     /// 65. DisasterLibrary.spawnBiomass, spawnTumor, gardenSurprise, spawnMadThought: candidate cities, buildings and actors sorted by ID.
     /// 66. Kingdom.getRandomUnit, Alliance.getRandomUnit, War.getRandomUnit & plot_join_alliance: candidates sorted by ID before deterministic selection.
+    /// 67. BehCityActorFindClosestFire.execute: neighbour zones sorted by zone.id and stable lowest tile_id tie-breaking for closest fire.
+    /// 68. BehFindTileWhenOnFire.execute & findWaterIn: ocean regions sorted by region.id and water tiles sorted by tile_id before GetRandom().
+    /// 69. BehShortRandomMove.execute: candidate layer neighbours sorted by tile_id before GetRandom() selection.
+    /// 70. WorldBehaviourActionCreepDecay.destroyNonCheckedCreep: disconnected creep tiles sorted by tile_id before LoopRandom(3).
+    /// 71. WorldBehaviourActionErosion.updateErosion: ground islands sorted by island.id and island regions and tiles sorted deterministically.
     /// </summary>
     public static class SimulationInTick
     {
@@ -119,6 +124,14 @@ namespace Coopfall.Lockstep
         private static readonly List<Kingdom> _warKingdomsPool = new List<Kingdom>();
         private static readonly List<Alliance> _alliancesPool = new List<Alliance>();
         private static readonly List<Alliance> _candidateAlliancesPool = new List<Alliance>();
+        private static readonly List<TileZone> _fireZonesPool = new List<TileZone>();
+        private static readonly List<MapRegion> _waterRegionsPool = new List<MapRegion>();
+        private static readonly List<WorldTile> _waterTilesPool = new List<WorldTile>();
+        private static readonly List<WorldTile> _shortMoveCandidatesPool = new List<WorldTile>();
+        private static AccessTools.FieldRef<HashSetWorldTile> _creepNotCheckedTilesRef;
+        private static AccessTools.FieldRef<List<WorldTile>> _creepDisconnectedTilesRef;
+        private static AccessTools.FieldRef<List<WorldTile>> _erosionListRef;
+        private static readonly List<TileIsland> _erosionIslandsPool = new List<TileIsland>();
 
         private static Func<DisasterLibrary, DisasterAsset, bool> _checkUnitSpawnLimitsDel;
         private static Func<DisasterLibrary, DisasterAsset, WorldTile, Building> _spawnDisasterBuildingDel;
@@ -205,6 +218,7 @@ namespace Coopfall.Lockstep
         private static MethodInfo _targetWithinSlideMethod;
         private static MethodInfo _isFlyingMethod;
         private static AccessTools.FieldRef<Actor, WorldTile> _behTileTargetRef;
+        private static AccessTools.FieldRef<Actor, bool> _actorIsVisibleRef;
 
         // 7. Shattered crown methods
         private static MethodInfo _makeOwnKingdomMethod;
@@ -337,6 +351,7 @@ namespace Coopfall.Lockstep
                 FieldInfo behDragonField = AccessTools.Field(typeof(BehDragon), "dragon");
                 MethodInfo dragonAttackTile = AccessTools.Method(typeof(BehDragonCheckAttackTile), "execute", new[] { typeof(Actor) });
                 _behTileTargetRef = AccessTools.FieldRefAccess<Actor, WorldTile>("beh_tile_target");
+                _actorIsVisibleRef = AccessTools.FieldRefAccess<Actor, bool>("is_visible");
                 _dragonAggroTargetsRef = AccessTools.FieldRefAccess<Dragon, HashSet<Actor>>("aggroTargets");
                 _dragonLastLandedRef = AccessTools.FieldRefAccess<Dragon, WorldTile>("lastLanded");
                 _canLandMethod = AccessTools.Method(typeof(Dragon), "canLand", new[] { typeof(Actor) });
@@ -841,6 +856,41 @@ namespace Coopfall.Lockstep
                 MethodInfo mWarGetRandUnit = AccessTools.Method(typeof(War), "getRandomUnit");
                 if (mWarGetRandUnit != null) h.Patch(mWarGetRandUnit, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WarGetRandomUnitPrefix)));
                 else Log.Warn("lockstep: War.getRandomUnit not found");
+
+                // 67. Firefighting target zone & tile selection determinism
+                MethodInfo mClosestFire = AccessTools.Method(typeof(BehCityActorFindClosestFire), "execute", new[] { typeof(Actor) });
+                if (mClosestFire != null) h.Patch(mClosestFire, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehCityActorFindClosestFireExecutePrefix)));
+                else Log.Warn("lockstep: BehCityActorFindClosestFire.execute not found");
+
+                // 68. Burning unit extinguish water search determinism
+                MethodInfo mTileWhenOnFire = AccessTools.Method(typeof(BehFindTileWhenOnFire), "execute", new[] { typeof(Actor) });
+                if (mTileWhenOnFire != null) h.Patch(mTileWhenOnFire, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindTileWhenOnFireExecutePrefix)));
+                else Log.Warn("lockstep: BehFindTileWhenOnFire.execute not found");
+
+                MethodInfo mFindWaterIn = AccessTools.Method(typeof(BehFindTileWhenOnFire), "findWaterIn", new[] { typeof(MapChunk) });
+                if (mFindWaterIn != null) h.Patch(mFindWaterIn, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindTileWhenOnFireFindWaterInPrefix)));
+                else Log.Warn("lockstep: BehFindTileWhenOnFire.findWaterIn not found");
+
+                // 69. Short random move neighbour direction determinism
+                MethodInfo mShortRandomMove = AccessTools.Method(typeof(BehShortRandomMove), "execute", new[] { typeof(Actor) });
+                if (mShortRandomMove != null) h.Patch(mShortRandomMove, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehShortRandomMoveExecutePrefix)));
+                else Log.Warn("lockstep: BehShortRandomMove.execute not found");
+
+                // 70. Creep decay & disconnected tile cleanup determinism
+                FieldInfo fNotChecked = AccessTools.Field(typeof(WorldBehaviourActionCreepDecay), "not_checked_tiles");
+                FieldInfo fDiscTiles = AccessTools.Field(typeof(WorldBehaviourActionCreepDecay), "_list_of_disconnected_tiles");
+                MethodInfo mDestroyCreep = AccessTools.Method(typeof(WorldBehaviourActionCreepDecay), "destroyNonCheckedCreep");
+                if (fNotChecked != null) _creepNotCheckedTilesRef = AccessTools.StaticFieldRefAccess<HashSetWorldTile>(fNotChecked);
+                if (fDiscTiles != null) _creepDisconnectedTilesRef = AccessTools.StaticFieldRefAccess<List<WorldTile>>(fDiscTiles);
+                if (mDestroyCreep != null) h.Patch(mDestroyCreep, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionCreepDecayDestroyNonCheckedCreepPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionCreepDecay.destroyNonCheckedCreep not found");
+
+                // 71. World law erosion sand terraforming determinism
+                FieldInfo fErosionList = AccessTools.Field(typeof(WorldBehaviourActionErosion), "list");
+                MethodInfo mUpdateErosion = AccessTools.Method(typeof(WorldBehaviourActionErosion), "updateErosion");
+                if (fErosionList != null) _erosionListRef = AccessTools.StaticFieldRefAccess<List<WorldTile>>(fErosionList);
+                if (mUpdateErosion != null) h.Patch(mUpdateErosion, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionErosionUpdateErosionPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionErosion.updateErosion not found");
             }
             catch (Exception e)
             {
@@ -5782,6 +5832,309 @@ namespace Coopfall.Lockstep
             }
             _warKingdomsPool.Clear();
             __result = null;
+            return false;
+        }
+
+        // ==========================================
+        // 67. Firefighting Target Zone & Tile Selection Determinism
+        // ==========================================
+        private static WorldTile GetClosestTileOnFireDeterministic(WorldTile[] pArray, WorldTile pTarget)
+        {
+            if (pArray == null || pTarget == null) return null;
+            WorldTile result = null;
+            int minSqDist = int.MaxValue;
+            for (int i = 0; i < pArray.Length; i++)
+            {
+                WorldTile tile = pArray[i];
+                if (tile != null && tile.isOnFire())
+                {
+                    int sqDist = Toolbox.SquaredDist(pTarget.x, pTarget.y, tile.x, tile.y);
+                    if (sqDist < minSqDist || (sqDist == minSqDist && (result == null || tile.tile_id < result.tile_id)))
+                    {
+                        minSqDist = sqDist;
+                        result = tile;
+                    }
+                }
+            }
+            return result;
+        }
+
+        private static WorldTile GetClosestTileOnFireFromZonesDeterministic(Actor pActor)
+        {
+            WorldTile current_tile = pActor.current_tile;
+            TileZone current_zone = pActor.current_zone;
+            if (current_tile == null || current_zone == null) return null;
+
+            WorldTile closest = GetClosestTileOnFireDeterministic(current_zone.tiles, current_tile);
+            if (closest == null && current_zone.neighbours_all != null)
+            {
+                _fireZonesPool.Clear();
+                for (int i = 0; i < current_zone.neighbours_all.Length; i++)
+                {
+                    TileZone item = current_zone.neighbours_all[i];
+                    if (item != null && item.isZoneOnFire())
+                    {
+                        _fireZonesPool.Add(item);
+                    }
+                }
+                if (_fireZonesPool.Count > 0)
+                {
+                    _fireZonesPool.Sort((a, b) => a.id.CompareTo(b.id));
+                    for (int i = 0; i < _fireZonesPool.Count; i++)
+                    {
+                        closest = GetClosestTileOnFireDeterministic(_fireZonesPool[i].tiles, current_tile);
+                        if (closest != null)
+                        {
+                            break;
+                        }
+                    }
+                }
+                _fireZonesPool.Clear();
+            }
+            return closest;
+        }
+
+        private static bool BehCityActorFindClosestFireExecutePrefix(BehCityActorFindClosestFire __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.current_tile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            WorldTile current_tile = pActor.current_tile;
+            WorldTile closestTileOnFireFromZones = GetClosestTileOnFireFromZonesDeterministic(pActor);
+            if (closestTileOnFireFromZones == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (_actorIsVisibleRef != null && _actorIsVisibleRef(pActor))
+            {
+                pActor.spawnSlashYell(closestTileOnFireFromZones.pos);
+            }
+            WorldTile worldTile = BehCityActorFindClosestFire.raycastTileForUnitToFightFire(current_tile, closestTileOnFireFromZones);
+            if (worldTile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 68. Burning Unit Extinguish Water Search Determinism
+        // ==========================================
+        private static WorldTile FindWaterInDeterministic(MapChunk pChunk)
+        {
+            if (pChunk == null || pChunk.regions == null || pChunk.regions.Count == 0) return null;
+            _waterRegionsPool.Clear();
+            for (int i = 0; i < pChunk.regions.Count; i++)
+            {
+                MapRegion reg = pChunk.regions[i];
+                if (reg != null && reg.type == TileLayerType.Ocean && reg.tiles != null && reg.tiles.Count > 0)
+                {
+                    _waterRegionsPool.Add(reg);
+                }
+            }
+            if (_waterRegionsPool.Count == 0) return null;
+            _waterRegionsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            MapRegion chosenRegion = _waterRegionsPool.GetRandom();
+            _waterRegionsPool.Clear();
+
+            if (chosenRegion == null || chosenRegion.tiles == null || chosenRegion.tiles.Count == 0) return null;
+            _waterTilesPool.Clear();
+            _waterTilesPool.AddRange(chosenRegion.tiles);
+            _waterTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            WorldTile result = _waterTilesPool.GetRandom();
+            _waterTilesPool.Clear();
+            return result;
+        }
+
+        private static bool BehFindTileWhenOnFireExecutePrefix(BehFindTileWhenOnFire __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.chunk == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            WorldTile worldTile = FindWaterInDeterministic(pActor.chunk);
+            if (worldTile == null && pActor.chunk.neighbours_all != null)
+            {
+                MapChunk[] neighbours_all = pActor.chunk.neighbours_all;
+                for (int i = 0; i < neighbours_all.Length; i++)
+                {
+                    MapChunk pChunk = neighbours_all[i];
+                    if (pChunk != null)
+                    {
+                        worldTile = FindWaterInDeterministic(pChunk);
+                        if (worldTile != null)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            if (worldTile == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = worldTile;
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        private static bool BehFindTileWhenOnFireFindWaterInPrefix(BehFindTileWhenOnFire __instance, MapChunk pChunk, ref WorldTile __result)
+        {
+            if (!LockstepClock.Active) return true;
+            __result = FindWaterInDeterministic(pChunk);
+            return false;
+        }
+
+        // ==========================================
+        // 69. Short Random Move Neighbour Direction Determinism
+        // ==========================================
+        private static bool BehShortRandomMoveExecutePrefix(BehShortRandomMove __instance, Actor pActor, ref BehResult __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (pActor == null || pActor.current_tile == null || pActor.current_tile.neighboursAll == null || pActor.current_tile.Type == null)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            TileLayerType layerType = pActor.current_tile.Type.layer_type;
+            _shortMoveCandidatesPool.Clear();
+            WorldTile[] neighbours = pActor.current_tile.neighboursAll;
+            for (int i = 0; i < neighbours.Length; i++)
+            {
+                WorldTile nb = neighbours[i];
+                if (nb != null && nb.Type != null && nb.Type.layer_type == layerType)
+                {
+                    _shortMoveCandidatesPool.Add(nb);
+                }
+            }
+            if (_shortMoveCandidatesPool.Count == 0)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            _shortMoveCandidatesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            if (_behTileTargetRef != null) _behTileTargetRef(pActor) = _shortMoveCandidatesPool.GetRandom();
+            _shortMoveCandidatesPool.Clear();
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        // ==========================================
+        // 70. Creep Decay & Disconnected Tile Cleanup Determinism
+        // ==========================================
+        private static bool WorldBehaviourActionCreepDecayDestroyNonCheckedCreepPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            HashSetWorldTile notChecked = _creepNotCheckedTilesRef != null ? _creepNotCheckedTilesRef() : null;
+            List<WorldTile> disc = _creepDisconnectedTilesRef != null ? _creepDisconnectedTilesRef() : null;
+            if (notChecked == null || disc == null) return true;
+
+            disc.Clear();
+            foreach (WorldTile tile in notChecked)
+            {
+                if (tile != null)
+                {
+                    disc.Add(tile);
+                }
+            }
+            if (disc.Count == 0) return false;
+
+            disc.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            foreach (WorldTile item in disc.LoopRandom(3))
+            {
+                MapAction.decreaseTile(item, pDamage: false);
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 71. World Law Erosion Sand Terraforming Determinism
+        // ==========================================
+        private static bool IsOceanAround(WorldTile tile)
+        {
+            if (tile == null || tile.neighbours == null) return false;
+            for (int i = 0; i < tile.neighbours.Length; i++)
+            {
+                WorldTile nb = tile.neighbours[i];
+                if (nb != null && nb.Type != null && nb.Type.layer_type == TileLayerType.Ocean)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static WorldTile GetRandomTileFromIslandDeterministic(TileIsland island)
+        {
+            if (island == null || island.regions == null || island.regions.Count == 0) return null;
+            List<MapRegion> regList = island.regions.getSimpleList();
+            if (regList == null || regList.Count == 0) return null;
+            regList.Sort((a, b) => a.id.CompareTo(b.id));
+            MapRegion reg = regList.GetRandom();
+            if (reg == null || reg.tiles == null || reg.tiles.Count == 0) return null;
+            reg.tiles.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            return reg.tiles.GetRandom();
+        }
+
+        private static bool WorldBehaviourActionErosionUpdateErosionPrefix()
+        {
+            if (!LockstepClock.Active) return true;
+            if (!WorldLawLibrary.world_law_erosion.isEnabled()) return false;
+
+            List<WorldTile> erosionList = _erosionListRef != null ? _erosionListRef() : null;
+            if (erosionList != null) erosionList.Clear();
+
+            IslandsCalculator ic = _islandsCalculatorRef != null ? _islandsCalculatorRef(World.world) : null;
+            if (ic == null || ic.islands == null) return false;
+
+            _erosionIslandsPool.Clear();
+            ListPool<TileIsland> islands = ic.islands;
+            for (int i = 0; i < islands.Count; i++)
+            {
+                TileIsland isl = islands[i];
+                if (isl != null && isl.type == TileLayerType.Ground && isl.regions != null && isl.regions.Count > 0)
+                {
+                    _erosionIslandsPool.Add(isl);
+                }
+            }
+            if (_erosionIslandsPool.Count == 0) return false;
+            _erosionIslandsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            foreach (TileIsland item in _erosionIslandsPool.LoopRandom())
+            {
+                if (item.type != TileLayerType.Ground) continue;
+                for (int i = 0; i < 5; i++)
+                {
+                    WorldTile randomTile = GetRandomTileFromIslandDeterministic(item);
+                    if (randomTile != null && randomTile.Type != null && randomTile.Type.can_errode_to_sand && (randomTile.Type.can_be_biome || randomTile.Type.grass) && IsOceanAround(randomTile) && (erosionList == null || !erosionList.Contains(randomTile)))
+                    {
+                        if (erosionList != null) erosionList.Add(randomTile);
+                        if (erosionList != null && erosionList.Count >= 5) break;
+                    }
+                }
+                if (erosionList != null && erosionList.Count >= 5) break;
+            }
+            _erosionIslandsPool.Clear();
+
+            if (erosionList != null && erosionList.Count != 0)
+            {
+                TerraformOptions flashAsset = AssetManager.terraform.get("flash");
+                for (int j = 0; j < erosionList.Count; j++)
+                {
+                    MapAction.terraformMain(erosionList[j], TileLibrary.sand, flashAsset);
+                }
+            }
             return false;
         }
     }
