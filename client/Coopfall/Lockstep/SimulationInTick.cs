@@ -63,6 +63,12 @@ namespace Coopfall.Lockstep
     /// 48. SubspeciesTraitLibrary.getRandomMutationTraitToAdd/Remove: mutation pots sorted by trait id before GetRandom draws.
     /// 49. EnemyFinderContainer.getData: no shared PRNG draw and no racy Dictionary build from parallel job
     ///     threads - a lock around the cache miss/build and a stable per-(kingdom, chunk, range) 0.8 roll.
+    /// 50. City.getRandomWarrior: candidate warriors presorted by actor.id before random selection.
+    /// 51. BatchActors.b6_0_updateDecision: actors in c_make_decision sorted by actor.id before evaluating utility decisions.
+    /// 52. AiSystemActor.getNextTask: deterministic shuffle seeded by actor.id and Det01x when pJob.random is true.
+    /// 53. City.getBuildingOfType: candidate buildings sorted by building.id before GetRandom draws when pRandom is true.
+    /// 54. BehTryToSocialize.getRandomActorAround: deterministic chunk scan (pRandom: false) and closest candidate distance sorting with actor.id tie-breaking.
+    /// 55. CityBehProduceResources.execute: production recipes in actorAsset.production sorted by ID instead of LoopRandom().
     /// </summary>
     public static class SimulationInTick
     {
@@ -81,6 +87,11 @@ namespace Coopfall.Lockstep
         private static readonly List<TileZone> _attackZonesPool = new List<TileZone>();
         private static readonly List<Building> _stealBuildingsPool = new List<Building>();
         private static readonly List<TileZone> _stealZonesPool = new List<TileZone>();
+        private static readonly List<Actor> _decisionActorsPool = new List<Actor>();
+        private static readonly List<Building> _cityBuildingsOfTypePool = new List<Building>();
+        private static readonly List<Actor> _socializeBestPool = new List<Actor>();
+        private static readonly List<Actor> _socializeNormalPool = new List<Actor>();
+        private static readonly List<string> _productionRecipesPool = new List<string>();
 
         // 28-41 Internal field refs & methods
         private static AccessTools.FieldRef<WarManager, List<War>> _warManagerEndWarsRef;
@@ -200,6 +211,14 @@ namespace Coopfall.Lockstep
 
         // 50. City random warrior captain selection field ref
         private static AccessTools.FieldRef<City, Dictionary<UnitProfession, List<Actor>>> _professionsDictRef;
+
+        // 51-55 Field refs
+        private static AccessTools.FieldRef<Batch<Actor>, float> _batchActorElapsedRef;
+        private static AccessTools.FieldRef<AiSystemActor, int> _aiSystemTaskIndexRef;
+        private static AccessTools.FieldRef<AiSystemActor, int[]> _aiSystemRandomTasksRef;
+        private static AccessTools.FieldRef<AiSystemActor, Actor> _aiSystemActorRef;
+        private static AccessTools.FieldRef<City, Dictionary<string, List<Building>>> _cityBuildingsDictTypeRef;
+        private static AccessTools.FieldRef<MapBox, bool> _mapIsPausedRef;
 
         public static void Install(Harmony h)
         {
@@ -657,6 +676,41 @@ namespace Coopfall.Lockstep
                 _getBuildingOfTypeMethod = AccessTools.Method(typeof(City), "getBuildingOfType", new[] { typeof(string), typeof(bool), typeof(bool), typeof(bool), typeof(TileIsland) });
                 _startWarMethod = AccessTools.Method(typeof(DiplomacyManager), "startWar", new[] { typeof(Kingdom), typeof(Kingdom), typeof(WarTypeAsset), typeof(bool) });
                 _baseStatsRef = AccessTools.FieldRefAccess<BaseSimObject, BaseStats>("stats");
+
+                // 51. BatchActors.b6_0_updateDecision determinism
+                _mapIsPausedRef = AccessTools.FieldRefAccess<MapBox, bool>("_is_paused");
+                MethodInfo b6_0Method = AccessTools.Method(typeof(BatchActors), "b6_0_updateDecision");
+                if (b6_0Method != null) h.Patch(b6_0Method, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BatchActorsB6_0UpdateDecisionPrefix)));
+                else Log.Warn("lockstep: BatchActors.b6_0_updateDecision not found");
+                FieldInfo elapsedField = AccessTools.Field(typeof(Batch<Actor>), "_elapsed");
+                if (elapsedField != null) _batchActorElapsedRef = AccessTools.FieldRefAccess<Batch<Actor>, float>(elapsedField);
+
+                // 52. AiSystemActor.getNextTask deterministic job task shuffle
+                Type aiSystemActorBase = typeof(AiSystemActor).BaseType;
+                MethodInfo getNextTaskMethod = AccessTools.Method(aiSystemActorBase, "getNextTask", new[] { typeof(ActorJob) });
+                if (getNextTaskMethod != null) h.Patch(getNextTaskMethod, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(AiSystemActorGetNextTaskPrefix)));
+                else Log.Warn("lockstep: AiSystemActor.getNextTask not found");
+                FieldInfo fiTaskIndex = AccessTools.Field(aiSystemActorBase, "task_index");
+                if (fiTaskIndex != null) _aiSystemTaskIndexRef = AccessTools.FieldRefAccess<AiSystemActor, int>(fiTaskIndex);
+                FieldInfo fiRandomTasks = AccessTools.Field(aiSystemActorBase, "_random_tasks");
+                if (fiRandomTasks != null) _aiSystemRandomTasksRef = AccessTools.FieldRefAccess<AiSystemActor, int[]>(fiRandomTasks);
+                FieldInfo fiActor = AccessTools.Field(aiSystemActorBase, "ai_object");
+                if (fiActor != null) _aiSystemActorRef = AccessTools.FieldRefAccess<AiSystemActor, Actor>(fiActor);
+
+                // 53. City.getBuildingOfType deterministic candidate sorting
+                _cityBuildingsDictTypeRef = AccessTools.FieldRefAccess<City, Dictionary<string, List<Building>>>("buildings_dict_type");
+                if (_getBuildingOfTypeMethod != null) h.Patch(_getBuildingOfTypeMethod, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CityGetBuildingOfTypePrefix)));
+                else Log.Warn("lockstep: City.getBuildingOfType not found");
+
+                // 54. BehTryToSocialize.getRandomActorAround determinism
+                MethodInfo getRandomActorAroundMethod = AccessTools.Method(typeof(BehTryToSocialize), "getRandomActorAround", new[] { typeof(Actor) });
+                if (getRandomActorAroundMethod != null) h.Patch(getRandomActorAroundMethod, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehTryToSocializeGetRandomActorAroundPrefix)));
+                else Log.Warn("lockstep: BehTryToSocialize.getRandomActorAround not found");
+
+                // 55. CityBehProduceResources.execute recipe sorting
+                MethodInfo produceResourcesExec = AccessTools.Method(typeof(CityBehProduceResources), "execute", new[] { typeof(City) });
+                if (produceResourcesExec != null) h.Patch(produceResourcesExec, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(CityBehProduceResourcesExecutePrefix)));
+                else Log.Warn("lockstep: CityBehProduceResources.execute not found");
             }
             catch (Exception e)
             {
@@ -4395,6 +4449,312 @@ namespace Coopfall.Lockstep
             sorted.Sort((a, b) => a.id.CompareTo(b.id));
             __result = sorted.GetRandom();
             return false;
+        }
+
+        // ==========================================
+        // 51. BatchActors Decision Order Determinism
+        // ==========================================
+        private static bool BatchActorsB6_0UpdateDecisionPrefix(BatchActors __instance)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null) return true;
+            if (World.world != null && _mapIsPausedRef != null && _mapIsPausedRef(World.world)) return false;
+            ObjectContainer<Actor> container = __instance.c_make_decision;
+            if (container == null) return true;
+            if (container.Count > 0 || container.isDirtyContainer())
+            {
+                container.checkAddRemove();
+                Actor[] array = container.getFastSimpleArray();
+                int count = container.Count;
+                if (count > 0)
+                {
+                    _decisionActorsPool.Clear();
+                    for (int i = 0; i < count; i++)
+                    {
+                        Actor a = array[i];
+                        if (a != null) _decisionActorsPool.Add(a);
+                    }
+                    if (_decisionActorsPool.Count > 1)
+                    {
+                        _decisionActorsPool.Sort((a, b) => a.id.CompareTo(b.id));
+                    }
+                    float elapsed = _batchActorElapsedRef != null ? _batchActorElapsedRef(__instance) : 0f;
+                    for (int i = 0; i < _decisionActorsPool.Count; i++)
+                    {
+                        _decisionActorsPool[i].b6_0_updateDecision(elapsed);
+                    }
+                    _decisionActorsPool.Clear();
+                }
+                container.Clear();
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 52. Job Task Shuffle Determinism
+        // ==========================================
+        private static bool AiSystemActorGetNextTaskPrefix(
+            AiSystemActor __instance,
+            ActorJob pJob,
+            ref TaskContainer<BehaviourActorCondition, Actor> __result)
+        {
+            if (!LockstepClock.Active) return true;
+            if (__instance == null || pJob == null || !pJob.random) return true;
+            List<TaskContainer<BehaviourActorCondition, Actor>> tasks = pJob.tasks;
+            if (tasks == null || tasks.Count == 0) return true;
+            if (_aiSystemTaskIndexRef == null || _aiSystemRandomTasksRef == null) return true;
+
+            int taskIndex = _aiSystemTaskIndexRef(__instance);
+            int[] randomTasks = _aiSystemRandomTasksRef(__instance);
+
+            if (taskIndex == 0 && (randomTasks == null || randomTasks.Length != tasks.Count))
+            {
+                randomTasks = new int[tasks.Count];
+                for (int i = 0; i < randomTasks.Length; i++) randomTasks[i] = i;
+                Actor actor = _aiSystemActorRef != null ? _aiSystemActorRef(__instance) : null;
+                long actorId = actor != null ? actor.id : 0L;
+                for (int i = 0; i < randomTasks.Length; i++)
+                {
+                    float r = Det01x(actorId, i, 0x54A51 ^ (pJob.id != null ? pJob.id.GetHashCode() : 0));
+                    int j = i + (int)(r * (randomTasks.Length - i));
+                    if (j >= randomTasks.Length) j = randomTasks.Length - 1;
+                    int tmp = randomTasks[i];
+                    randomTasks[i] = randomTasks[j];
+                    randomTasks[j] = tmp;
+                }
+                _aiSystemRandomTasksRef(__instance) = randomTasks;
+            }
+
+            if (randomTasks != null && randomTasks.Length == tasks.Count)
+            {
+                if (taskIndex >= randomTasks.Length) taskIndex = 0;
+                int nextIdx = randomTasks[taskIndex];
+                _aiSystemTaskIndexRef(__instance) = taskIndex + 1;
+                if (nextIdx >= 0 && nextIdx < tasks.Count)
+                {
+                    __result = tasks[nextIdx];
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // ==========================================
+        // 53. City Building Type Search Randomness
+        // ==========================================
+        private static bool CityGetBuildingOfTypePrefix(
+            City __instance,
+            string pBuildingTypeID,
+            bool pCountOnlyFinished,
+            bool pRandom,
+            bool pOnlyFreeTile,
+            TileIsland pLimitIsland,
+            ref Building __result)
+        {
+            if (!LockstepClock.Active || !pRandom) return true;
+            if (__instance == null || _cityBuildingsDictTypeRef == null) return true;
+            Dictionary<string, List<Building>> dict = _cityBuildingsDictTypeRef(__instance);
+            if (dict == null || !dict.TryGetValue(pBuildingTypeID, out List<Building> list) || list == null || list.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            bool flag = pLimitIsland != null;
+            _cityBuildingsOfTypePool.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                Building item = list[i];
+                if (item == null) continue;
+                if ((!pCountOnlyFinished || (!item.isUnderConstruction() && item.isUsable())) &&
+                    (!pOnlyFreeTile || (item.current_tile != null && !item.current_tile.isTargeted())) &&
+                    (!flag || item.current_island == pLimitIsland))
+                {
+                    _cityBuildingsOfTypePool.Add(item);
+                }
+            }
+            if (_cityBuildingsOfTypePool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+            _cityBuildingsOfTypePool.Sort((a, b) => a.id.CompareTo(b.id));
+            __result = _cityBuildingsOfTypePool.GetRandom();
+            _cityBuildingsOfTypePool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 54. Socialize & Lover Selection Determinism
+        // ==========================================
+        private static bool BehTryToSocializeGetRandomActorAroundPrefix(BehTryToSocialize __instance, Actor pActor, ref Actor __result)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pActor == null || pActor.current_tile == null || pActor.subspecies == null)
+            {
+                __result = null;
+                return false;
+            }
+            bool flag = pActor.subspecies.needOppositeSexTypeForReproduction();
+            bool flag2 = pActor.hasCulture() && pActor.culture.hasTrait("animal_whisperers");
+            bool hasTelepathic = pActor.hasTelepathicLink();
+
+            _socializeBestPool.Clear();
+            _socializeNormalPool.Clear();
+
+            if (hasTelepathic)
+            {
+                if (pActor.hasFamily() && pActor.family != null && pActor.family.units != null)
+                {
+                    foreach (Actor unit in pActor.family.units)
+                    {
+                        if (unit != null && pActor.canTalkWith(unit))
+                        {
+                            _socializeNormalPool.Add(unit);
+                        }
+                    }
+                }
+                IEnumerable<Actor> parents = pActor.getParents();
+                if (parents != null)
+                {
+                    foreach (Actor parent in parents)
+                    {
+                        if (parent != null && pActor.canTalkWith(parent))
+                        {
+                            _socializeBestPool.Add(parent);
+                        }
+                    }
+                }
+            }
+
+            int chunkRadius = hasTelepathic ? 2 : 1;
+            IEnumerable<Actor> chunkUnits = Finder.getUnitsFromChunk(pActor.current_tile, chunkRadius, 0f, pRandom: false);
+            if (chunkUnits != null)
+            {
+                foreach (Actor item in chunkUnits)
+                {
+                    if (item == null || item == pActor) continue;
+                    if (!pActor.canTalkWith(item)) continue;
+                    if (pActor.isKingdomCiv())
+                    {
+                        if (item.isKingdomMob())
+                        {
+                            if (!flag2) continue;
+                        }
+                    }
+                    else if (item.asset != null && pActor.asset != null && pActor.asset.id != item.asset.id)
+                    {
+                        continue;
+                    }
+
+                    if (flag && pActor.canFallInLoveWith(item))
+                    {
+                        _socializeBestPool.Add(item);
+                    }
+                    else
+                    {
+                        _socializeNormalPool.Add(item);
+                    }
+                }
+            }
+
+            Vector2 pos = pActor.current_position;
+            if (_socializeBestPool.Count > 0)
+            {
+                _socializeBestPool.Sort((a, b) =>
+                {
+                    float da = (a.current_position.x - pos.x) * (a.current_position.x - pos.x) + (a.current_position.y - pos.y) * (a.current_position.y - pos.y);
+                    float db = (b.current_position.x - pos.x) * (b.current_position.x - pos.x) + (b.current_position.y - pos.y) * (b.current_position.y - pos.y);
+                    int cmp = da.CompareTo(db);
+                    return cmp != 0 ? cmp : a.id.CompareTo(b.id);
+                });
+                __result = _socializeBestPool[0];
+            }
+            else if (_socializeNormalPool.Count > 0)
+            {
+                _socializeNormalPool.Sort((a, b) =>
+                {
+                    float da = (a.current_position.x - pos.x) * (a.current_position.x - pos.x) + (a.current_position.y - pos.y) * (a.current_position.y - pos.y);
+                    float db = (b.current_position.x - pos.x) * (b.current_position.x - pos.x) + (b.current_position.y - pos.y) * (b.current_position.y - pos.y);
+                    int cmp = da.CompareTo(db);
+                    return cmp != 0 ? cmp : a.id.CompareTo(b.id);
+                });
+                __result = _socializeNormalPool[0];
+            }
+            else
+            {
+                __result = null;
+            }
+
+            _socializeBestPool.Clear();
+            _socializeNormalPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 55. City Resource Production Recipe Order
+        // ==========================================
+        private static bool CityBehProduceResourcesExecutePrefix(CityBehProduceResources __instance, City pCity, ref BehResult __result)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pCity == null) { __result = BehResult.Stop; return false; }
+            ActorAsset actorAsset = pCity.getActorAsset();
+            if (actorAsset == null || actorAsset.production == null || actorAsset.production.Length == 0)
+            {
+                __result = BehResult.Stop;
+                return false;
+            }
+            _productionRecipesPool.Clear();
+            for (int i = 0; i < actorAsset.production.Length; i++)
+            {
+                string r = actorAsset.production[i];
+                if (!string.IsNullOrEmpty(r)) _productionRecipesPool.Add(r);
+            }
+            if (_productionRecipesPool.Count > 1)
+            {
+                _productionRecipesPool.Sort(StringComparer.Ordinal);
+            }
+            for (int rIdx = 0; rIdx < _productionRecipesPool.Count; rIdx++)
+            {
+                string item = _productionRecipesPool[rIdx];
+                ResourceAsset resourceAsset = AssetManager.resources.get(item);
+                if (resourceAsset == null) continue;
+                int resourcesAmount = pCity.getResourcesAmount(item);
+                if (resourcesAmount <= resourceAsset.maximum)
+                {
+                    int pAmount = pCity.status.population / 10 + 1;
+                    if (resourcesAmount < resourceAsset.produce_min)
+                    {
+                        pAmount = resourceAsset.produce_min;
+                    }
+                    TryToProduceDeterministic(resourceAsset, pCity, pAmount);
+                }
+            }
+            _productionRecipesPool.Clear();
+            __result = BehResult.Continue;
+            return false;
+        }
+
+        private static bool TryToProduceDeterministic(ResourceAsset pAsset, City pCity, int pAmount)
+        {
+            if (pAsset == null || pCity == null) return false;
+            for (int i = 0; i < pAmount; i++)
+            {
+                if (pCity.getResourcesAmount(pAsset.id) == pAsset.maximum) return false;
+                string[] ingredients = pAsset.ingredients;
+                if (ingredients != null)
+                {
+                    for (int j = 0; j < ingredients.Length; j++)
+                    {
+                        if (pCity.getResourcesAmount(ingredients[j]) < pAsset.ingredients_amount) return false;
+                    }
+                    for (int j = 0; j < ingredients.Length; j++)
+                    {
+                        pCity.takeResource(ingredients[j], pAsset.ingredients_amount);
+                    }
+                }
+                if (pCity.addResourcesToRandomStockpile(pAsset.id) <= 0) return false;
+            }
+            return true;
         }
     }
 }

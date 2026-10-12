@@ -307,9 +307,9 @@ namespace Coopfall.Lockstep
         private static void TryToAttackPostfix(Actor __instance)
         {
             if (!LockstepClock.InTick || __instance == null) return;
+            TracePelletsFor(__instance);
             if (IsLocalPlayerActor(__instance))
             {
-                TraceOwnPellets(__instance);
                 try { _releaseShot?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: aim release: " + e.Message); }
             }
         }
@@ -326,20 +326,54 @@ namespace Coopfall.Lockstep
         private sealed class OwnTracer { public object Trail; public float Head, Length; }
         private static readonly List<OwnTracer> _ownTracers = new List<OwnTracer>();
 
-        /// <summary>Visual only: a tracer for each new pellet this PC's player fired in the tick.</summary>
-        private static void TraceOwnPellets(Actor owner)
+        /// <summary>Visual only: a tracer for each new pellet any player fired in the tick.</summary>
+        private static void TracePelletsFor(Actor owner)
         {
-            if (_trailType == null || _all == null || owner == null || !IsLocalPlayerActor(owner)) return;
+            if (_trailType == null || _all == null || owner == null) return;
             try
             {
                 if (!(_all.Invoke(null, null) is IEnumerable all)) return;
                 var list = _tracers?.GetValue(null) as IList;
                 if (list == null) return;
-                object eye = _eye?.GetValue(null);
-                if (eye == null) return;
-                float ex = (float)AccessTools.Field(_vecType, "X").GetValue(eye), ey = (float)AccessTools.Field(_vecType, "Y").GetValue(eye), ez = (float)AccessTools.Field(_vecType, "Z").GetValue(eye);
-                object terrain = _terrainP?.GetValue(null);
-                MethodInfo height = terrain == null ? null : AccessTools.Method(terrain.GetType(), "SampleHeight");
+
+                bool isLocal = IsLocalPlayerActor(owner);
+                float ex = 0f, ey = 0f, ez = 0f;
+                bool hasOrigin = false;
+
+                if (isLocal)
+                {
+                    object eye = _eye?.GetValue(null);
+                    if (eye != null)
+                    {
+                        ex = (float)AccessTools.Field(_vecType, "X").GetValue(eye);
+                        ey = (float)AccessTools.Field(_vecType, "Y").GetValue(eye);
+                        ez = (float)AccessTools.Field(_vecType, "Z").GetValue(eye);
+                        hasOrigin = true;
+                    }
+                }
+
+                if (!hasOrigin)
+                {
+                    if (WorldfallBridge.StarHead(owner, out Vector3 head))
+                    {
+                        ex = head.x;
+                        ey = head.y;
+                        ez = head.z;
+                        hasOrigin = true;
+                    }
+                }
+
+                if (!hasOrigin)
+                {
+                    ex = owner.current_position.x;
+                    ey = owner.current_position.y;
+                    object terrain = _terrainP?.GetValue(null);
+                    MethodInfo height = terrain == null ? null : AccessTools.Method(terrain.GetType(), "SampleHeight");
+                    float groundZ = height != null ? (float)height.Invoke(terrain, new object[] { ex, ey }) : 0f;
+                    ez = groundZ + 0.85f;
+                    hasOrigin = true;
+                }
+
                 if (_handledShots.Count > 128) _handledShots.Clear();
                 foreach (object o in all)
                 {
@@ -351,13 +385,19 @@ namespace Coopfall.Lockstep
                         // drawn by Worldfall as a sprite at the game's own (ground) height, under the
                         // camera: draw it from the eye down to the target instead (drawing only)
                         if (_lifted.Count > 64) _lifted.Clear();
-                        if (_start?.GetValue(p) is Vector2 st) { _lifted[p] = new Lift { From = st, To = to, Z = ez - 0.15f, Born = Time.unscaledTime }; if (_liftLogs++ < 5) Log.Info("lockstep: own shot " + p.asset?.id + " drawn from eye height " + ez); }
+                        if (_start?.GetValue(p) is Vector2 st)
+                        {
+                            _lifted[p] = new Lift { From = st, To = to, Z = ez - 0.15f, Born = Time.unscaledTime };
+                            if (_liftLogs++ < 5) Log.Info("lockstep: " + (isLocal ? "own" : "remote") + " shot " + p.asset?.id + " drawn from eye height " + ez);
+                        }
                         continue;
                     }
                     float dx = to.x - ex, dy = to.y - ey, d = Mathf.Sqrt(dx * dx + dy * dy);
                     if (d < 0.05f) continue;
                     float fz = ez - 0.1f;
-                    float tz = (height == null ? fz : (float)height.Invoke(terrain, new object[] { to.x, to.y }) + 0.35f);
+                    object terrainObj = _terrainP?.GetValue(null);
+                    MethodInfo heightM = terrainObj == null ? null : AccessTools.Method(terrainObj.GetType(), "SampleHeight");
+                    float tz = (heightM == null ? fz : (float)heightM.Invoke(terrainObj, new object[] { to.x, to.y }) + 0.35f);
                     object t = Activator.CreateInstance(_trailType);
                     _trailType.GetField("From").SetValue(t, Activator.CreateInstance(_vecType, ex + dx / d * 0.3f, ey + dy / d * 0.3f, fz));
                     _trailType.GetField("DirX").SetValue(t, dx / d);
@@ -366,10 +406,10 @@ namespace Coopfall.Lockstep
                     _trailType.GetField("Flat").SetValue(t, TracerSpeed);
                     list.Add(t);
                     _ownTracers.Add(new OwnTracer { Trail = t, Length = d });
-                    if (_tracerLogs++ < 5) Log.Info("lockstep: own shotgun tracer added (" + list.Count + " tracers)");
+                    if (_tracerLogs++ < 5) Log.Info("lockstep: " + (isLocal ? "own" : "remote") + " shotgun tracer added (" + list.Count + " tracers)");
                 }
             }
-            catch (Exception e) { Log.Warn("lockstep: own tracer: " + e.Message); }
+            catch (Exception e) { Log.Warn("lockstep: tracer: " + e.Message); }
         }
 
         private static int _liftLogs, _tracerLogs;
@@ -407,8 +447,11 @@ namespace Coopfall.Lockstep
         private static bool AfterAttackPrefix(Actor owner)
         {
             if (!LockstepClock.InTick) return true;
-            TraceOwnPellets(owner);
-            try { _releaseShot?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: aim release: " + e.Message); }
+            TracePelletsFor(owner);
+            if (IsLocalPlayerActor(owner))
+            {
+                try { _releaseShot?.Invoke(null, null); } catch (Exception e) { Log.Warn("lockstep: aim release: " + e.Message); }
+            }
             return false;
         }
 

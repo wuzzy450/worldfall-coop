@@ -598,6 +598,22 @@ namespace Coopfall
         private static FieldInfo _fiRenderer;
         private static PropertyInfo _piRendererProj;
 
+        /// <summary>3D head position of an actor in Worldfall (drawing only).</summary>
+        public static bool StarHead(Actor a, out Vector3 head)
+        {
+            head = Vector3.zero;
+            object inst = Instance;
+            if (inst == null || _miStarHead == null || a == null) return false;
+            try
+            {
+                var headArgs = new object[] { a, null };
+                if (!(bool)_miStarHead.Invoke(inst, headArgs)) return false;
+                head = (Vector3)headArgs[1];
+                return true;
+            }
+            catch { return false; }
+        }
+
         /// <param name="god">Worldfall's god view is showing: its frame comes from the renderer, not the first-person "Shown".</param>
         public static bool ProjectHead(Actor a, float lift, out Vector2 screen, out float depth, bool god = false)
         {
