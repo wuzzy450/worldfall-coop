@@ -266,6 +266,7 @@ namespace Coopfall.Lockstep
             Log.Info("lockstep: job lists after load: " + ListSignature());
             ResetJobSkips(World.world.units);
             ResetJobSkips(World.world.buildings);
+            ResetComponentTimers(World.world.buildings);
             ResetStatics();
             // tiles are reused between worlds of the same size; their "walls around" cache isn't
             // reset by loading
@@ -665,6 +666,45 @@ namespace Coopfall.Lockstep
         private static void SeededLoadPostfix(Dice.Snapshot __state)
         {
             if (__state.rnd != null) Dice.RestoreSeeded(__state);
+        }
+
+        private static readonly Dictionary<Type, List<KeyValuePair<FieldInfo, object>>> _componentTimers = new Dictionary<Type, List<KeyValuePair<FieldInfo, object>>>();
+        private static readonly FieldInfo _componentsList = AccessTools.Field(typeof(Building), "components_list");
+
+        /// <summary>
+        /// Building components (biome-spreading plants, monoliths, waypoints) come from a pool and
+        /// create() doesn't reset their timers, so after a load a reused one keeps the countdown it
+        /// had in the previous world: the host (more history, more reuse) spread a biome onto one
+        /// tile the guest didn't. Every component's timer fields go back to a new one's values.
+        /// </summary>
+        private static void ResetComponentTimers(IEnumerable<Building> buildings)
+        {
+            if (_componentsList == null) return;
+            int n = 0;
+            foreach (Building b in buildings)
+            {
+                if (b == null || !(_componentsList.GetValue(b) is System.Collections.IList list)) continue;
+                foreach (object c in list)
+                {
+                    if (c == null) continue;
+                    Type t = c.GetType();
+                    if (!_componentTimers.TryGetValue(t, out List<KeyValuePair<FieldInfo, object>> fields))
+                    {
+                        fields = new List<KeyValuePair<FieldInfo, object>>();
+                        object fresh = null;
+                        try { fresh = Activator.CreateInstance(t, true); } catch { }
+                        if (fresh != null)
+                            for (Type x = t; x != null && x != typeof(object); x = x.BaseType)
+                                foreach (FieldInfo f in x.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                                    if ((f.FieldType == typeof(float) || f.FieldType == typeof(double) || f.FieldType == typeof(int)) && f.Name.IndexOf("timer", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        fields.Add(new KeyValuePair<FieldInfo, object>(f, f.GetValue(fresh)));
+                        _componentTimers[t] = fields;
+                    }
+                    foreach (KeyValuePair<FieldInfo, object> kv in fields) kv.Key.SetValue(c, kv.Value);
+                    if (fields.Count > 0) n++;
+                }
+            }
+            if (n > 0) Log.Info("lockstep: reset the timers of " + n + " building components");
         }
 
         private static bool DelayedPrefix() => !Active || _inTick;
