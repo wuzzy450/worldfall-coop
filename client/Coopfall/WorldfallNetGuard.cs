@@ -39,6 +39,26 @@ namespace Coopfall
                     if (joinSteam != null) h.Patch(joinSteam, prefix: new HarmonyMethod(typeof(WorldfallNetGuard), nameof(BlockJoinPrefix)));
                 }
 
+                // Worldfall 0.9.8's other ways in: Steam "Join game" invites, the rejoin after its
+                // own update/restart, the home-network list, the router port opener (UPnP) and the
+                // updater. All void: skipping them leaves nothing half-started.
+                string[] blocked =
+                {
+                    "Net.NetSession.JoinFromStart", "Net.MpUi.JoinSteamHost", "Net.MpUi.JoinSteamLobby",
+                    "Net.SteamLobbies.Hook", "Net.LanFind.Search", "Net.Upnp.Open", "Net.Updater.Start", "Net.Updater.Tick",
+                };
+                int n = 0;
+                foreach (string b in blocked)
+                {
+                    int dot = b.LastIndexOf('.');
+                    Type t = wf.GetType("FirstPerson." + b.Substring(0, dot), false);
+                    MethodInfo m = t == null ? null : AccessTools.Method(t, b.Substring(dot + 1));
+                    if (m == null || m.ReturnType != typeof(void)) continue;   // older Worldfall: not there
+                    h.Patch(m, prefix: new HarmonyMethod(typeof(WorldfallNetGuard), nameof(BlockPrefix)));
+                    n++;
+                }
+                Log.Info("Worldfall's own multiplayer is off while Coopfall is installed (" + n + " extra entry points blocked)");
+
                 // Update SettingsMenu tab label from "Multiplayer" to "Coopfall"
                 Type settingsMenu = wf.GetType("FirstPerson.SettingsMenu", false);
                 if (settingsMenu != null)
