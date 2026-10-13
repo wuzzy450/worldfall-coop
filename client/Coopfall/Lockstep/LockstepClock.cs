@@ -119,6 +119,17 @@ namespace Coopfall.Lockstep
                 MethodInfo loadFire = AccessTools.Method(typeof(SaveManager), "loadFire");
                 if (loadFire != null) h.Patch(loadFire, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(LoadFirePrefix)));
                 else Log.Error("lockstep: SaveManager.loadFire not found: fires of the previous world may block plants on one PC");
+                // loading frozen tiles re-freezes them, and snow/permafrost spreads to neighbours with
+                // dice, outside any tick: each PC froze different tiles after every load (snow_block vs
+                // mountains, permafrost vs grass) and the next tile check re-synced again. Same seed on
+                // every PC, same spread.
+                foreach (string seeded in new[] { "loadFrozen", "loadFire", "loadConway" })
+                {
+                    MethodInfo m = AccessTools.Method(typeof(SaveManager), seeded);
+                    if (m != null) h.Patch(m, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(SeededLoadPrefix)) { priority = Priority.Last },
+                        postfix: new HarmonyMethod(typeof(LockstepClock), nameof(SeededLoadPostfix)));
+                    else Log.Error("lockstep: SaveManager." + seeded + " not found: loading it may roll different dice on each PC");
+                }
                 _behTimer = AccessTools.FieldRefAccess<WorldBehaviour, float>("_timer");
                 _behAsset = AccessTools.FieldRefAccess<WorldBehaviour, WorldBehaviourAsset>("_asset");
                 if (worldBeh != null) h.Patch(worldBeh, prefix: new HarmonyMethod(typeof(LockstepClock), nameof(WorldBehaviourPrefix)));
@@ -644,6 +655,16 @@ namespace Coopfall.Lockstep
                 if (v != null && clear != null) clear.Invoke(v, null);
             }
             catch (Exception e) { Log.Warn("lockstep: can't clear " + type + "." + field + ": " + e.Message); }
+        }
+
+        private static void SeededLoadPrefix(MethodBase __originalMethod, out Dice.Snapshot __state)
+        {
+            __state = Dice.IsolateSeeded(0x5EED0000u ^ (uint)__originalMethod.Name.Length);   // also while the epoch loads (Active may not be set yet)
+        }
+
+        private static void SeededLoadPostfix(Dice.Snapshot __state)
+        {
+            if (__state.rnd != null) Dice.RestoreSeeded(__state);
         }
 
         private static bool DelayedPrefix() => !Active || _inTick;
