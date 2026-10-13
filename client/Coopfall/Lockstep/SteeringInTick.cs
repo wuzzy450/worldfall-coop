@@ -84,7 +84,12 @@ namespace Coopfall.Lockstep
             _family = models == null ? null : AccessTools.Method(models, "BuildingFamily", new[] { typeof(Building) });
             _model = models == null ? null : AccessTools.Method(models, "Get", new[] { typeof(string) });
             _mirrored = models == null ? null : AccessTools.Method(models, "Mirrored", new[] { typeof(Building) });
-            _doorOf = AccessTools.Method(st, "DoorOf");
+            // "DoorOf" has two overloads (MeshModel / Building): pick the MeshModel one we call
+            // with a model; a plain name lookup throws AmbiguousMatchException.
+            _doorOf = mesh == null ? null : AccessTools.Method(st, "DoorOf", new[] { mesh, typeof(Vector2).MakeByRefType() });
+            if (_doorOf == null)
+                foreach (MethodInfo mi in st.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                    if (mi.Name == "DoorOf" && mi.GetParameters().Length == 2 && mi.GetParameters()[0].ParameterType.Name == "MeshModel") { _doorOf = mi; break; }
             _setDoor = AccessTools.Method(st, "SetDoor");
             _info = mesh == null ? null : AccessTools.Method(mesh, "Info", new[] { typeof(string) });
             _infoFloat = mesh == null ? null : AccessTools.Method(mesh, "InfoFloat", new[] { typeof(string), typeof(float) });
@@ -257,27 +262,34 @@ namespace Coopfall.Lockstep
         {
             if (_setDoor == null || !LockstepControl.Running || !LockstepClock.Active || LockstepClock.InTick || LockstepControl.Count == 0) return;
             if (++_doorFrame % 15 != 0) return;
-            int sent = 0;
-            MapBox w = World.world;
-            foreach (long id in LockstepControl.ControlledIds())
+            // Host-only, between ticks: working a doorway out (model lookups, sprite variants) can
+            // draw from the shared dice; those draws must not advance the simulation generators.
+            Dice.Snapshot d = Dice.Isolate();
+            try
             {
-                Actor body = w.units.get(id);
-                if (body == null || !body.isAlive()) continue;
-                int cx = Mathf.FloorToInt(body.current_position.x), cy = Mathf.FloorToInt(body.current_position.y);
-                for (int y = cy - 40; y < cy + 40 && sent < 20; y++)
-                    for (int x = cx - 40; x < cx + 40 && sent < 20; x++)
-                    {
-                        Building b = w.GetTile(x, y)?.building;
-                        if (b == null || b.current_tile == null || b.current_tile.x != x || b.current_tile.y != y || _doorAsked.Contains(b.getID())) continue;
-                        if (!b.isAlive() || (bool)_isRuin.Invoke(b, null) || b.isUnderConstruction()) continue;
-                        int got = DoorFor(b, out Vector2 door);
-                        if (got == 0) continue;            // its model isn't loaded yet: try again later
-                        _doorAsked.Add(b.getID());
-                        if (got < 0) continue;            // no doorway (not a house, or a model without one)
-                        ShareDoor(b, door);                // caught by WorldCalls and sent
-                        sent++;
-                    }
+                int sent = 0;
+                MapBox w = World.world;
+                foreach (long id in LockstepControl.ControlledIds())
+                {
+                    Actor body = w.units.get(id);
+                    if (body == null || !body.isAlive()) continue;
+                    int cx = Mathf.FloorToInt(body.current_position.x), cy = Mathf.FloorToInt(body.current_position.y);
+                    for (int y = cy - 40; y < cy + 40 && sent < 20; y++)
+                        for (int x = cx - 40; x < cx + 40 && sent < 20; x++)
+                        {
+                            Building b = w.GetTile(x, y)?.building;
+                            if (b == null || b.current_tile == null || b.current_tile.x != x || b.current_tile.y != y || _doorAsked.Contains(b.getID())) continue;
+                            if (!b.isAlive() || (bool)_isRuin.Invoke(b, null) || b.isUnderConstruction()) continue;
+                            int got = DoorFor(b, out Vector2 door);
+                            if (got == 0) continue;            // its model isn't loaded yet: try again later
+                            _doorAsked.Add(b.getID());
+                            if (got < 0) continue;            // no doorway (not a house, or a model without one)
+                            ShareDoor(b, door);                // caught by WorldCalls and sent
+                            sent++;
+                        }
+                }
             }
+            finally { Dice.Restore(d); }
         }
 
         private static readonly object[] _doorArgs = new object[2];

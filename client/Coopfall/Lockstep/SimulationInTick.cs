@@ -425,6 +425,15 @@ namespace Coopfall.Lockstep
         private static AccessTools.FieldRef<City, Dictionary<string, List<Building>>> _cityBuildingsDictTypeRef;
         private static AccessTools.FieldRef<MapBox, bool> _mapIsPausedRef;
 
+        /// <summary>Bisecting switch: "-coopfall-ls-on &lt;part&gt;" enables a part that is off by default.</summary>
+        private static bool On(string part)
+        {
+            string[] a = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < a.Length; i++)
+                if (a[i] == "-coopfall-ls-on" && Array.IndexOf(a[i + 1].Split(','), part) >= 0) return true;
+            return false;
+        }
+
         public static void Install(Harmony h)
         {
             try
@@ -1242,7 +1251,18 @@ namespace Coopfall.Lockstep
                 if (mGetRandomNameTemplate != null) h.Patch(mGetRandomNameTemplate, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ItemAssetGetRandomNameTemplatePrefix)));
                 else Log.Warn("lockstep: ItemAsset.getRandomNameTemplate not found");
 
-                // 93. Dynamic Name Generator Replacers Determinism
+                // 93. Dynamic Name Generator Replacers Determinism - and everything after it.
+                // These fixes (93-126) were silently dead from their commit until 2026-10-12: the City
+                // replacer patch right below threw (its prefix had a parameter name that isn't in the
+                // method), which aborted the REST of Install - so every verified clean run since then
+                // ran WITHOUT them. Installing them all at once (2026-10-12) desynced the shared rng at
+                // the very first check after a guest joined (a tick-10 desync storm). They stay off until
+                // re-verified in batches; "-coopfall-ls-on simfixes" installs them (for bisecting).
+                if (!On("simfixes"))
+                {
+                    Log.Info("lockstep: SimulationInTick fixes 93-126 are off until re-verified in batches (they never ran before 2026-10-12; -coopfall-ls-on simfixes turns them on)");
+                    return;
+                }
                 MethodInfo mRepCity = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyCity", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
                 if (mRepCity != null) h.Patch(mRepCity, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NameGeneratorReplacersReplaceAnyCityPrefix)));
                 else Log.Warn("lockstep: NameGeneratorReplacers.replaceAnyCity not found");
@@ -3438,6 +3458,27 @@ namespace Coopfall.Lockstep
         public static void Normalize(MapBox world)
         {
             HookPlotAssets();
+            // No state from the previous epoch's world may survive the load: clear every static
+            // candidate pool (and the crown cache) so no prefix starts from old-world objects.
+            // (Pools are cleared before use in the prefixes themselves, but after a re-sync the
+            // world is reloaded and a pool holding stale references is one desync source.)
+            foreach (FieldInfo f in typeof(SimulationInTick).GetFields(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public))
+            {
+                try
+                {
+                    object v = f.GetValue(null);
+                    if (v == null) continue;
+                    if (f.Name.EndsWith("Pool", StringComparison.Ordinal))
+                    {
+                        if (v is System.Collections.IList l) l.Clear();
+                    }
+                    else if (f.Name == "_crownDict")
+                    {
+                        if (v is System.Collections.IDictionary d) d.Clear();
+                    }
+                }
+                catch { }
+            }
         }
 
         // ==========================================
@@ -8411,7 +8452,7 @@ namespace Coopfall.Lockstep
         // ==========================================
         // 93. Dynamic Name Generator Replacers Determinism
         // ==========================================
-        private static bool NameGeneratorReplacersReplaceAnyCityPrefix(ref string pName, Actor _)
+        private static bool NameGeneratorReplacersReplaceAnyCityPrefix(ref string pName, Actor pActor)
         {
             if (!LockstepClock.Active) return true;
             if (string.IsNullOrEmpty(pName) || !pName.Contains("$city_random$")) return false;
