@@ -614,7 +614,8 @@ namespace Coopfall
         /// <summary>Raw numbers of the last ProjectHead call (diagnostics).</summary>
         public static string LastProjection = "";
 
-        private static FieldInfo _fiRenderer;
+        private static FieldInfo _fiRenderer, _fiGpu;
+        private static PropertyInfo _piGpuProj;
         private static PropertyInfo _piRendererProj;
 
         /// <summary>3D head position of an actor in Worldfall (drawing only).</summary>
@@ -646,24 +647,32 @@ namespace Coopfall
                 var headArgs = new object[] { a, null };
                 if (!(bool)_miStarHead.Invoke(inst, headArgs)) return false;
                 Vector3 head = (Vector3)headArgs[1];
-                object shown;
-                if (god)
+                // the frame on screen: Shown (CPU or GPU, whichever drew last), then the GPU
+                // renderer's, then the CPU renderer's (the god view used only the CPU one, which is
+                // stale while the GPU draws - the "projection failed although in front" name tags)
+                if (_fiRenderer == null) { _fiRenderer = _type.GetField("Renderer", Any); _piRendererProj = _fiRenderer?.FieldType.GetProperty("Projection", Any); }
+                if (_fiGpu == null) { _fiGpu = _type.GetField("_gpu", Any); _piGpuProj = _fiGpu?.FieldType.GetProperty("Projection", Any); }
+                var tries = new System.Collections.Generic.List<object>(3);
+                if (!god) tries.Add(_piShown.GetValue(inst, null));
+                object gpu = _fiGpu?.GetValue(inst);
+                if (gpu != null && _piGpuProj != null) tries.Add(_piGpuProj.GetValue(gpu, null));
+                if (god) tries.Add(_piShown.GetValue(inst, null));
+                if (_piRendererProj != null && _fiRenderer != null) tries.Add(_piRendererProj.GetValue(_fiRenderer.GetValue(inst), null));
+                foreach (object shown in tries)
                 {
-                    if (_fiRenderer == null) { _fiRenderer = _type.GetField("Renderer", Any); _piRendererProj = _fiRenderer?.FieldType.GetProperty("Projection", Any); }
-                    if (_piRendererProj == null) return false;
-                    shown = _piRendererProj.GetValue(_fiRenderer.GetValue(inst), null);
+                    if (shown == null) continue;
+                    int w = (int)_fiWidth.GetValue(shown), h = (int)_fiHeight.GetValue(shown);
+                    if (w <= 0 || h <= 0) continue;
+                    var args = new object[] { head.x, head.y, head.z + lift, 0f, 0f, 0f };
+                    if (!(bool)_miProject.Invoke(shown, args)) { LastProjection += "behind; "; continue; }
+                    float col = (float)args[3], row = (float)args[4];
+                    depth = (float)args[5];
+                    LastProjection += "col " + col.ToString("0") + " row " + row.ToString("0") + " of " + w + "x" + h + " head z " + head.z.ToString("0.00") + "; ";
+                    if (col < -w * 0.05f || col > w * 1.05f || row < -h * 0.05f || row > h * 1.05f) continue;
+                    screen = new Vector2(col / w * Screen.width, row / h * Screen.height);
+                    return true;
                 }
-                else shown = _piShown.GetValue(inst, null);
-                int w = (int)_fiWidth.GetValue(shown), h = (int)_fiHeight.GetValue(shown);
-                if (w <= 0 || h <= 0) return false;
-                var args = new object[] { head.x, head.y, head.z + lift, 0f, 0f, 0f };
-                if (!(bool)_miProject.Invoke(shown, args)) return false;
-                float col = (float)args[3], row = (float)args[4];
-                depth = (float)args[5];
-                LastProjection = "col " + col.ToString("0") + " row " + row.ToString("0") + " of " + w + "x" + h + " head z " + head.z.ToString("0.00");
-                if (col < -w * 0.05f || col > w * 1.05f || row < -h * 0.05f || row > h * 1.05f) return false;
-                screen = new Vector2(col / w * Screen.width, row / h * Screen.height);
-                return true;
+                return false;
             }
             catch { return false; }
         }
