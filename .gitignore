@@ -54,3 +54,8 @@ changelog_095.html
 worldfall_page.html
 run-coop.out
 run-coop.err
+
+# NeoModLoader: compile-only reference for client/CoopfallNml, downloaded by client/build-nml.sh
+client/lib/NeoModLoader.dll
+client/CoopfallNml/obj/
+client/CoopfallNml/bin/

@@ -1,0 +1,10 @@
+{
+  "name": "Coopfall",
+  "author": "wuzzy450",
+  "version": "1.1.0",
+  "description": "Online co-op for WorldBox: two to four friends share one world in deterministic lockstep, with shared god cursors, first-person possession together through Worldfall, chat and a relay or Steam connection. F8 opens the co-op menu, F7 the world map.",
+  "GUID": "wuzzy450.coopfall",
+  "iconPath": "icon.png",
+  "RepoUrl": "https://github.com/wuzzy450/worldfall-coop",
+  "OptionalDependencies": ["s3cond2.worldfall"]
+}

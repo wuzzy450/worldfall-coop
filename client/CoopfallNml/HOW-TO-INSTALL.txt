@@ -1,0 +1,16 @@
+Coopfall for NeoModLoader
+=========================
+
+1. Install NeoModLoader once (subscribing on the Steam Workshop only downloads it):
+   put NeoModLoader.dll in WorldBox's worldbox_Data/StreamingAssets/mods folder
+   (Steam > right-click WorldBox > Manage > Browse local files), start WorldBox,
+   turn on Settings > Experimental Mode and restart. NeoModLoader then makes a
+   "Mods" folder beside the game.
+2. Put the "Coopfall" folder from this zip in that "Mods" folder
+   (or drop the zip itself there: NeoModLoader unpacks it).
+3. Start WorldBox. Coopfall shows in NeoModLoader's mod list. F8 opens the co-op menu.
+
+Use one install, not both: if Coopfall.dll is also in StreamingAssets/mods, that copy runs
+and this one stays off.
+Every player needs the same Coopfall version (and the same Worldfall version, if any).
+Worldfall (first-person) is optional: https://worldfall3d.com
