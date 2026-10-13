@@ -44,5 +44,11 @@ SYNC-ISSUES-*.md
 # local decompile scratch (game source dumps for bug hunting)
 decomp-game/
 decomp-tmp/
+decomp-worldfall/
+decomp-worldfall-nml/
+worldfall-0.9.5/
+worldfall-nml-extracted/
+changelog_095.html
+worldfall_page.html
 run-coop.out
 run-coop.err

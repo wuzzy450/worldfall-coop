@@ -61,6 +61,8 @@ namespace Coopfall
                     _type = t;
                     Log.Info("Worldfall found: fp=" + (_piIsFp != null) + " project=" + (_miProject != null) + " head=" + (_miStarHead != null) +
                              " talk=" + (_piTalkBusy != null) + " mute=" + (_fiConvClosed != null) + " view=" + (_fiViewEnabled != null));
+                    try { WorldfallNetGuard.Install(new HarmonyLib.Harmony("coopfall.wfnetguard"), asm); }
+                    catch (Exception ex) { Log.Warn("WorldfallNetGuard eager install: " + ex.Message); }
                     return;
                 }
                 if (!_logged) { _logged = true; Log.Info("Worldfall not loaded (looking again every 5 s)"); }
@@ -338,7 +340,23 @@ namespace Coopfall
         }
 
         private static FieldInfo _fiEye, _fiWalkers, _fiWalkerList, _fiWho, _fiPos, _fiHeading, _fiWait, _fiPath;
+        private static PropertyInfo _piWho;
         private static Type _walkerType;
+
+        private static Actor GetWho(object walker)
+        {
+            if (walker == null) return null;
+            if (_fiWho != null) return _fiWho.GetValue(walker) as Actor;
+            if (_piWho != null) return _piWho.GetValue(walker, null) as Actor;
+            return null;
+        }
+
+        private static void SetWho(object walker, Actor who)
+        {
+            if (walker == null) return;
+            if (_fiWho != null) _fiWho.SetValue(walker, who);
+            else if (_piWho != null) _piWho.SetValue(walker, who, null);
+        }
 
         private static object Room()
         {
@@ -354,12 +372,13 @@ namespace Coopfall
                     _fiWalkers = hi.GetField("_walkers", Any);
                     _fiWalkerList = _fiWalkers?.FieldType.GetField("_list", Any);
                     _walkerType = _fiWalkers?.FieldType.GetNestedType("Walker", Any);
-                    _fiWho = _walkerType?.GetField("Who", Any);
+                    _fiWho = _walkerType?.GetField("_who", Any) ?? _walkerType?.GetField("Who", Any);
+                    _piWho = _walkerType?.GetProperty("Who", Any);
                     _fiPos = _walkerType?.GetField("Pos", Any);
                     _fiHeading = _walkerType?.GetField("Heading", Any);
                     _fiWait = _walkerType?.GetField("Wait", Any);
                     _fiPath = _walkerType?.GetField("Path", Any);
-                    Log.Info("Worldfall rooms: eye=" + (_fiEye != null) + " walkers=" + (_fiWalkerList != null) + " walker=" + (_walkerType != null));
+                    Log.Info("Worldfall rooms: eye=" + (_fiEye != null) + " walkers=" + (_fiWalkerList != null) + " walker=" + (_walkerType != null) + " who=" + (_fiWho != null || _piWho != null));
                 }
                 return room;
             }
@@ -393,11 +412,11 @@ namespace Coopfall
             try
             {
                 object w = null;
-                foreach (object x in list) if (_fiWho.GetValue(x) == who) { w = x; break; }
+                foreach (object x in list) if (GetWho(x) == who) { w = x; break; }
                 if (w == null)
                 {
                     w = Activator.CreateInstance(_walkerType, true);
-                    _fiWho.SetValue(w, who);
+                    SetWho(w, who);
                     list.Add(w);
                 }
                 _fiPos.SetValue(w, pos);
@@ -410,14 +429,14 @@ namespace Coopfall
 
         public static void RemoveFromRoom(Actor who)
         {
-            if (who == null || _fiWho == null) return;
+            if (who == null || (_fiWho == null && _piWho == null)) return;
             object room = Room();
             var list = room != null ? Walkers(room) : null;
             if (list == null) return;
             try
             {
                 for (int i = list.Count - 1; i >= 0; i--)
-                    if (_fiWho.GetValue(list[i]) == who) list.RemoveAt(i);
+                    if (GetWho(list[i]) == who) list.RemoveAt(i);
             }
             catch { }
         }
@@ -428,7 +447,7 @@ namespace Coopfall
             object room = Room();
             var list = room != null ? Walkers(room) : null;
             if (list == null || who == null) return false;
-            try { foreach (object x in list) if (_fiWho.GetValue(x) == who) return true; } catch { }
+            try { foreach (object x in list) if (GetWho(x) == who) return true; } catch { }
             return false;
         }
 

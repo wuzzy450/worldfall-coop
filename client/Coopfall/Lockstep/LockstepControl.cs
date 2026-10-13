@@ -432,9 +432,18 @@ namespace Coopfall.Lockstep
                 MethodInfo m = AccessTools.Method(wf.GetType("FirstPerson.Towns." + g.Substring(0, dot), false), g.Substring(dot + 1));
                 if (m == null || !WorldCalls.Register(h, m)) Log.Warn("lockstep: Worldfall's " + g + " not relayed (renamed?): town patrons may walk on one PC only");
             }
+            // Worldfall 0.9.5 town planning and construction blueprints
+            foreach (string g in new[] { "Towns.Blueprints.PlaceSite", "Towns.WallPlans.Add" })
+            {
+                int dot = g.LastIndexOf('.');
+                MethodInfo m = AccessTools.Method(wf.GetType("FirstPerson." + g.Substring(0, dot), false), g.Substring(dot + 1));
+                if (m != null) WorldCalls.Register(h, m);
+            }
             // some of those run inside ticks instead
             try { WorldfallInTick.Install(h, wf); }
             catch (Exception e) { Log.Error("lockstep: Worldfall features in ticks not available: " + e); }
+            try { WorldfallNetGuard.Install(h, wf); }
+            catch (Exception e) { Log.Error("lockstep: Worldfall net guard not available: " + e); }
         }
 
         private static FieldInfo _hAngle, _hTurnRate, _hLooking;

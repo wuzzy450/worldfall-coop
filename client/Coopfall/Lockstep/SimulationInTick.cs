@@ -244,6 +244,13 @@ namespace Coopfall.Lockstep
         private static readonly List<Subspecies> _subspeciesPool = new List<Subspecies>();
         private static readonly List<string> _cloudsBuffer = new List<string>();
         private static readonly List<EquipmentAsset> _transmutePool = new List<EquipmentAsset>();
+        private static readonly List<City> _fractureCitiesPool = new List<City>();
+        private static readonly List<WorldTile> _dockCandidateTilesPool = new List<WorldTile>();
+        private static readonly List<string> _equipmentRainPool = new List<string>();
+        private static readonly List<WorldTile> _brushTilesPool = new List<WorldTile>();
+        private static readonly List<Actor> _loverCityCandidatesPool = new List<Actor>();
+        private static readonly AccessTools.FieldRef<WorldTile, int> _tileFlashStateRef = AccessTools.FieldRefAccess<WorldTile, int>("flash_state");
+        private static Action<WorldTile> _damageBuildingOnTileDel;
 
         private static AccessTools.FieldRef<Cloud, float> _cloudSpeedRef;
         private static AccessTools.FieldRef<Cloud, float> _cloudTextureWidthRef;
@@ -1504,6 +1511,67 @@ namespace Coopfall.Lockstep
                 MethodInfo mSetItemAsset = AccessTools.Method(typeof(Item), "setAsset", new[] { typeof(EquipmentAsset) });
                 if (mSetItemAsset != null) _setItemAssetDel = (Action<Item, EquipmentAsset>)Delegate.CreateDelegate(typeof(Action<Item, EquipmentAsset>), mSetItemAsset);
                 else Log.Warn("lockstep: Item.setAsset not found");
+
+                // 119. WorldBehaviourTilesRunner Tile Iteration & Lava Spread / Fire Ignition Determinism
+                MethodInfo mShuffleOneTile = null;
+                MethodInfo[] arrayExtMethods = typeof(ArrayExtensions).GetMethods(BindingFlags.Public | BindingFlags.Static);
+                for (int i = 0; i < arrayExtMethods.Length; i++)
+                {
+                    MethodInfo m = arrayExtMethods[i];
+                    if (m.Name == "ShuffleOne" && m.IsGenericMethod && m.GetParameters().Length == 2)
+                    {
+                        mShuffleOneTile = m.MakeGenericMethod(typeof(WorldTile));
+                        break;
+                    }
+                }
+                if (mShuffleOneTile != null) h.Patch(mShuffleOneTile, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(ArrayExtensionsShuffleOneTilePrefix)));
+                else Log.Warn("lockstep: ArrayExtensions.ShuffleOne<WorldTile> not found");
+
+                MethodInfo mTryToMoveLava = AccessTools.Method(typeof(WorldBehaviourActionLava), "tryToMoveLava", new[] { typeof(WorldTile) });
+                if (mTryToMoveLava != null) h.Patch(mTryToMoveLava, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WorldBehaviourActionLavaTryToMoveLavaPrefix)));
+                else Log.Warn("lockstep: WorldBehaviourActionLava.tryToMoveLava not found");
+
+                MethodInfo mDamageBuilding = AccessTools.Method(typeof(WorldBehaviourActionLava), "damageBuildingOnTile", new[] { typeof(WorldTile) });
+                if (mDamageBuilding != null) _damageBuildingOnTileDel = (Action<WorldTile>)Delegate.CreateDelegate(typeof(Action<WorldTile>), mDamageBuilding);
+
+                // 120. Building Dock Construction Zone Tile Iteration Determinism
+                MethodInfo mCheckZoneDock = AccessTools.Method(typeof(Building), "checkZoneForDockConstruction", new[] { typeof(TileZone) });
+                if (mCheckZoneDock != null) h.Patch(mCheckZoneDock, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BuildingCheckZoneForDockConstructionPrefix)));
+                else Log.Warn("lockstep: Building.checkZoneForDockConstruction not found");
+
+                // 121. Kingdom Royal Succession Secession & Fracture Secession Order Determinism
+                MethodInfo mFractureKingdom = AccessTools.Method(typeof(KingdomBehCheckKing), "fractureKingdom", new[] { typeof(Kingdom) });
+                if (mFractureKingdom != null) h.Patch(mFractureKingdom, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(KingdomBehCheckKingFractureKingdomPrefix)));
+                else Log.Warn("lockstep: KingdomBehCheckKing.fractureKingdom not found");
+
+                // 122. Kingdom Monarch Royal Succession Golden Tooth Trait Determinism
+                MethodInfo mGiveGoldenTooth = AccessTools.Method(typeof(KingdomBehCheckKing), "tryToGiveGoldenTooth", new[] { typeof(Actor) });
+                if (mGiveGoldenTooth != null) h.Patch(mGiveGoldenTooth, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(KingdomBehCheckKingTryToGiveGoldenToothPrefix)));
+                else Log.Warn("lockstep: KingdomBehCheckKing.tryToGiveGoldenTooth not found");
+
+                // 123. Family House Unit Search & Citizen Eviction Determinism
+                MethodInfo mTryFindFamilyHouse = AccessTools.Method(typeof(BehFindHouse), "tryToFindFamilyHouse", new[] { typeof(Actor) });
+                if (mTryFindFamilyHouse != null) h.Patch(mTryFindFamilyHouse, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindHouseTryToFindFamilyHousePrefix)));
+                else Log.Warn("lockstep: BehFindHouse.tryToFindFamilyHouse not found");
+
+                MethodInfo mCheckCityLovers = AccessTools.Method(typeof(BehFindLover), "checkCityLovers", new[] { typeof(Actor) });
+                if (mCheckCityLovers != null) h.Patch(mCheckCityLovers, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(BehFindLoverCheckCityLoversPrefix)));
+                else Log.Warn("lockstep: BehFindLover.checkCityLovers not found");
+
+                // 124. Subspecies Nucleus Genome Creation Gene Shuffling Determinism
+                MethodInfo mShuffleChromosomes = AccessTools.Method(typeof(Nucleus), "shuffleGenesBetweenChromosomes", Type.EmptyTypes);
+                if (mShuffleChromosomes != null) h.Patch(mShuffleChromosomes, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(NucleusShuffleGenesBetweenChromosomesPrefix)));
+                else Log.Warn("lockstep: Nucleus.shuffleGenesBetweenChromosomes not found");
+
+                // 125. Drops Equipment Rain Item Shuffle Determinism
+                MethodInfo mUseEquipmentRain = AccessTools.Method(typeof(DropsLibrary), "useEquipmentRain", new[] { typeof(WorldTile), typeof(List<string>), typeof(RainState) });
+                if (mUseEquipmentRain != null) h.Patch(mUseEquipmentRain, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(DropsLibraryUseEquipmentRainPrefix)));
+                else Log.Warn("lockstep: DropsLibrary.useEquipmentRain not found");
+
+                // 126. MapBox God Power Drop Brush Tile Iteration Determinism
+                MethodInfo mLoopBrushDrops = AccessTools.Method(typeof(MapBox), "loopWithBrushPowerForDropsRandom", new[] { typeof(WorldTile), typeof(BrushData), typeof(PowerAction), typeof(GodPower) });
+                if (mLoopBrushDrops != null) h.Patch(mLoopBrushDrops, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(MapBoxLoopWithBrushPowerForDropsRandomPrefix)));
+                else Log.Warn("lockstep: MapBox.loopWithBrushPowerForDropsRandom not found");
             }
             catch (Exception e)
             {
@@ -2868,8 +2936,9 @@ namespace Coopfall.Lockstep
                 {
                     _familyUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
                     int num = 0;
-                    foreach (Actor item in _familyUnitsPool.LoopRandom())
+                    for (int i = 0; i < _familyUnitsPool.Count; i++)
                     {
+                        Actor item = _familyUnitsPool[i];
                         if (++num > 5) break;
                         Building b = CheckBuildingDeterministic(item.home_building, family);
                         if (b != null)
@@ -10476,6 +10545,421 @@ namespace Coopfall.Lockstep
             }
             __instance.reforge(5);
             __instance.calculateValues();
+            return false;
+        }
+
+        // ==========================================
+        // 119. WorldBehaviourTilesRunner Tile Iteration & Lava Spread / Fire Ignition Determinism
+        // ==========================================
+        private static bool ArrayExtensionsShuffleOneTilePrefix(WorldTile[] pArray, int pItem)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pArray == null || pArray.Length < 2 || pArray.Length < pItem + 1) return false;
+            int remaining = pArray.Length - pItem;
+            if (remaining <= 1) return false;
+            int offset = (int)(Det01x((uint)LockstepClock.Tick, (uint)pItem, 0x54F1) * remaining);
+            if (offset >= remaining) offset = remaining - 1;
+            int target = pItem + offset;
+            pArray.Swap(pItem, target);
+            return false;
+        }
+
+        private static bool WorldBehaviourActionLavaTryToMoveLavaPrefix(WorldTile pTile, ref bool __result)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pTile == null || pTile.Type == null) { __result = false; return false; }
+
+            _damageBuildingOnTileDel?.Invoke(pTile);
+            if (WorldLawLibrary.world_law_forever_lava.isEnabled()) { __result = false; return false; }
+            if (World.world.getWorldTimeElapsedSince(pTile.timestamp_type_changed) < (float)pTile.Type.lava_change_state_after)
+            {
+                __result = false;
+                return false;
+            }
+
+            if (pTile.Type.lava_level == 0)
+            {
+                if (WorldLawLibrary.world_law_forever_lava.isEnabled()) { __result = false; return false; }
+                bool hasNeighbourLava = false;
+                WorldTile[] neighbours = pTile.neighbours;
+                if (neighbours != null)
+                {
+                    for (int i = 0; i < neighbours.Length; i++)
+                    {
+                        WorldTile nb = neighbours[i];
+                        if (nb != null && nb.Type.lava && nb.Type.lava_level > 0)
+                        {
+                            hasNeighbourLava = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hasNeighbourLava)
+                {
+                    _changeLavaTileTypeDel?.Invoke(pTile, TileLibrary.hills);
+                    __result = true;
+                    return false;
+                }
+                __result = false;
+                return false;
+            }
+
+            bool moveRoll = Det01x((uint)pTile.tile_id, (uint)LockstepClock.Tick, 0x1A84D1) < 0.5f;
+            bool result = false;
+            if (moveRoll)
+            {
+                WorldBehaviourActionLavaMoveLavaPrefix(pTile, ref result);
+                int flashVal = _tileFlashStateRef != null ? _tileFlashStateRef(pTile) : 0;
+                if (flashVal <= 0 && Det01x((uint)pTile.tile_id, (uint)LockstepClock.Tick, 0x1A84D2) < 0.995f)
+                {
+                    _startFireDel?.Invoke(pTile, true);
+                }
+            }
+            __result = result;
+            return false;
+        }
+
+        // ==========================================
+        // 120. Building Dock Construction Zone Tile Iteration Determinism
+        // ==========================================
+        private static bool BuildingCheckZoneForDockConstructionPrefix(Building __instance, TileZone pZone, ref IEnumerable<WorldTile> __result)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            __result = CheckZoneForDockConstructionDeterministic(__instance, pZone);
+            return false;
+        }
+
+        private static IEnumerable<WorldTile> CheckZoneForDockConstructionDeterministic(Building building, TileZone pZone)
+        {
+            if (building == null || pZone == null || pZone.city == null || pZone.city != building.city || pZone.tiles == null)
+            {
+                yield break;
+            }
+            _dockCandidateTilesPool.Clear();
+            for (int i = 0; i < pZone.tiles.Length; i++)
+            {
+                WorldTile tile = pZone.tiles[i];
+                if (tile != null && tile.Type.ground && Toolbox.SquaredDistTile(building.current_tile, tile) <= 49)
+                {
+                    _dockCandidateTilesPool.Add(tile);
+                }
+            }
+            if (_dockCandidateTilesPool.Count == 0) yield break;
+            _dockCandidateTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            for (int i = 0; i < _dockCandidateTilesPool.Count; i++)
+            {
+                yield return _dockCandidateTilesPool[i];
+            }
+        }
+
+        // ==========================================
+        // 121. Kingdom Royal Succession Secession & Fracture Secession Order Determinism
+        // ==========================================
+        private static bool KingdomBehCheckKingFractureKingdomPrefix(Kingdom pMainKingdom)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pMainKingdom == null) return false;
+
+            _fractureCitiesPool.Clear();
+            IEnumerable<City> cities = pMainKingdom.getCities();
+            if (cities != null)
+            {
+                foreach (City city in cities)
+                {
+                    if (city != null && city != pMainKingdom.capital)
+                    {
+                        _fractureCitiesPool.Add(city);
+                    }
+                }
+            }
+            if (_fractureCitiesPool.Count == 0) return false;
+
+            _fractureCitiesPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            bool flag = false;
+            for (int i = 0; i < _fractureCitiesPool.Count; i++)
+            {
+                City item = _fractureCitiesPool[i];
+                Actor leader = item.leader;
+                if (leader != null && leader.isAlive())
+                {
+                    _makeOwnKingdomMethod?.Invoke(item, new object[] { leader, false, true });
+                    flag = true;
+                }
+            }
+            _fractureCitiesPool.Clear();
+
+            if (flag)
+            {
+                if (pMainKingdom.hasAlliance())
+                {
+                    pMainKingdom.getAlliance().leave(pMainKingdom);
+                }
+                WorldLog.logFracturedKingdom(pMainKingdom);
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 122. Kingdom Monarch Royal Succession Golden Tooth Trait Determinism
+        // ==========================================
+        private static bool KingdomBehCheckKingTryToGiveGoldenToothPrefix(Actor pActor)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pActor == null || !pActor.isAlive()) return false;
+            if (pActor.getAge() > 45 && Det01x((uint)pActor.id, (uint)LockstepClock.Tick, 0x601D) < 0.05f)
+            {
+                pActor.addTrait("golden_tooth");
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 123. Family House Unit Search & Citizen Eviction Determinism
+        // ==========================================
+        private static bool BehFindHouseTryToFindFamilyHousePrefix(Actor pActor, ref Building __result)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pActor == null || !pActor.hasFamily() || pActor.family.units == null || pActor.family.units.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+
+            _familyUnitsPool.Clear();
+            Family family = pActor.family;
+            for (int i = 0; i < family.units.Count; i++)
+            {
+                Actor u = family.units[i];
+                if (u != null && u != pActor && u.hasHouse() && u.city == pActor.city)
+                {
+                    _familyUnitsPool.Add(u);
+                }
+            }
+
+            if (_familyUnitsPool.Count == 0)
+            {
+                __result = null;
+                return false;
+            }
+
+            _familyUnitsPool.Sort((a, b) => a.id.CompareTo(b.id));
+
+            int checkedCount = 0;
+            Building found = null;
+            for (int i = 0; i < _familyUnitsPool.Count; i++)
+            {
+                Actor item = _familyUnitsPool[i];
+                if (++checkedCount > 5) break;
+
+                Building b = CheckBuildingDeterministic(item.home_building, family);
+                if (b != null)
+                {
+                    found = b;
+                    break;
+                }
+            }
+            _familyUnitsPool.Clear();
+            __result = found;
+            return false;
+        }
+
+        private static bool BehFindLoverCheckCityLoversPrefix(Actor pActor, ref Actor __result, BehFindLover __instance)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pActor == null || !pActor.hasCity() || pActor.city.units == null) { __result = null; return false; }
+            List<Actor> cityUnits = pActor.city.units;
+            if (cityUnits.Count == 0) { __result = null; return false; }
+
+            _loverCityCandidatesPool.Clear();
+            for (int i = 0; i < cityUnits.Count; i++)
+            {
+                Actor u = cityUnits[i];
+                if (u != null && u != pActor && u.isAlive() && u.hasSubspecies() && u.canFallInLoveWith(pActor) && u.inOwnCityBorders())
+                {
+                    _loverCityCandidatesPool.Add(u);
+                }
+            }
+            if (_loverCityCandidatesPool.Count == 0) { __result = null; return false; }
+            _loverCityCandidatesPool.Sort((a, b) => a.id.CompareTo(b.id));
+            int pick = (int)(Det01x((uint)pActor.id, (uint)LockstepClock.Tick, 0x10BE) * _loverCityCandidatesPool.Count);
+            if (pick >= _loverCityCandidatesPool.Count) pick = _loverCityCandidatesPool.Count - 1;
+            __result = _loverCityCandidatesPool[pick];
+            _loverCityCandidatesPool.Clear();
+            return false;
+        }
+
+        // ==========================================
+        // 124. Subspecies Nucleus Genome Creation Gene Shuffling Determinism
+        // ==========================================
+        private static bool NucleusShuffleGenesBetweenChromosomesPrefix(Nucleus __instance)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (__instance == null || __instance.chromosomes == null) return false;
+
+            using ListPool<GeneAsset> listPool = new ListPool<GeneAsset>();
+            for (int i = 0; i < __instance.chromosomes.Count; i++)
+            {
+                Chromosome chromosome = __instance.chromosomes[i];
+                if (chromosome == null || chromosome.genes == null) continue;
+                for (int j = 0; j < chromosome.genes.Count; j++)
+                {
+                    GeneAsset geneAsset = chromosome.genes[j];
+                    if (geneAsset != null && !geneAsset.is_empty)
+                    {
+                        chromosome.genes[j] = GeneLibrary.gene_for_generation;
+                        listPool.Add(geneAsset);
+                    }
+                }
+            }
+
+            if (listPool.Count > 0)
+            {
+                listPool.Sort((a, b) => string.CompareOrdinal(a.id, b.id));
+                for (int i = listPool.Count - 1; i > 0; i--)
+                {
+                    int j = (int)(Det01x((uint)LockstepClock.Tick, (uint)i, 0x9A4) * (i + 1));
+                    if (j > i) j = i;
+                    GeneAsset temp = listPool[i];
+                    listPool[i] = listPool[j];
+                    listPool[j] = temp;
+                }
+
+                for (int k = 0; k < __instance.chromosomes.Count; k++)
+                {
+                    Chromosome chromosome2 = __instance.chromosomes[k];
+                    if (chromosome2 == null || chromosome2.genes == null) continue;
+                    for (int l = 0; l < chromosome2.genes.Count; l++)
+                    {
+                        if (chromosome2.genes[l].for_generation && listPool.Count > 0)
+                        {
+                            chromosome2.genes[l] = listPool.Pop();
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 125. Drops Equipment Rain Item Shuffle Determinism
+        // ==========================================
+        private static bool DropsLibraryUseEquipmentRainPrefix(WorldTile pTile, List<string> pItems, RainState pRainState)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pTile == null || pItems == null || pItems.Count == 0) return false;
+
+            _equipmentRainPool.Clear();
+            for (int i = 0; i < pItems.Count; i++)
+            {
+                _equipmentRainPool.Add(pItems[i]);
+            }
+            _equipmentRainPool.Sort(StringComparer.Ordinal);
+            uint tileSeed = (uint)pTile.tile_id;
+            for (int i = _equipmentRainPool.Count - 1; i > 0; i--)
+            {
+                int j = (int)(Det01x(tileSeed, (uint)LockstepClock.Tick, (uint)(i ^ 0x2A1)) * (i + 1));
+                if (j > i) j = i;
+                string temp = _equipmentRainPool[i];
+                _equipmentRainPool[i] = _equipmentRainPool[j];
+                _equipmentRainPool[j] = temp;
+            }
+
+            using ListPool<EquipmentAsset> listPool = new ListPool<EquipmentAsset>(_equipmentRainPool.Count);
+            HashSet<EquipmentType> hashSet = new HashSet<EquipmentType>();
+            for (int i = 0; i < _equipmentRainPool.Count; i++)
+            {
+                string pID = _equipmentRainPool[i];
+                EquipmentAsset equipmentAsset = AssetManager.items.get(pID);
+                if (equipmentAsset != null && (pRainState != RainState.Add || !hashSet.Contains(equipmentAsset.equipment_type)) && equipmentAsset.isAvailable() && (pRainState != RainState.Add || equipmentAsset.can_be_given) && (pRainState != RainState.Remove || equipmentAsset.can_be_removed))
+                {
+                    hashSet.Add(equipmentAsset.equipment_type);
+                    listPool.Add(equipmentAsset);
+                }
+            }
+            _equipmentRainPool.Clear();
+
+            foreach (Actor item3 in Finder.getUnitsFromChunk(pTile, 1, 3f))
+            {
+                if (item3 == null || !item3.canEditEquipment()) continue;
+                for (int j = 0; j < listPool.Count; j++)
+                {
+                    EquipmentAsset equipmentAsset2 = listPool[j];
+                    if (!item3.asset.canEditItem(equipmentAsset2)) continue;
+                    ActorEquipmentSlot slot = item3.equipment.getSlot(equipmentAsset2.equipment_type);
+                    if (slot == null) continue;
+                    Item item = slot.getItem();
+                    if (pRainState == RainState.Remove)
+                    {
+                        if (slot.isEmpty() || item == null || item.asset == null || item.asset.id != equipmentAsset2.id) continue;
+                    }
+                    else if (!slot.isEmpty() && item != null && item.asset != null && (item.asset.id == equipmentAsset2.id || item.isFavorite() || item.isCursed()))
+                    {
+                        continue;
+                    }
+                    if (pRainState == RainState.Remove)
+                    {
+                        if (item != null && item.data != null) item.data.favorite = false;
+                        item?.removeMod("eternal");
+                        slot.takeAwayItem();
+                    }
+                    else
+                    {
+                        Item item2 = World.world.items.generateItem(equipmentAsset2, item3.kingdom, "Divine Rain", 1, item3, 0, pByPlayer: true);
+                        item2?.addMod("divine_rune");
+                        item3.equipment.setItem(item2, item3);
+                    }
+                }
+                item3.startShake();
+                item3.makeConfused(-1f, pColorEffect: true);
+            }
+            return false;
+        }
+
+        // ==========================================
+        // 126. MapBox God Power Drop Brush Tile Iteration Determinism
+        // ==========================================
+        private static bool MapBoxLoopWithBrushPowerForDropsRandomPrefix(WorldTile pCenterTile, BrushData pBrush, PowerAction pAction, GodPower pPower, MapBox __instance)
+        {
+            if (!LockstepClock.Active && !LockstepClock.InTick) return true;
+            if (pCenterTile == null || pBrush == null || pBrush.pos == null) return false;
+
+            int width = MapBox.width;
+            int height = MapBox.height;
+            _brushTilesPool.Clear();
+            BrushPixelData[] pos = pBrush.pos;
+            for (int i = 0; i < pos.Length; i++)
+            {
+                BrushPixelData bpd = pos[i];
+                int x = pCenterTile.x + bpd.x;
+                int y = pCenterTile.y + bpd.y;
+                if (x >= 0 && x < width && y >= 0 && y < height)
+                {
+                    WorldTile t = __instance.GetTileSimple(x, y);
+                    if (t != null) _brushTilesPool.Add(t);
+                }
+            }
+            if (_brushTilesPool.Count == 0) return false;
+
+            _brushTilesPool.Sort((a, b) => a.tile_id.CompareTo(b.tile_id));
+            uint tileSeed = (uint)pCenterTile.tile_id;
+            for (int i = _brushTilesPool.Count - 1; i > 0; i--)
+            {
+                int j = (int)(Det01x(tileSeed, (uint)LockstepClock.Tick, (uint)(i ^ 0x51E)) * (i + 1));
+                if (j > i) j = i;
+                WorldTile temp = _brushTilesPool[i];
+                _brushTilesPool[i] = _brushTilesPool[j];
+                _brushTilesPool[j] = temp;
+            }
+
+            int drops = pBrush.drops;
+            for (int j = 0; j < drops; j++)
+            {
+                if (_brushTilesPool.Count == 0) break;
+                WorldTile pTile = _brushTilesPool.Pop();
+                pAction?.Invoke(pTile, pPower);
+            }
+            _brushTilesPool.Clear();
             return false;
         }
     }
