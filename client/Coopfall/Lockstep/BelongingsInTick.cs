@@ -251,9 +251,21 @@ namespace Coopfall.Lockstep
                 object piece = _fromItem.Invoke(null, new object[] { item });
                 _letGo.Invoke(null, new object[] { item });
                 if (piece == null) toast("The " + name + " broke while you were making it");
-                else if ((bool)_putPiece.Invoke(null, new object[] { host, piece, toast })) toast("Made a " + name + ". It's in your bag (Tab)");
+                else if ((bool)_putPiece.Invoke(null, Pad(_putPiece, host, piece, toast))) toast("Made a " + name + ". It's in your bag (Tab)");
             }
             catch (Exception e) { Fail("crafting", e); toast("The " + name + " broke while you were making it"); }
+        }
+
+        /// <summary>Arguments for a Worldfall method, its later-added optional parameters filled with
+        /// their defaults (Worldfall 0.9.7 added Bag.PutPiece's "room": the old 3-argument call threw).</summary>
+        private static object[] Pad(MethodInfo m, params object[] args)
+        {
+            ParameterInfo[] ps = m.GetParameters();
+            if (ps.Length <= args.Length) return args;
+            var all = new object[ps.Length];
+            Array.Copy(args, all, args.Length);
+            for (int i = args.Length; i < ps.Length; i++) all[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : Type.Missing;
+            return all;
         }
 
         // ------------------------------------------------------------------ per tick
