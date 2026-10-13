@@ -19,7 +19,7 @@ namespace Coopfall
         private int _lsCampStep;
         private const BindingFlags Any = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
 
-        private bool LockstepKingTime(float now) => now - _lsStart > 168f && WorldfallBridge.Present;
+        private bool LockstepKingTime(float now) => !FourMode && now - _lsStart > 168f && WorldfallBridge.Present;
 
         private void LockstepCampaignTick(float now)
         {

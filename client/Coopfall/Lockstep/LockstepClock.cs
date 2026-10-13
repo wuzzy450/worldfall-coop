@@ -625,6 +625,21 @@ namespace Coopfall.Lockstep
             if (fires != null) Array.Clear(fires, 0, fires.Length);
             WorldBehaviourActionFire.clear();
             WorldBehaviourActionFire.clearFires();
+            // same bug class: the burned-tiles behaviour keeps a static set of tiles that survives loads
+            ClearStaticCollection("WorldBehaviourActionBurnedTiles", "_burned_tiles");
+        }
+
+        private static void ClearStaticCollection(string type, string field)
+        {
+            try
+            {
+                FieldInfo f = AccessTools.Field(AccessTools.TypeByName(type), field);
+                if (f == null || !f.IsStatic) return;
+                MethodInfo clear = f.FieldType.GetMethod("Clear", Type.EmptyTypes);
+                object v = f.GetValue(null);
+                if (v != null && clear != null) clear.Invoke(v, null);
+            }
+            catch (Exception e) { Log.Warn("lockstep: can't clear " + type + "." + field + ": " + e.Message); }
         }
 
         private static bool DelayedPrefix() => !Active || _inTick;

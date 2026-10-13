@@ -22,6 +22,9 @@ namespace Coopfall
         private Vector2 _lsMove;
         private bool _lsAttack, _lsJump;
         private int _lsPossessions, _lsNudged;
+        // the script's own dice: UnityEngine.Random is part of the shared dice fingerprint, so
+        // drawing from it between ticks desynced "rng" (seen at the four-mode cursor phase end)
+        private readonly System.Random _lsRnd = new System.Random(System.Environment.TickCount);
         private static readonly bool ForceDesync = System.Array.Exists(System.Environment.GetCommandLineArgs(), x => x == "-coopfall-test-desync");
         private static readonly bool NoPossess = System.Array.Exists(System.Environment.GetCommandLineArgs(), x => x == "-coopfall-test-nopossess");
 
@@ -115,7 +118,7 @@ namespace Coopfall
                 var units = World.world.units.getSimpleList();
                 for (int k = 0; k < 20 && units.Count > 0; k++)
                 {
-                    Actor a = units[Random.Range(0, units.Count)];
+                    Actor a = units[_lsRnd.Next(units.Count)];
                     if (a == null || !a.isAlive() || !a.canBePossessed() || Lockstep.LockstepControl.IsControlled(a.getID())) continue;
                     ControllableUnit.setControllableCreature(a);
                     _lsPossessAt = now;
@@ -128,9 +131,9 @@ namespace Coopfall
             if (now < _lsSteerAt) return;
             if (FourMode && LockstepFourSteer()) return;
             _lsSteerAt = now + 2f;
-            _lsMove = new Vector2(Random.Range(-1, 2), Random.Range(-1, 2));
-            _lsAttack = Random.value < 0.3f;
-            _lsJump = Random.value < 0.2f;
+            _lsMove = new Vector2(_lsRnd.Next(-1, 2), _lsRnd.Next(-1, 2));
+            _lsAttack = _lsRnd.NextDouble() < 0.3;
+            _lsJump = _lsRnd.NextDouble() < 0.2;
         }
 
         /// <summary>Name tags (the others' creatures as this PC labels them), who is indoors, the gusts.</summary>
@@ -346,10 +349,15 @@ namespace Coopfall
             if (_lkMode) { LooksTick(now); return; }
             if (_cpMode) { CoopTick(now); return; }
             LockstepPossessTick(now);
-            LockstepHouseTick(now);
-            LockstepCallsTick(now);
-            LockstepAbilityTick(now);
-            LockstepCampaignTick(now);
+            // the house/tree/ability/king steps are 2-player scripts (host + one guest) and would
+            // fight the four-mode gather and cursor phases, so four mode skips them
+            if (!FourMode)
+            {
+                LockstepHouseTick(now);
+                LockstepCallsTick(now);
+                LockstepAbilityTick(now);
+                LockstepCampaignTick(now);
+            }
             // "-coopfall-test-desync": the guest nudges one creature after 60 s and again after 150 s (times resyncs)
             if (ForceDesync && !_s.IsHost && (_lsNudged == 0 && now - _lsStart > 60f || _lsNudged == 1 && now - _lsStart > 150f))
             {
@@ -361,9 +369,11 @@ namespace Coopfall
             // a creature's tile picked with the local dice (each player clicks somewhere different)
             var units = World.world.units.getSimpleList();
             if (units.Count == 0) return;
-            Actor a = units[Random.Range(0, units.Count)];
+            Actor a = units[_lsRnd.Next(units.Count)];
             if (a == null || a.current_tile == null) return;
-            string p = LockstepPowers[(_lsUsed * 2 + (_s.IsHost ? 0 : 1)) % LockstepPowers.Length];
+            // each player walks the list from its own offset (2-4 players; the host starts at 0)
+            int seat = _s.IsHost ? 0 : 1 + (int)((uint)Lockstep.LockstepSession.MyPlayer % (uint)(LockstepPowers.Length - 1));
+            string p = LockstepPowers[(_lsUsed * 2 + seat) % LockstepPowers.Length];
             if (CoopMod.Instance.Powers.UseLocal(p, a.current_tile)) _lsUsed++;
         }
     }

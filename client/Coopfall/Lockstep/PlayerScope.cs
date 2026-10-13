@@ -799,7 +799,11 @@ namespace Coopfall.Lockstep
                 {
                     Part p = _parts[i];
                     if (p.ui) continue;
-                    try { o[PartKey(p)] = w.Write(kv.Value[i]); }
+                    // a fresh part that is still an empty collection is written as null: a carried null
+                    // is rebuilt as Fresh() (empty), and must write back the same (the "~L" DIFFERS)
+                    object val = kv.Value[i];
+                    if (p.fresh && val is System.Collections.ICollection c && c.Count == 0) val = null;
+                    try { o[PartKey(p)] = w.Write(val); }
                     catch (Exception e) { if (_failed.Add("save " + p.f.Name)) Log.Warn("lockstep: can't carry " + PartKey(p) + " to the next epoch: " + e.Message); }
                 }
                 skipped += w.Skipped;
