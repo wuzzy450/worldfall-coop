@@ -48,6 +48,7 @@ namespace Coopfall.Lockstep
         {
             if (_installed) return;
             _installed = true;
+            InstallNameSeeds(h);
             _actorVisible = AccessTools.FieldRefAccess<Actor, bool>("is_visible");
             var pre = new HarmonyMethod(typeof(VisualIsolation), nameof(SaveDice));
             var post = new HarmonyMethod(typeof(VisualIsolation), nameof(RestoreDice));
@@ -135,12 +136,53 @@ namespace Coopfall.Lockstep
             return false;
         }
 
+        /// <summary>
+        /// The game seeds every meta name (kingdom, city, clan, ...) with its object's ID
+        /// (NameGenerator.generateName's pSeed), but the template pick inside draws plain dice, which
+        /// lockstep points at per-PC scratch generators: the same kingdom got a different name on each
+        /// PC (and Worldfall's memories quoted it: a "Worldfall data" desync). Here the whole name is
+        /// drawn from generators seeded by that seed, so it comes out the same everywhere, whenever made.
+        /// </summary>
+        private static void InstallNameSeeds(Harmony h)
+        {
+            int n = 0;
+            foreach (MethodInfo m in typeof(NameGenerator).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                if (m.Name != "generateName") continue;
+                ParameterInfo[] ps = m.GetParameters();
+                if (ps.Length < 3 || ps[2].ParameterType != typeof(long) || ps[2].Name != "pSeed") continue;
+                try
+                {
+                    h.Patch(m, prefix: new HarmonyMethod(typeof(VisualIsolation), nameof(NameSeedPrefix)) { priority = Priority.First },
+                        postfix: new HarmonyMethod(typeof(VisualIsolation), nameof(NameSeedPostfix)) { priority = Priority.Last });
+                    n++;
+                }
+                catch (Exception e) { Log.Warn("lockstep: couldn't seed names: " + e.Message); }
+            }
+            if (n == 0) Log.Warn("lockstep: NameGenerator.generateName(.., pSeed) not found: names may differ between PCs");
+        }
+
+        private static void NameSeedPrefix(long pSeed, MetaType pType, out Dice.Snapshot __state)
+        {
+            __state = default;
+            if (!LockstepClock.Active) return;
+            ulong x = (ulong)pSeed * 0x9E3779B97F4A7C15UL ^ (ulong)(int)pType * 0xC2B2AE3D27D4EB4FUL;
+            x ^= x >> 31;
+            __state = Dice.IsolateSeeded((uint)x ^ (uint)(x >> 32));
+        }
+
+        private static void NameSeedPostfix(Dice.Snapshot __state)
+        {
+            if (__state.rnd != null) Dice.RestoreSeeded(__state);
+        }
+
         /// <summary>How deep we are in visual-only code (inside a tick).</summary>
         private static int _depth;
 
         private static void SaveDice(out Dice.Snapshot __state)
         {
-            __state = LockstepClock.InTick ? Dice.Isolate() : default;
+            // inside a seeded name (NameSeedPrefix) the seeded generators stay: same name on every PC
+            __state = LockstepClock.InTick && Dice.SeededDepth == 0 ? Dice.Isolate() : default;
             if (__state.rnd != null) _depth++;
         }
 

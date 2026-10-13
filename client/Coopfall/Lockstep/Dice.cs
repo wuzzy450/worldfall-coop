@@ -42,6 +42,32 @@ namespace Coopfall.Lockstep
             return s;
         }
 
+        /// <summary>How deep we are in code that draws from a seeded generator of its own (names).</summary>
+        public static int SeededDepth;
+
+        /// <summary>
+        /// Like Isolate, but the generators start from this seed: code that must come out the same
+        /// on every PC whenever it runs (a name the game already seeds by its object's ID) draws
+        /// from here instead of the scratch generators, whose state differs between PCs.
+        /// </summary>
+        public static Snapshot IsolateSeeded(uint seed)
+        {
+            var s = new Snapshot { rand = _rand(), rnd = _rnd(), unity = UnityEngine.Random.state };
+            _rand() = new Unity.Mathematics.Random(seed == 0 ? 1u : seed);
+            _rnd() = new System.Random((int)seed);
+            UnityEngine.Random.InitState((int)seed);
+            SeededDepth++;
+            return s;
+        }
+
+        public static void RestoreSeeded(Snapshot s)
+        {
+            _rand() = s.rand;
+            _rnd() = s.rnd;
+            UnityEngine.Random.state = s.unity;
+            SeededDepth--;
+        }
+
         public static void Restore(Snapshot s)
         {
             _randScratch = _rand();
