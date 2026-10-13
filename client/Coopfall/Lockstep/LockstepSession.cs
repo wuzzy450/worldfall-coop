@@ -699,6 +699,7 @@ namespace Coopfall.Lockstep
             _recentTargets.Clear();
             UnitRing.Write(TracePath("lockstep-ring" + _epoch + ".txt"));
             TileDump.Write(TracePath("lockstep-tiles" + _epoch + ".txt"));
+            TileCheckSnap.WriteAll(TracePath, _epoch);
             try
             {
                 using (var w = new System.IO.StreamWriter(TracePath("lockstep-watch" + _epoch + ".txt")))

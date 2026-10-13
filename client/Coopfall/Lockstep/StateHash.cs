@@ -225,6 +225,7 @@ namespace Coopfall.Lockstep
             {
                 WorldTile[] tiles = _tiles(w);
                 bool[] fires = w.tile_manager.fires;
+                TileCheckSnap snap = TileCheckSnap.Next(tick, tiles.Length);
                 ulong th = 0;
                 for (int i = 0; i < tiles.Length; i++)
                 {
@@ -239,6 +240,7 @@ namespace Coopfall.Lockstep
                     v = v * 31 + (uint)tile.timestamp_type_changed.GetHashCode();
                     v = v * 31 + (tile.data.frozen ? 1u : 0u);
                     th += Mix(((ulong)(uint)i << 32) ^ v);
+                    if (snap != null) snap.Set(i, type, tile.main_type != null ? tile.main_type.index_id : -1, tile.health, fire, tile.burned_stages, _flash(tile), tile.timestamp_type_changed, tile.data.frozen);
                 }
                 t.tiles = th;
             }

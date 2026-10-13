@@ -229,6 +229,7 @@ namespace Coopfall.Lockstep
         /// </summary>
         public static void NormalizeAfterLoad()
         {
+            TileCheckSnap.Reset();
             FarmsInTick.ResetNameCaches();
             var sorted = new List<ActorTrait>();
             foreach (Actor a in World.world.units)
