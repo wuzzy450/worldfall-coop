@@ -386,6 +386,9 @@ namespace Coopfall.Lockstep
                 "Possess.Keep", "PossessionCombat.ShakeOffStuns",
                 "Abilities.Update", "Abilities.UpdateCreatures", "Guards.Update", "FamilyFollow.Update", "FamilyFollow.Send",
                 "WarMap.UpkeepFlags", "WarMap.UpkeepFleet", "Service.Update", "Service.Send", "SoldierMap.Update", "Royal.Update",
+                // 0.9.7 also calls Regalia.Update (kingdom flag styles) from its own frame update;
+                // its sweep runs in ticks instead (WorldfallInTick.Run)
+                "Regalia.Update",
                 "Butchery.Cut",
                 // drawing first person moves the creatures around you: crowd steering, and pushing
                 // them out of your body

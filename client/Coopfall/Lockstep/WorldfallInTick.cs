@@ -27,6 +27,8 @@ namespace Coopfall.Lockstep
         private static Action<string> _noToast = s => { };
         private static readonly List<KeyValuePair<FieldInfo, object>> _statics = new List<KeyValuePair<FieldInfo, object>>();
         private static float _abilityTimer;
+        private static MethodInfo _regaliaSweep;
+        private static bool _regaliaLooked;
         public static bool Ready => _guards != null || _creatures != null;
 
         public static void Install(Harmony h, Assembly wf)
@@ -545,6 +547,21 @@ namespace Coopfall.Lockstep
         public static void Run()
         {
             PlayerScope.RunTick();
+            // kingdom flag styles (Worldfall 0.9.7's Regalia): its frame update is gated off, its
+            // sweep (style every civ kingdom that has none, oldest first) runs here on the tick clock
+            if (LockstepClock.Tick % 50 == 0)
+            {
+                if (_regaliaSweep == null && !_regaliaLooked)
+                {
+                    _regaliaLooked = true;
+                    Type reg = WorldfallBridge.Assembly?.GetType("FirstPerson.Regalia", false);
+                    _regaliaSweep = reg == null ? null : AccessTools.Method(reg, "Sweep", Type.EmptyTypes);
+                    if (reg != null && _regaliaSweep == null) Log.Warn("lockstep: Worldfall's Regalia.Sweep not found: kingdom styles are not given out while lockstep runs");
+                }
+                if (_regaliaSweep != null)
+                    try { _regaliaSweep.Invoke(null, null); }
+                    catch (Exception e) { Log.Error("lockstep: kingdom styles: " + (e.InnerException ?? e).Message); }
+            }
             if (_rush != null)
                 try { _rush.Invoke(null, null); }
                 catch (Exception e) { Log.Error("lockstep: ability rush: " + (e.InnerException ?? e).Message); }
