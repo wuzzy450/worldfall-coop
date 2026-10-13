@@ -230,6 +230,9 @@ namespace Coopfall.Lockstep
         public static void NormalizeAfterLoad()
         {
             TileCheckSnap.Reset();
+            // adds/removes still waiting in the object containers join first, so the trait sort, the
+            // job lists and the batches below see the same creatures and buildings on every PC
+            FlushContainers(World.world);
             FarmsInTick.ResetNameCaches();
             var sorted = new List<ActorTrait>();
             foreach (Actor a in World.world.units)
@@ -252,7 +255,6 @@ namespace Coopfall.Lockstep
             Log.Info("lockstep: job lists after load: " + ListSignature());
             ResetJobSkips(World.world.units);
             ResetJobSkips(World.world.buildings);
-            FlushContainers(World.world);
             ResetStatics();
             // tiles are reused between worlds of the same size; their "walls around" cache isn't
             // reset by loading
