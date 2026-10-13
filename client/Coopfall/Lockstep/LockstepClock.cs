@@ -683,7 +683,8 @@ namespace Coopfall.Lockstep
             int n = 0;
             foreach (Building b in buildings)
             {
-                if (b == null || !(_componentsList.GetValue(b) is System.Collections.IList list)) continue;
+                // ListPool isn't an IList: walk it as an enumerable
+                if (b == null || !(_componentsList.GetValue(b) is System.Collections.IEnumerable list)) continue;
                 foreach (object c in list)
                 {
                     if (c == null) continue;
@@ -704,7 +705,7 @@ namespace Coopfall.Lockstep
                     if (fields.Count > 0) n++;
                 }
             }
-            if (n > 0) Log.Info("lockstep: reset the timers of " + n + " building components");
+            Log.Info("lockstep: reset the timers of " + n + " building components");
         }
 
         private static bool DelayedPrefix() => !Active || _inTick;
