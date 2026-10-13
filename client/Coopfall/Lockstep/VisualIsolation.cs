@@ -37,7 +37,11 @@ namespace Coopfall.Lockstep
             "MusicBox.play*",
             // a talk bubble's topic is picked (with dice) by whichever asks first: the bubble on
             // screen or the AI
-            "Actor.getSocializeTopic", "CommunicationTopicLibrary.getTopicSprite"
+            "Actor.getSocializeTopic", "CommunicationTopicLibrary.getTopicSprite",
+            // names are made the first time something asks (often a nameplate on screen), and
+            // making one reseeds the shared dice
+            "Actor.getName", "OnomasticsData.generateName", "NameGenerator.getName", "NameGenerator.generateName",
+            "NameGenerator.generateNameFromTemplate", "NameGenerator.generateNameFromOnomastics",
         };
 
         public static void Install(Harmony h)

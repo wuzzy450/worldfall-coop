@@ -277,8 +277,6 @@ namespace Coopfall.Lockstep
             SimulationInTick.Normalize(World.world);
             WorldBehaviourTilesTemperatureFreezeWaves.clear();
             WorldBehaviourTilesRunner.clearTilesToCheck();
-            if (AccessTools.Field(typeof(ArrayExtensions), "rnd") is FieldInfo fArr) fArr.SetValue(null, new System.Random(1337));
-            if (AccessTools.Field(typeof(ListExtensions), "rnd") is FieldInfo fList) fList.SetValue(null, new System.Random(1337));
             // world behaviour timers aren't in the save and carry over from the previous world
             if (_behTimer != null)
                 foreach (WorldBehaviourAsset b in AssetManager.world_behaviours.list)
