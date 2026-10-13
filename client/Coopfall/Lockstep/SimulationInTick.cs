@@ -1256,11 +1256,12 @@ namespace Coopfall.Lockstep
                 // replacer patch right below threw (its prefix had a parameter name that isn't in the
                 // method), which aborted the REST of Install - so every verified clean run since then
                 // ran WITHOUT them. Installing them all at once (2026-10-12) desynced the shared rng at
-                // the very first check after a guest joined (a tick-10 desync storm). They stay off until
-                // re-verified in batches; "-coopfall-ls-on simfixes" installs them (for bisecting).
-                if (!On("simfixes"))
+                // the very first check after a guest joined (a tick-10 desync storm). They stay off
+                // until re-verified, now in numbered parts of ~5 fixes: "-coopfall-ls-on simfixesN"
+                // installs part N (simfixes1..simfixes6), "simfixes" all of them (for bisecting).
+                if (!(On("simfixes") || On("simfixes1")))
                 {
-                    Log.Info("lockstep: SimulationInTick fixes 93-126 are off until re-verified in batches (they never ran before 2026-10-12; -coopfall-ls-on simfixes turns them on)");
+                    Log.Info("lockstep: SimulationInTick fixes 93-97 (part 1) are off until re-verified in batches (they never ran before 2026-10-12; -coopfall-ls-on simfixes1 turns them on)");
                     return;
                 }
                 MethodInfo mRepCity = AccessTools.Method(typeof(NameGeneratorReplacers), "replaceAnyCity", new[] { typeof(string).MakeByRefType(), typeof(Actor) });
@@ -1338,6 +1339,12 @@ namespace Coopfall.Lockstep
                 if (mGetWarsAlliance != null) h.Patch(mGetWarsAlliance, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(WarManagerGetWarsAlliancePrefix)));
                 else Log.Warn("lockstep: WarManager.getWars(Alliance) not found");
 
+                if (!(On("simfixes") || On("simfixes2")))
+                {
+                    Log.Info("lockstep: SimulationInTick fixes 98-102 (part 2) are off until re-verified; -coopfall-ls-on simfixes2 turns them on");
+                    return;
+                }
+
                 // 98. Subspecies Genome Nucleus Random Normal Gene Selection Determinism
                 MethodInfo mGetRandomNormalGene = AccessTools.Method(typeof(GeneLibrary), "getRandomNormalGene", Type.EmptyTypes);
                 if (mGetRandomNormalGene != null) h.Patch(mGetRandomNormalGene, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(GeneLibraryGetRandomNormalGenePrefix)));
@@ -1378,6 +1385,12 @@ namespace Coopfall.Lockstep
                 MethodInfo mGrowTypeMineral = AccessTools.Method(typeof(TileActionLibrary), "getGrowTypeRandomMineral", new[] { typeof(WorldTile) });
                 if (mGrowTypeMineral != null) h.Patch(mGrowTypeMineral, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TileActionLibraryGetGrowTypeRandomMineralPrefix)));
                 else Log.Warn("lockstep: TileActionLibrary.getGrowTypeRandomMineral not found");
+
+                if (!(On("simfixes") || On("simfixes3")))
+                {
+                    Log.Info("lockstep: SimulationInTick fixes 103-107 and 109 (part 3) are off until re-verified; -coopfall-ls-on simfixes3 turns them on");
+                    return;
+                }
 
                 // 103. CoreSystemManager Unified Object Random Selection Determinism
                 PatchCoreSystemManager<City, CityData>(h);
@@ -1431,6 +1444,12 @@ namespace Coopfall.Lockstep
                 MethodInfo mLoopLava = AccessTools.Method(typeof(TileZone), "loopLava", Type.EmptyTypes);
                 if (mLoopLava != null) h.Patch(mLoopLava, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(TileZoneLoopLavaPrefix)));
                 else Log.Warn("lockstep: TileZone.loopLava not found");
+
+                if (!(On("simfixes") || On("simfixes4")))
+                {
+                    Log.Info("lockstep: SimulationInTick fixes 110-115 (part 4) are off until re-verified; -coopfall-ls-on simfixes4 turns them on");
+                    return;
+                }
 
                 // 110. God Power Brush / Shape Placement Randomness Determinism
                 MethodInfo mBrushRand = AccessTools.Method(typeof(Brush), "getRandom", Type.EmptyTypes);
@@ -1498,6 +1517,12 @@ namespace Coopfall.Lockstep
                 if (mSubspeciesTopic != null) h.Patch(mSubspeciesTopic, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SubspeciesManagerGetTopicSpritePrefix)));
                 else Log.Warn("lockstep: SubspeciesManager.getTopicSprite not found");
 
+                if (!(On("simfixes") || On("simfixes5")))
+                {
+                    Log.Info("lockstep: SimulationInTick fixes 116-121 (part 5) are off until re-verified; -coopfall-ls-on simfixes5 turns them on");
+                    return;
+                }
+
                 // 116. Clouds Weather & Era Disaster Spawn Determinism
                 MethodInfo mSpawnCloud = AccessTools.Method(typeof(WorldBehaviourClouds), "spawnRandomCloud", Type.EmptyTypes);
                 if (mSpawnCloud != null) h.Patch(mSpawnCloud, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(SpawnRandomCloudPrefix)));
@@ -1563,6 +1588,12 @@ namespace Coopfall.Lockstep
                 MethodInfo mFractureKingdom = AccessTools.Method(typeof(KingdomBehCheckKing), "fractureKingdom", new[] { typeof(Kingdom) });
                 if (mFractureKingdom != null) h.Patch(mFractureKingdom, prefix: new HarmonyMethod(typeof(SimulationInTick), nameof(KingdomBehCheckKingFractureKingdomPrefix)));
                 else Log.Warn("lockstep: KingdomBehCheckKing.fractureKingdom not found");
+
+                if (!(On("simfixes") || On("simfixes6")))
+                {
+                    Log.Info("lockstep: SimulationInTick fixes 122-126 (part 6) are off until re-verified; -coopfall-ls-on simfixes6 turns them on");
+                    return;
+                }
 
                 // 122. Kingdom Monarch Royal Succession Golden Tooth Trait Determinism
                 MethodInfo mGiveGoldenTooth = AccessTools.Method(typeof(KingdomBehCheckKing), "tryToGiveGoldenTooth", new[] { typeof(Actor) });

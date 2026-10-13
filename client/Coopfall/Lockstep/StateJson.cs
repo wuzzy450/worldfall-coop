@@ -55,6 +55,10 @@ namespace Coopfall.Lockstep
             {
                 string s = WorldCalls.Leaf(v);
                 if (s == null) { Skipped++; return Skip; }
+                // a dangling ref (a kingdom that has died, ...) reads back null after the rebuild
+                // and failed the carry round-trip check at every epoch ("Law._warsOf"): drop it
+                // here too (both PCs find the same thing gone)
+                if (!WorldCalls.ReadLeaf(s, t, out object back) || back == null) return JValue.CreateNull();
                 return new JValue("~" + s);
             }
             if (t.IsPrimitive || t == typeof(decimal))

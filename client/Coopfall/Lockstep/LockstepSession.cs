@@ -50,6 +50,9 @@ namespace Coopfall.Lockstep
         public int Desyncs, Epochs, Checked;
         private readonly List<float> _recentDesyncs = new List<float>();
         private float _resyncDue = -1f;
+        private float _waitToldAt = -99f;
+        private float _stragglerToldAt = -99f, _lastGuestHashAt = -1f, _noHashToldAt = -99f;
+        private int _shaMismatches;
         public string LastDesync;
 
         private int _epoch, _seed;
@@ -128,7 +131,12 @@ namespace Coopfall.Lockstep
             if (!_s.IsHost || !Wanted || !WorldBoxApi.WorldReady) return;
             if (Time.unscaledTime - _epochAt < MinSecondsBetweenEpochs && reason == "desync")
             {
-                Log.Warn("lockstep: another desync within " + MinSecondsBetweenEpochs + " s; waiting before re-syncing");
+                // retried every frame until the wait is over: say it about once a second
+                if (Time.unscaledTime - _waitToldAt >= 1f)
+                {
+                    _waitToldAt = Time.unscaledTime;
+                    Log.Warn("lockstep: another desync within " + MinSecondsBetweenEpochs + " s; waiting before re-syncing");
+                }
                 return;
             }
             if (!LockstepClock.Install()) { Log.Error("lockstep: can't hook the game loop; staying on live sync"); return; }
@@ -188,6 +196,8 @@ namespace Coopfall.Lockstep
             _playerTick.Clear();
             _myHashes.Clear();
             _theirHashes.Clear();
+            _shaMismatches = 0;
+            _lastGuestHashAt = Time.unscaledTime;
             _sentGrant = -1;
             _grantAcc = 0;
             _lastHashTick = -1;
@@ -220,6 +230,9 @@ namespace Coopfall.Lockstep
             if (_epoch <= 0 || _loaded) return;
             if (!_s.IsHost && loadedSha != null && _sha != null && !string.Equals(loadedSha, _sha, StringComparison.OrdinalIgnoreCase))
             {
+                _shaMismatches++;
+                if (_shaMismatches >= 3)
+                    Log.Error("lockstep: epoch " + _epoch + "'s save keeps arriving wrong (" + _shaMismatches + "th time: " + Short(loadedSha) + " != " + Short(_sha) + "); stuck re-loading");
                 Log.Warn("lockstep: loaded save " + Short(loadedSha) + " but epoch " + _epoch + " uses " + Short(_sha) + "; asking for it again");
                 RequestEpochSave();
                 return;
@@ -233,6 +246,8 @@ namespace Coopfall.Lockstep
             TownsInTick.SetTod(_epochTod);
             _settingsTold = false;
             _loaded = true; _everLoaded = true;
+            _shaMismatches = 0;
+            _lastGuestHashAt = Time.unscaledTime;
             LockstepControl.Running = true;
             // the world right after loading: a guest whose load went wrong is told to load again
             string h0 = StateHash.Compute(0, false).Line();
@@ -364,6 +379,14 @@ namespace Coopfall.Lockstep
             Grant();
             ReleaseLeavers();
             if (_resyncDue >= 0f && Time.unscaledTime >= _resyncDue) { float at = _epochAt; StartEpoch("desync"); if (_epochAt != at) _resyncDue = -1f; }
+            // guests should send a check every HashEvery ticks: silence for 30 s means the checks
+            // have stopped again (a stuck guest, a wrong-epoch straggler) - say so instead of
+            // quietly running unchecked
+            if (Active && !_waitingReady && RoomPlayers().Count > 1 && Time.unscaledTime - _lastGuestHashAt > 30f && Time.unscaledTime - _noHashToldAt > 30f)
+            {
+                _noHashToldAt = Time.unscaledTime;
+                Log.Warn("lockstep: no checks from any guest for " + (int)(Time.unscaledTime - _lastGuestHashAt) + " s (one every " + HashEvery + " ticks expected)");
+            }
             CompareHashes();
         }
 
@@ -746,6 +769,22 @@ namespace Coopfall.Lockstep
             return string.Join(", ", diff.ToArray());
         }
 
+        // ============================================================== stragglers
+
+        /// <summary>Host: a player still on an epoch this one has left behind (it missed the newer
+        /// epoch's announcement while it was still loading one from before). Its ready note and
+        /// its checks are dropped as a wrong epoch forever, so it runs a world of its own (the
+        /// "both PCs on different worlds" of a re-sync storm, and the checks silently stopping):
+        /// re-sync everyone onto one epoch again, at most once every 30 s.</summary>
+        private void Straggler(string from, int e)
+        {
+            if (!Active || _waitingReady) return;
+            if (Time.unscaledTime - _stragglerToldAt < 30f) return;
+            _stragglerToldAt = Time.unscaledTime;
+            Log.Warn("lockstep: " + (_s.Player(from)?.name ?? from ?? "a player") + " is still on epoch " + e + " (this one is " + _epoch + "); re-syncing everyone");
+            StartEpoch("straggler");
+        }
+
         // ============================================================== packets
 
         public void OnPacket(string t, JObject p)
@@ -810,7 +849,8 @@ namespace Coopfall.Lockstep
                     Assign(from, kind, id, (long?)p["a"] ?? -1, (long?)p["b"] ?? -1, (string)p["brush"]);
                     break;
                 case "wlready":
-                    if (e != _epoch || !_s.IsHost) return;
+                    if (!_s.IsHost) return;
+                    if (e != _epoch) { if (e < _epoch && e > 0) Straggler((string)p["from"], e); return; }
                     // a guest can finish loading before the host: compare once the host's own world is ready
                     if (!_loaded || _h0Epoch != _epoch) { _earlyReady.Add(p); return; }
                     if (_hostKept && _h0 != null && (string)p["h0"] != null && (string)p["h0"] != _h0)
@@ -852,10 +892,12 @@ namespace Coopfall.Lockstep
                     RequestEpochSave();
                     break;
                 case "wlh":
-                    if (e != _epoch || !_s.IsHost) return;
+                    if (!_s.IsHost) return;
                     string who = (string)p["from"];
+                    if (e != _epoch) { if (e < _epoch && e > 0) Straggler(who, e); return; }
                     _playerTick[who] = Math.Max(_playerTick.TryGetValue(who, out long had) ? had : 0, (long?)p["tick"] ?? 0);
                     _ready.Add(who);
+                    _lastGuestHashAt = Time.unscaledTime;
                     _theirHashes.Add(new KeyValuePair<string, JObject>(who, p));
                     break;
             }

@@ -25,6 +25,71 @@ namespace Coopfall
         private static readonly bool ForceDesync = System.Array.Exists(System.Environment.GetCommandLineArgs(), x => x == "-coopfall-test-desync");
         private static readonly bool NoPossess = System.Array.Exists(System.Environment.GetCommandLineArgs(), x => x == "-coopfall-test-nopossess");
 
+        // "-coopfall-test-four" (INVESTIGATE.md, tools/run-coop4.sh): a 4-game visual test.
+        // God powers keep spawning things (the sync is checked by the lockstep checksums);
+        // from 25 s every player possesses a body and they gather in front of each other;
+        // 130-145 s everyone lets go, so the shared god cursors (with their selected power)
+        // show on every screen; a screenshot every 10 s on every game.
+        private static readonly bool FourMode = System.Array.Exists(System.Environment.GetCommandLineArgs(), x => x == "-coopfall-test-four");
+        private bool _ls4Gathering, _ls4NoPossess, _ls4CursorDone;
+        private float _ls4ShotAt = -1f, _ls4NextGather;
+        private int _ls4Gathered;
+
+        private void LockstepFourTick(float now, Lockstep.LockstepSession ls)
+        {
+            float t = now - _lsStart;
+            if (t > 10f && now - _ls4ShotAt >= 10f)
+            {
+                _ls4ShotAt = now;
+                Shot("four-e" + ls.Epoch + "-s" + (int)t);
+            }
+            _ls4Gathering = t > 25f && t < 125f;
+            if (t > 130f && t < 145f) _ls4NoPossess = true;
+            else if (_ls4NoPossess && t >= 145f)
+            {
+                _ls4NoPossess = false;
+                if (!_ls4CursorDone)
+                {
+                    _ls4CursorDone = true;
+                    int cursors = 0;
+                    foreach (AvatarManager.Remote r in CoopMod.Instance.Avatars.Remotes.Values) if (r.on || r.hasCursor) cursors++;
+                    Log.Info("TEST lockstep: four: the cursor phase is over; " + cursors + " other player(s) were seen here with a body or a god cursor");
+                }
+            }
+        }
+
+        /// <summary>Four-mode steering: toward the lowest-id other player's body until they
+        /// stand in front of each other (then hold still, and say so with a screenshot every
+        /// 5 s). False: the normal random steering.</summary>
+        private bool LockstepFourSteer()
+        {
+            if (!_ls4Gathering) return false;
+            _lsSteerAt = Time.unscaledTime + 0.5f;
+            Actor me = ControllableUnit.getControllableUnit();
+            if (me == null || !me.isAlive()) return true;
+            Actor target = null;
+            foreach (Actor a in World.world.units)
+                if (a != null && a != me && a.isAlive() && Lockstep.LockstepControl.IsControlled(a.getID()) && (target == null || a.getID() < target.getID())) target = a;
+            if (target == null) { _lsMove = Vector2.zero; _lsAttack = false; return true; }
+            Vector2 d = target.current_position - me.current_position;
+            if (d.sqrMagnitude < 6f)
+            {
+                _lsMove = Vector2.zero;
+                _lsAttack = false;
+                if (Time.unscaledTime - _ls4NextGather >= 5f)
+                {
+                    _ls4NextGather = Time.unscaledTime;
+                    _ls4Gathered++;
+                    Log.Info("TEST lockstep: four: standing in front of #" + target.getID() + " (" + _ls4Gathered + " shots so far)");
+                    Shot("four-gather" + _ls4Gathered);
+                }
+                return true;
+            }
+            _lsMove = d.normalized;
+            _lsAttack = false;
+            return true;
+        }
+
         /// <summary>
         /// From 20 s on, each player takes over a creature and steers it: a new direction every
         /// 2 s, attacking now and then, a jump now and then; after 60 s it lets go and takes
@@ -35,8 +100,15 @@ namespace Coopfall
             if (now - _lsStart < 20f || NoPossess) return;
             if (Lockstep.LockstepControl.BeforeSample == null)
                 Lockstep.LockstepControl.BeforeSample = () => { if (ControllableUnit.isControllingUnit()) Lockstep.LockstepControl.Script(_lsMove, _lsAttack, _lsJump); _lsJump = false; };
+            if (FourMode && _ls4NoPossess)
+            {
+                // the cursor phase: everyone lets go, so what's shared (and shown on every
+                // screen) is the players' god cursors instead of their bodies
+                if (ControllableUnit.isControllingUnit()) { ControllableUnit.clear(false); Log.Info("TEST lockstep: let go of my creature for the cursor phase"); }
+                return;
+            }
             bool possessing = ControllableUnit.isControllingUnit();
-            if ((!possessing || now - _lsPossessAt > 60f) && !LockstepKingTime(now))
+            if ((!possessing || (now - _lsPossessAt > 60f && !FourMode)) && !LockstepKingTime(now))
             {
                 if (possessing) { ControllableUnit.clear(false); Log.Info("TEST lockstep: let go of my creature"); _lsPossessAt = now; return; }
                 if (_lsPossessAt > 0f && now - _lsPossessAt < 3f) return;
@@ -54,6 +126,7 @@ namespace Coopfall
                 return;
             }
             if (now < _lsSteerAt) return;
+            if (FourMode && LockstepFourSteer()) return;
             _lsSteerAt = now + 2f;
             _lsMove = new Vector2(Random.Range(-1, 2), Random.Range(-1, 2));
             _lsAttack = Random.value < 0.3f;
@@ -262,6 +335,7 @@ namespace Coopfall
             }
             if (_lsDone || !_s.Online || !_s.InWorld || _s.OthersInRoom() == 0 || !ls.Active || Lockstep.LockstepClock.Granted < 100) return;
             if (_lsStart < 0f) { _s.ChatFrom += (id, text) => { LockstepNote(text); FeaturesNote(text); }; _lsStart = now; _lsNextPower = now + (_s.IsHost ? 5f : 6.5f); Log.Info("TEST lockstep: running as " + (_s.IsHost ? "host" : "guest")); }
+            if (FourMode) LockstepFourTick(now, ls);
             if (now - _lsStart > (_fxMode ? FeaturesSeconds : _lkMode ? LooksSeconds : _cpMode ? CoopSeconds : LockstepSeconds))
             {
                 _lsDone = true;

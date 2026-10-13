@@ -34,6 +34,7 @@ namespace Coopfall
     public partial class TestDriver
     {
         private bool _cpMode, _cpHooked;
+        private bool _cpSpawned, _cpShotFolk;
         private int _cpStep;
         private long _cpTickA;
         private const float CoopSeconds = 300f;
@@ -100,10 +101,11 @@ namespace Coopfall
             return AccessTools.Field(pData.GetType(), "list")?.GetValue(pData) is System.Collections.ICollection c ? c.Count : -1;
         }
 
-        /// <summary>Both PCs pick their creatures the same way: adults of the town with the most houses
-        /// (falling back to the town with the most possessable units, then to any possessable adults,
-        /// so a late-game town of only kings/warriors/babies can't abort the whole coop scenario).</summary>
-        private Actor CpPick()
+        /// <summary>The town both PCs play in, picked the same way: the one with the most houses
+        /// (falling back to the town with the most possessable units, then nothing, so a
+        /// generated world of only kings, warriors, babies and wild animals can't abort the
+        /// whole coop scenario).</summary>
+        private City CpBestTown()
         {
             City best = null;
             int most = -1;
@@ -129,6 +131,16 @@ namespace Coopfall
                 }
                 if (best != null) Log.Warn("TEST coop: no town with 4 free adults; falling back to " + best.name + " (#" + best.getID() + ", " + top + " possessable)");
             }
+            return best;
+        }
+
+        /// <summary>Both PCs pick their creatures the same way: adults of the best town, padded
+        /// (when it has too few or none) with the possessable creatures nearest the town - which
+        /// the host's spawned townsfolk (CpSpawnAdults) are - so the host, the guest and the
+        /// smith always get distinct bodies of the same place, and never the same creature.</summary>
+        private Actor CpPick()
+        {
+            City best = CpBestTown();
             _cpCity = best?.getID() ?? 0;
             var adults = new List<Actor>();
             if (best != null)
@@ -137,11 +149,35 @@ namespace Coopfall
                 if (adults.Count == 0)
                     foreach (Actor a in best.units) if (a != null && a.isAlive() && a.canBePossessed()) adults.Add(a);
             }
-            if (adults.Count == 0)
+            if (adults.Count < 3)
             {
-                // no town has anyone possessable (a generated world of only kings, warriors, babies
-                // and wild animals): any possessable creature in the world, in id order
-                foreach (Actor a in World.world.units) if (a != null && a.isAlive() && a.canBePossessed()) adults.Add(a);
+                // the town has too few (or none): the possessable creatures nearest it, ties by id
+                var near = new List<Actor>();
+                foreach (Actor a in World.world.units)
+                    if (a != null && a.isAlive() && a.canBePossessed() && !adults.Contains(a)) near.Add(a);
+                if (best != null)
+                {
+                    // the tile of the town's lowest-id alive building (deterministic on both PCs;
+                    // the buildings list iterates in a per-PC pooled order)
+                    Building c0 = null;
+                    foreach (Building b in best.buildings)
+                        if (b != null && b.isAlive() && (c0 == null || b.getID() < c0.getID())) c0 = b;
+                    if (c0 != null && c0.current_tile != null)
+                    {
+                        Vector2 center = new Vector2(c0.current_tile.posV3.x, c0.current_tile.posV3.y);
+                        near.Sort((x, y) =>
+                        {
+                            int d = (x.current_position - center).sqrMagnitude.CompareTo((y.current_position - center).sqrMagnitude);
+                            return d != 0 ? d : x.getID().CompareTo(y.getID());
+                        });
+                    }
+                    else near.Sort((x, y) => x.getID().CompareTo(y.getID()));
+                }
+                else near.Sort((x, y) => x.getID().CompareTo(y.getID()));
+                int had = adults.Count;
+                foreach (Actor a in near) { adults.Add(a); if (adults.Count >= 3) break; }
+                if (adults.Count > had)
+                    Log.Info("TEST coop: the town had " + had + " possessable unit(s); padded with the " + (adults.Count - had) + " nearest possessable creature(s)");
             }
             adults.Sort((x, y) => x.getID().CompareTo(y.getID()));
             if (adults.Count == 0) return null;
@@ -149,8 +185,51 @@ namespace Coopfall
             _cpBodies.Add(adults[0].getID());
             if (adults.Count > 1) _cpBodies.Add(adults[1].getID());
             _cpSmith = adults.Count > 2 ? adults[2].getID() : 0;
-            Log.Info("TEST coop: town " + best.name + " (#" + best.getID() + ", " + most + " houses), host #" + adults[0].getID() + ", guest #" + (adults.Count > 1 ? adults[1].getID() : adults[0].getID()) + ", smith #" + _cpSmith);
+            int houses = 0;
+            if (best != null) foreach (Building b in best.buildings) if (b != null && b.isAlive() && R.Get(b, "asset") is BuildingAsset ba && ba.type == "type_house") houses++;
+            Log.Info("TEST coop: town " + (best == null ? "(none)" : best.name + " (#" + best.getID() + ", " + houses + " houses)") + ", host #" + adults[0].getID() + ", guest #" + (adults.Count > 1 ? adults[1].getID() : adults[0].getID()) + ", smith #" + _cpSmith);
             return _s.IsHost || adults.Count == 1 ? adults[0] : adults[1];
+        }
+
+        /// <summary>The worlds the tests generate sometimes have no possessable town adults at all
+        /// (only kings, warriors, babies and wild animals), which left both players in wild
+        /// creatures far from any house. The host spawns a few townsfolk at the best town through
+        /// a real creature power (the lockstep input runs it in a tick on both PCs, so the world
+        /// stays shared); CpPick prefers the creatures nearest the town, so the players get them.</summary>
+        private void CpSpawnAdults()
+        {
+            City best = CpBestTown();
+            if (best == null) { Log.Warn("TEST coop: no town to spawn townsfolk at (a world without towns)"); return; }
+            int adults = 0;
+            foreach (Actor a in best.units) if (a != null && a.isAlive() && a.isAdult() && !a.isKing() && a.canBePossessed()) adults++;
+            if (adults >= 4) { Log.Info("TEST coop: town " + best.name + " has " + adults + " possessable adults; spawning none"); return; }
+            // a creature-tab spawn power (the first one this game has)
+            string spawn = null;
+            foreach (string id in new[] { "human", "elf", "dwarf", "orc" })
+                if (CoopMod.Instance.Powers.Knows(id)) { spawn = id; break; }
+            if (spawn == null) { Log.Warn("TEST coop: no creature power to spawn townsfolk with"); return; }
+            // dry land next to the town's houses, in a deterministic order
+            var tiles = new List<WorldTile>();
+            var seen = new HashSet<WorldTile>();
+            foreach (Building b in best.buildings)
+            {
+                if (b == null || !b.isAlive() || b.current_tile == null) continue;
+                foreach (WorldTile n in b.current_tile.neighbours)
+                    if (n != null && !n.is_liquid && !n.hasBuilding() && seen.Add(n)) tiles.Add(n);
+            }
+            tiles.Sort((x, y) => x.tile_id.CompareTo(y.tile_id));
+            string brush = Config.current_brush;
+            Config.current_brush = "circ_1";
+            int spawned = 0;
+            try
+            {
+                for (int i = 0; i < tiles.Count && spawned < 4; i++)
+                    if (CoopMod.Instance.Powers.UseLocal(spawn, tiles[i])) spawned++;
+            }
+            finally { Config.current_brush = brush; }
+            Log.Info(spawned > 0
+                ? "TEST coop: host spawned " + spawned + " " + spawn + " townsfolk at " + best.name + " (both PCs get them in a tick)"
+                : "TEST coop: no dry tile next to " + best.name + "'s houses to spawn townsfolk on");
         }
 
         private void CoopTick(float now)
@@ -176,6 +255,15 @@ namespace Coopfall
             try
             {
                 Type gear = CpType("Gear"), bundles = CpType("Bundles"), rep = CpType("Towns.Rep"), plot = CpType("Towns.LandPlot"), cal = CpType("Towns.Calendar"), chron = CpType("Chronicle");
+                if (!_cpSpawned && t > 6f)
+                {
+                    // the host spawns a few townsfolk (a real power through the lockstep inputs)
+                    // before anyone picks a body, so the scenario always has town bodies
+                    if (!_s.IsHost) _cpSpawned = true;
+                    else if (_s.Lockstep != null && _s.Lockstep.CanSubmit) { _cpSpawned = true; CpSpawnAdults(); }
+                    else if (t > 11f) { _cpSpawned = true; Log.Warn("TEST coop: lockstep never became ready in time; no townsfolk spawned"); }
+                }
+                if (!_cpShotFolk && t > 9f) { _cpShotFolk = true; CpShot("step-townfolk"); }
                 if (_cpStep == 0 && t > 12f)
                 {
                     _cpStep = 1;
@@ -188,15 +276,23 @@ namespace Coopfall
                 if (_cpStep == 1 && t > 18f) { _cpStep = 2; CpOk("possess", me != null && me.isAlive(), me == null ? "none" : "#" + me.getID()); CpShot("step-possess"); }
                 if (me == null || !me.isAlive())
                 {
-                    // the lowest-id possessable creature, the same way on both PCs (the units list
-                    // iterates in a per-PC pooled order)
-                    Actor backup = null;
-                    foreach (Actor a in World.world.units) if (a != null && a.isAlive() && a.canBePossessed() && (backup == null || a.getID() < backup.getID())) backup = a;
+                    // a deterministic backup: possessable creatures nobody took (the scenario's
+                    // assigned bodies, anyone already controlled), the same way on both PCs (the
+                    // units list iterates in a per-PC pooled order); the host takes the first by
+                    // id and the guest the second, so the two players never end up in the same
+                    // body (a refused possess used to drop the guest into the host's creature)
+                    var free = new List<Actor>();
+                    foreach (Actor a in World.world.units)
+                        if (a != null && a.isAlive() && a.canBePossessed() && !_cpBodies.Contains(a.getID()) && !Lockstep.LockstepControl.IsControlled(a.getID()))
+                            free.Add(a);
+                    free.Sort((x, y) => x.getID().CompareTo(y.getID()));
+                    Actor backup = free.Count == 0 ? null : free[_s.IsHost || free.Count == 1 ? 0 : 1];
                     if (backup != null)
                     {
                         if (ControllableUnit.isControllingUnit()) ControllableUnit.clear(false);
                         ControllableUnit.setControllableCreature(backup);
                         me = backup;
+                        Log.Info("TEST coop: backup body #" + backup.getID());
                     }
                     if (me == null || !me.isAlive()) return;
                 }
@@ -879,8 +975,9 @@ namespace Coopfall
                     {
                         var kRef = AccessTools.FieldRefAccess<City, Kingdom>("kingdom");
                         Kingdom k = town != null ? kRef(town) : null;
-                        Kingdom k2 = World.world.kingdoms_wild.get("ruins");
-                        if (k != null && k2 != null)
+                        Kingdom k2 = World.world.kingdoms_wild != null ? World.world.kingdoms_wild.get("ruins") : null;
+                        if (k == null && k2 == null) CpOk("diplomacy power tie-break", false, "no town and no ruins kingdom in this world");
+                        if (k != null && k2 != null && World.world.diplomacy != null)
                         {
                             k.power = 100;
                             k2.power = 100;
