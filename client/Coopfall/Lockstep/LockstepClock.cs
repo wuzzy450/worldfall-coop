@@ -252,6 +252,7 @@ namespace Coopfall.Lockstep
             Log.Info("lockstep: job lists after load: " + ListSignature());
             ResetJobSkips(World.world.units);
             ResetJobSkips(World.world.buildings);
+            FlushContainers(World.world);
             ResetStatics();
             // tiles are reused between worlds of the same size; their "walls around" cache isn't
             // reset by loading

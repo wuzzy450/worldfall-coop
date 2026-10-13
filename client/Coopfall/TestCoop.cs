@@ -25,6 +25,7 @@ namespace Coopfall
     ///  95 s  H's opinion with the forge's smith (Chronicle.ChangeOpinion)
     /// 100 s  G sleeps the night away (Calendar.SkipToDawn: a new day in the same tick everywhere)
     /// 110 s  H makes the days longer (DayMinutes: a new epoch with the host's setting), G turns friendly fire on (stays its own)
+    /// 131 s  H lights a fire with Worldfall's torch code, outside a tick (an Ignite input: the same fire on both PCs)
     /// 140 s  forced resync: the data, the time of day and the day go on
     /// Every 500 ticks both PCs log the same "TEST coop: state at epoch E tick T" line (compare with
     /// tools/compare-state.py) and take a screenshot (coop/e{E}-t{T}.png in the profile folder);
@@ -199,23 +200,39 @@ namespace Coopfall
         private void CpSpawnAdults()
         {
             City best = CpBestTown();
-            if (best == null) { Log.Warn("TEST coop: no town to spawn townsfolk at (a world without towns)"); return; }
-            int adults = 0;
-            foreach (Actor a in best.units) if (a != null && a.isAlive() && a.isAdult() && !a.isKing() && a.canBePossessed()) adults++;
-            if (adults >= 4) { Log.Info("TEST coop: town " + best.name + " has " + adults + " possessable adults; spawning none"); return; }
             // a creature-tab spawn power (the first one this game has)
             string spawn = null;
             foreach (string id in new[] { "human", "elf", "dwarf", "orc" })
                 if (CoopMod.Instance.Powers.Knows(id)) { spawn = id; break; }
             if (spawn == null) { Log.Warn("TEST coop: no creature power to spawn townsfolk with"); return; }
-            // dry land next to the town's houses, in a deterministic order
             var tiles = new List<WorldTile>();
-            var seen = new HashSet<WorldTile>();
-            foreach (Building b in best.buildings)
+            if (best != null)
             {
-                if (b == null || !b.isAlive() || b.current_tile == null) continue;
-                foreach (WorldTile n in b.current_tile.neighbours)
-                    if (n != null && !n.is_liquid && !n.hasBuilding() && seen.Add(n)) tiles.Add(n);
+                int adults = 0;
+                foreach (Actor a in best.units) if (a != null && a.isAlive() && a.isAdult() && !a.isKing() && a.canBePossessed()) adults++;
+                if (adults >= 4) { Log.Info("TEST coop: town " + best.name + " has " + adults + " possessable adults; spawning none"); return; }
+                // dry land next to the town's houses, in a deterministic order
+                var seen = new HashSet<WorldTile>();
+                foreach (Building b in best.buildings)
+                {
+                    if (b == null || !b.isAlive() || b.current_tile == null) continue;
+                    foreach (WorldTile n in b.current_tile.neighbours)
+                        if (n != null && !n.is_liquid && !n.hasBuilding() && seen.Add(n)) tiles.Add(n);
+                }
+            }
+            else
+            {
+                Log.Info("TEST coop: no town to spawn townsfolk at (spawning on dry ground anywhere)");
+                WorldTile[] all = (WorldTile[])AccessTools.Field(typeof(MapBox), "tiles_list")?.GetValue(World.world);
+                if (all != null)
+                {
+                    foreach (WorldTile t in all)
+                        if (t != null && !t.is_liquid && !t.hasBuilding() && t.Type != null && t.Type.ground)
+                        {
+                            tiles.Add(t);
+                            if (tiles.Count >= 20) break;
+                        }
+                }
             }
             tiles.Sort((x, y) => x.tile_id.CompareTo(y.tile_id));
             string brush = Config.current_brush;
@@ -228,8 +245,8 @@ namespace Coopfall
             }
             finally { Config.current_brush = brush; }
             Log.Info(spawned > 0
-                ? "TEST coop: host spawned " + spawned + " " + spawn + " townsfolk at " + best.name + " (both PCs get them in a tick)"
-                : "TEST coop: no dry tile next to " + best.name + "'s houses to spawn townsfolk on");
+                ? "TEST coop: host spawned " + spawned + " " + spawn + " townsfolk" + (best != null ? " at " + best.name : "") + " (both PCs get them in a tick)"
+                : "TEST coop: no dry tile to spawn townsfolk on");
         }
 
         private void CoopTick(float now)
@@ -293,6 +310,7 @@ namespace Coopfall
                         ControllableUnit.setControllableCreature(backup);
                         me = backup;
                         Log.Info("TEST coop: backup body #" + backup.getID());
+                        if (_cpStep == 99) _cpStep = 2;
                     }
                     if (me == null || !me.isAlive()) return;
                 }
@@ -468,7 +486,34 @@ namespace Coopfall
                         CpOk("drop wood", made == null, "5 wood set down at " + p.ToString("F1") + " before the resync (on the ground from the tick on)");
                     }
                 }
-                if (_cpStep == 193 && t > 133f)
+                if (_cpStep == 193 && t > 131f)
+                {
+                    _cpStep = 1931;
+                    if (_s.IsHost)
+                    {
+                        // the real-session bug class: Worldfall's torch frame code lights a fire on the
+                        // acting PC only, outside a tick; it now travels as an Ignite input (both PCs
+                        // get the same fire in the next tick). With the relay off
+                        // (-coopfall-ignite-off) this is the local desync repro: "differs: tiles".
+                        WorldTile at = CpFlammableTile(town, me);
+                        if (at == null) CpOk("torch ignite", false, "no flammable ground near the town");
+                        else
+                        {
+                            Type torches = CpType("Torches"), vec3 = WorldfallBridge.Assembly?.GetType("FirstPerson.Core.Vec3", false);
+                            object flame = vec3 != null ? Activator.CreateInstance(vec3, (float)at.x + 0.5f, (float)at.y + 0.5f, 0f) : null;
+                            bool lit = torches != null && flame != null && (bool)CpCall(torches, null, "IgniteGround", flame);
+                            CpOk("torch ignite", lit, "host lit " + (lit ? "a fire" : "nothing") + " at " + at.x + "," + at.y + " through Worldfall's torch code, outside a tick");
+                        }
+                    }
+                }
+                if (_cpStep == 1931 && t > 133f)
+                {
+                    _cpStep = 1932;
+                    int fires = CpFires();
+                    CpOk("torch fire shared", fires > 0, fires + " tile(s) on fire here; the fire is an Ignite input, so both PCs have the same ones (the state lines count them too)");
+                    CpShot("step-torch-ignite");
+                }
+                if (_cpStep == 1932 && t > 134f)
                 {
                     _cpStep = 194;
                     Actor smith = World.world.units.get(_cpSmith);
@@ -1193,6 +1238,57 @@ namespace Coopfall
 
         private bool _cpFired, _cpShotA, _cpShotB;
 
+        /// <summary>How many tiles are on fire right now (the tile checks and the state lines compare them).</summary>
+        private static int CpFires()
+        {
+            bool[] fires = World.world?.tile_manager?.fires;
+            if (fires == null) return 0;
+            int n = 0;
+            foreach (bool f in fires) if (f) n++;
+            return n;
+        }
+
+        /// <summary>A fixed flammable tile near the town (no building on it, not water or on fire): the torch step lights this one.</summary>
+        private static WorldTile CpFlammableTile(City town, Actor me)
+        {
+            WorldTile center = null;
+            if (town != null)
+                foreach (Building b in town.buildings)
+                    if (b != null && b.isAlive() && b.current_tile != null) { center = b.current_tile; break; }
+            if (center == null && me != null && me.current_tile != null) center = me.current_tile;
+            if (center == null) return null;
+            // rings outward from the town's first house, so the fire is near it but not on its doorstep
+            for (int r = 3; r <= 14; r++)
+                for (int dy = -r; dy <= r; dy++)
+                    for (int dx = -r; dx <= r; dx++)
+                    {
+                        if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != r) continue;
+                        WorldTile t = World.world.GetTile(center.x + dx, center.y + dy);
+                        if (t == null || t.is_liquid || t.isOnFire() || t.building != null || t.Type == null || !t.Type.burnable) continue;
+                        return t;
+                    }
+            // Fall back to nearest burnable, non-liquid, building-free tile anywhere in the world (ascending tile_id on ties)
+            WorldTile best = null;
+            int bestDistSq = int.MaxValue;
+            WorldTile[] all = (WorldTile[])AccessTools.Field(typeof(MapBox), "tiles_list")?.GetValue(World.world);
+            if (all != null)
+            {
+                foreach (WorldTile t in all)
+                {
+                    if (t == null || t.is_liquid || t.isOnFire() || t.building != null || t.Type == null || !t.Type.burnable) continue;
+                    int dx = t.x - center.x;
+                    int dy = t.y - center.y;
+                    int distSq = dx * dx + dy * dy;
+                    if (distSq < bestDistSq || (distSq == bestDistSq && (best == null || t.tile_id < best.tile_id)))
+                    {
+                        bestDistSq = distSq;
+                        best = t;
+                    }
+                }
+            }
+            return best;
+        }
+
         private static EquipmentAsset CpWeapon()
         {
             EquipmentAsset best = null;
@@ -1358,6 +1454,7 @@ namespace Coopfall
                 sb.Append("town ").Append(town.name).Append(" buildings ").Append(town.buildings.Count).Append(" {").Append(string.Join("; ", shops.ToArray())).Append("} ");
             }
             sb.Append("doors ").Append(Lockstep.SteeringInTick.Doors).Append(" steered ").Append(Lockstep.SteeringInTick.Steered).Append("; ");
+            sb.Append("fires ").Append(CpFires()).Append("; ");
             sb.Append("meteor seeds [").Append(string.Join(",", Lockstep.EffectSeeds.Given.ConvertAll(x => x.ToString()).ToArray())).Append("] ");
             sb.Append("bundles ").Append(CpBundles()).Append("; quests").Append(CpQuestLogs()).Append("; items ").Append(World.world.items.Count);
             return sb.ToString();
