@@ -67,7 +67,6 @@ Keys can be changed in
   max players, which god powers guests may use.
 - **Worldfall's own multiplayer is switched off** while Coopfall is installed. Use Coopfall's
   F8 menu instead; its F2 tab turns into a Coopfall page.
-- Dragons can't be possessed (WorldBox's own rule).
 
 ## Problems
 
